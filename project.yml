@@ -1,0 +1,124 @@
+name: ScreenshotApp
+options:
+  bundleIdPrefix: com.expatinsurance.arkyv
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: AZPJ6UN5SY
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+packages:
+  ArkyvKit:
+    path: Packages/ArkyvKit
+
+targets:
+  # ───────────────────────────── iOS app ─────────────────────────────
+  Arkyv:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/iOS
+      - path: Resources/Assets.xcassets
+      - path: Resources/Fonts
+        type: folder
+    dependencies:
+      - package: ArkyvKit
+      - target: ArkyvShare
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.expatinsurance.arkyv
+        PRODUCT_NAME: arkyv
+        CODE_SIGN_ENTITLEMENTS: Sources/iOS/App/Arkyv.entitlements
+    info:
+      path: Sources/iOS/App/Info.plist
+      properties:
+        CFBundleDisplayName: arkyv
+        ITSAppUsesNonExemptEncryption: false
+        # A UILaunchScreen key (even minimal) is REQUIRED for the app to render
+        # at native resolution — without it iOS letterboxes the app in a smaller
+        # compatibility box (black bars top & bottom).
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIUserInterfaceStyle: Dark
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSPhotoLibraryUsageDescription: "arkyv watches for new screenshots so you can file them into folders the moment you take them."
+        NSPhotoLibraryAddUsageDescription: "arkyv saves captures you file back to your library when you ask."
+        UIAppFonts:
+          - IntelOneMono-Regular.ttf
+          - IntelOneMono-Medium.ttf
+          - IntelOneMono-Bold.ttf
+          - InstrumentSans.ttf
+
+  # ─────────────────────── iOS Share Extension ───────────────────────
+  ArkyvShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/Share
+      - path: Resources/Assets.xcassets
+      - path: Resources/Fonts
+        type: folder
+    dependencies:
+      - package: ArkyvKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.expatinsurance.arkyv.Share
+        PRODUCT_NAME: ArkyvShare
+        CODE_SIGN_ENTITLEMENTS: Sources/Share/ArkyvShare.entitlements
+    info:
+      path: Sources/Share/Info.plist
+      properties:
+        CFBundleDisplayName: Save to arkyv
+        UIAppFonts:
+          - IntelOneMono-Regular.ttf
+          - IntelOneMono-Medium.ttf
+          - IntelOneMono-Bold.ttf
+          - InstrumentSans.ttf
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsText: true
+
+  # ───────────────────────────── macOS app ───────────────────────────
+  # Full menu-bar implementation lands in Phase 3; this is a compiling stub.
+  ArkyvMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/macOS
+      - path: Resources/Assets.xcassets
+      - path: Resources/Fonts
+        type: folder
+    dependencies:
+      - package: ArkyvKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.expatinsurance.arkyv.mac
+        PRODUCT_NAME: arkyv
+        CODE_SIGN_ENTITLEMENTS: Sources/macOS/ArkyvMac.entitlements
+        INFOPLIST_KEY_LSUIElement: YES
+    info:
+      path: Sources/macOS/Info.plist
+      properties:
+        CFBundleDisplayName: arkyv
+        LSUIElement: true
+        LSMinimumSystemVersion: "14.0"
