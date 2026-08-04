@@ -7,7 +7,7 @@ struct NewFolderView: View {
     var onCreate: (String, FolderIcon) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
-    @State private var icon: FolderIcon = .symbol("star")
+    @State private var icon: FolderIcon = .glyph(.star)
     @FocusState private var nameFocused: Bool
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 6)

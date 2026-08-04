@@ -3,16 +3,14 @@ import SwiftData
 import PhotosUI
 import ArkyvKit
 
-/// The capture drawer (`screen-capture-sheet`). Renders in two modes:
-///   • screenshot — a media draft already exists; shows a thumbnail and files
-///     on one tap.
-///   • add — the in-app entry: a photo picker + note field to stage new content
-///     from the library, then file into a folder.
-/// The sheet reports its content height back up so the presenter can size the
-/// detent to fit exactly (no empty gap, no crop).
+/// Dispatcher for the two drawer modes — they no longer share a layout:
+///   • screenshot — hands off entirely to `ScreenshotCaptureFlowView`, the
+///     v0.02 capture choreography (prompt → isolate → folder dropdown → save).
+///   • add — the in-app "+" entry: photo picker + note field, still the
+///     original translucent-panel-over-backdrop layout, unchanged.
+/// Presented full-screen (`.large` detent, see `RootView`).
 struct CaptureSheetView: View {
     let drawer: CaptureCoordinator.Drawer
-    @Binding var measuredHeight: CGFloat
 
     @Environment(CaptureCoordinator.self) private var capture
     @Environment(\.modelContext) private var context
@@ -22,27 +20,29 @@ struct CaptureSheetView: View {
     private var folders: [StoredFolder]
 
     @State private var note = ""
-    @State private var showNewFolder = false
     @State private var pickerItem: PhotosPickerItem?
     /// Photo staged in add-mode: (filename in MediaStore, pixel size).
     @State private var stagedPhoto: (filename: String, size: CGSize)?
     @State private var isLoadingPhoto = false
+    /// Folder mid-confirmation: haptic + checkmark fire immediately, then the
+    /// actual file+dismiss happens after `confirmDelay` so the tap always
+    /// reads as "that registered" before the sheet disappears.
+    @State private var confirmingFolderID: UUID?
+    private let confirmDelay: Duration = .milliseconds(180)
+    /// The suggested folder is present from frame one; everything else in the
+    /// grid settles in a beat later. No label, no color — just arrival order.
+    /// Keyed off a single bool today, but the concept (how much of the grid
+    /// waits vs. arrives instantly) is the same lever a future confidence
+    /// score would drive.
+    @State private var gridSettled = false
 
     private var isAdd: Bool { drawer.isAdd }
 
-    private var title: String {
-        if isAdd { return "Add to..." }
-        if case .screenshot(let d) = drawer, d.kind.isTextual { return "Save note to..." }
-        return "Save to..."
-    }
-
-    private var orderedFolders: [StoredFolder] {
-        guard let suggested = capture.suggestion else { return folders }
-        return [suggested] + folders.filter { $0.id != suggested.id }
-    }
-
-    private var recentFolders: [StoredFolder] {
-        folders.sorted { $0.updatedAt > $1.updatedAt }.prefix(2).map { $0 }
+    /// The screenshot actually being filed, so the panel floats over the real
+    /// thing instead of a flat background.
+    private var screenshotFilename: String? {
+        if case .screenshot(let draft) = drawer { return draft.localFilename }
+        return nil
     }
 
     /// Something is stageable to save (add-mode needs a photo or note text).
@@ -52,54 +52,88 @@ struct CaptureSheetView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                ArkyvMarkView(height: 40, color: ArkyvColor.textPrimary)
-                    .padding(.top, 20)
-
-                VStack(spacing: 6) {
-                    Text(title)
-                        .font(.arkyvSheetTitle)
-                        .foregroundStyle(ArkyvColor.textPrimary)
-                    if let suggested = capture.suggestion, canSave {
-                        SuggestionChip(folderName: suggested.name)
-                    }
-                }
-
-                if isAdd { photoPicker }
-
-                folderGrid
-
-                quickNoteField
-
-                Divider().overlay(ArkyvColor.border)
-
-                recentFoldersRow
+        Group {
+            switch drawer {
+            case .screenshot(let draft):
+                // v0.02 flow — see ScreenshotCaptureFlowView. Add-mode below
+                // is untouched; the two are different enough now (no photo to
+                // isolate, a note field, an explicit "choose from library"
+                // step) that they don't share a body.
+                ScreenshotCaptureFlowView(draft: draft)
+            case .add:
+                addModeBody
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 20)
-            .frame(maxWidth: .infinity)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: DrawerHeightKey.self, value: proxy.size.height)
-                }
-            )
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .background(ArkyvColor.background)
         .preferredColorScheme(.dark)
-        .onPreferenceChange(DrawerHeightKey.self) { height in
-            // Fit the detent to content + home-indicator inset, capped so a huge
-            // folder list still scrolls rather than exceeding the screen.
-            measuredHeight = min(height + 28, 760)
+    }
+
+    private var addModeBody: some View {
+        ZStack(alignment: .bottom) {
+            backdrop
+            actionPanel
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: confirmingFolderID) { _, new in
+            new != nil
         }
         .task(id: pickerItem) { await loadPickedPhoto() }
-        .sheet(isPresented: $showNewFolder) {
-            NewFolderView { name, icon in
-                capture.createFolderAndFile(effectiveDraft(), name: name, icon: icon)
+    }
+
+    // MARK: Backdrop — the screenshot is the hero, the UI is just the frame
+
+    /// Full-bleed: the actual screenshot fills the whole screen behind the
+    /// panel. Falls back to the flat background when there's nothing to show
+    /// yet (add-mode, before a photo's staged).
+    private var backdrop: some View {
+        Group {
+            if let filename = screenshotFilename {
+                LocalImageView(filename: filename, contentMode: .fill)
+            } else {
+                ArkyvColor.background
             }
-            .presentationDetents([.medium])
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .ignoresSafeArea()
+    }
+
+    // MARK: Action panel — translucent, floats over the screenshot
+
+    private var actionPanel: some View {
+        VStack(spacing: ArkyvSpacing.sheetSection) {
+            ArkyvMarkView(height: 47, color: ArkyvColor.textPrimary)
+
+            if isAdd {
+                photoPicker
+                quickNoteField
+            }
+
+            folderGrid
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 24)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity)
+        .background(ArkyvColor.sheetScrim)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: ArkyvRadius.sheet, topTrailingRadius: ArkyvRadius.sheet))
+        .overlay(alignment: .topTrailing) {
+            dismissButton
+                .padding(.trailing, 20)
+                .padding(.top, 24)
+        }
+    }
+
+    private var dismissButton: some View {
+        Button {
+            capture.dismiss()
+        } label: {
+            // icon-dismiss: 32×32 tap target, X drawn at 12×12 — the circle is
+            // the invisible tap area, not a drawn stroke, so the mark stays
+            // quiet against the sheet.
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ArkyvColor.iconDefault)
+                .frame(width: 32, height: 32)
+                .contentShape(Circle())
         }
     }
 
@@ -150,21 +184,37 @@ struct CaptureSheetView: View {
     private var folderGrid: some View {
         let columns = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
         return LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(orderedFolders) { folder in
+            ForEach(folders) { folder in
                 folderButton(folder)
             }
-            newFolderButton
+        }
+        .onAppear {
+            guard !gridSettled else { return }
+            withAnimation(.easeOut(duration: 0.22).delay(0.09)) {
+                gridSettled = true
+            }
         }
     }
 
     private func folderButton(_ folder: StoredFolder) -> some View {
         let isSuggested = folder.id == capture.suggestion?.id && canSave
+        let isConfirming = confirmingFolderID == folder.id
+        let isLocked = confirmingFolderID != nil && !isConfirming
+        let isHighlighted = isSuggested || isConfirming
         return Button {
-            guard canSave else { return }
-            capture.file(effectiveDraft(), into: folder)
+            confirm(folder)
         } label: {
             HStack(spacing: 8) {
-                FolderIconView(icon: folder.icon, size: 18)
+                ZStack {
+                    FolderIconView(icon: folder.icon, size: 18, color: ArkyvColor.accent)
+                        .opacity(isConfirming ? 0 : 1)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(ArkyvColor.textPrimary)
+                        .opacity(isConfirming ? 1 : 0)
+                        .scaleEffect(isConfirming ? 1 : 0.6)
+                }
+                .frame(width: 20, height: 20)
                 Text(folder.name)
                     .font(.arkyvLabel)
                     .foregroundStyle(ArkyvColor.textPrimary)
@@ -176,38 +226,29 @@ struct CaptureSheetView: View {
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .arkyvOutlinedSurface(
-                fill: isSuggested ? ArkyvColor.surface : ArkyvColor.card,
-                stroke: isSuggested ? ArkyvColor.textPrimary : ArkyvColor.border,
-                lineWidth: isSuggested ? 1.5 : 1
+                fill: isHighlighted ? ArkyvColor.surface : ArkyvColor.card,
+                stroke: isHighlighted ? ArkyvColor.textPrimary : ArkyvColor.border,
+                lineWidth: isHighlighted ? 1.5 : 1
             )
+            .scaleEffect(isConfirming ? 0.97 : 1)
         }
-        .disabled(!canSave)
-        .opacity(canSave ? 1 : 0.5)
+        .disabled(!canSave || isLocked)
+        .opacity(isLocked ? 0.4 : (canSave ? 1 : 0.5))
+        .animation(.easeOut(duration: 0.15), value: isConfirming)
+        // Arrival order, not styling: the suggested folder is simply already
+        // there; everything else settles in a beat behind it.
+        .opacity(isSuggested || gridSettled ? 1 : 0)
+        .offset(y: isSuggested || gridSettled ? 0 : 6)
+        .animation(.easeOut(duration: 0.22), value: gridSettled)
     }
 
-    private var newFolderButton: some View {
-        Button {
-            showNewFolder = true
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "plus").font(.system(size: 16))
-                Text("New Folder").font(.arkyvLabel)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(ArkyvColor.textDim)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .disabled(!canSave && isAdd)
-        .opacity((!canSave && isAdd) ? 0.5 : 1)
-    }
+    // MARK: Add-mode note field
 
     private var quickNoteField: some View {
         HStack(spacing: 8) {
             Image(systemName: "text.cursor").foregroundStyle(ArkyvColor.textDim).font(.system(size: 13))
             TextField(
-                isAdd ? "Add a note (optional)..." : "Add note...",
+                "Add a note (optional)...",
                 text: $note,
                 axis: .vertical
             )
@@ -220,23 +261,15 @@ struct CaptureSheetView: View {
         .arkyvOutlinedSurface(fill: ArkyvColor.card, stroke: ArkyvColor.border)
     }
 
-    private var recentFoldersRow: some View {
-        HStack {
-            Text("RECENT FOLDERS")
-                .font(.arkyvSection)
-                .foregroundStyle(ArkyvColor.textSecondary)
-            Spacer()
-            HStack(spacing: 12) {
-                ForEach(recentFolders) { folder in
-                    Button(folder.name) {
-                        guard canSave else { return }
-                        capture.file(effectiveDraft(), into: folder)
-                    }
-                    .font(ArkyvFont.sans(size: 13, weight: .medium))
-                    .foregroundStyle(canSave ? ArkyvColor.textSecondary : ArkyvColor.textDim)
-                    .disabled(!canSave)
-                }
-            }
+    /// Locks in a folder tap: haptic + checkmark fire immediately (via the
+    /// `confirmingFolderID` state change), then the real file+dismiss follows
+    /// after `confirmDelay` so the confirmation is actually seen.
+    private func confirm(_ folder: StoredFolder) {
+        guard canSave, confirmingFolderID == nil else { return }
+        confirmingFolderID = folder.id
+        Task {
+            try? await Task.sleep(for: confirmDelay)
+            capture.file(effectiveDraft(), into: folder)
         }
     }
 
@@ -274,13 +307,5 @@ struct CaptureSheetView: View {
               let saved = try? MediaStore.shared.save(image: image) else { return }
         stagedPhoto = (saved.filename, saved.size)
         capture.refreshSuggestion(for: CaptureDraft(kind: .image, localFilename: saved.filename))
-    }
-}
-
-/// Reports the drawer's content height so the presenter can fit the detent.
-private struct DrawerHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }

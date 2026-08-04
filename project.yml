@@ -8,12 +8,13 @@ options:
 
 settings:
   base:
-    DEVELOPMENT_TEAM: AZPJ6UN5SY
+    DEVELOPMENT_TEAM: 4Y8P7TF3A5
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
+    DEAD_CODE_STRIPPING: YES
 
 packages:
   ArkyvKit:
@@ -24,11 +25,11 @@ targets:
   Arkyv:
     type: application
     platform: iOS
+    scheme: {}
     sources:
       - path: Sources/iOS
       - path: Resources/Assets.xcassets
       - path: Resources/Fonts
-        type: folder
     dependencies:
       - package: ArkyvKit
       - target: ArkyvShare
@@ -72,7 +73,6 @@ targets:
       - path: Sources/Share
       - path: Resources/Assets.xcassets
       - path: Resources/Fonts
-        type: folder
     dependencies:
       - package: ArkyvKit
     settings:
@@ -107,7 +107,6 @@ targets:
       - path: Sources/macOS
       - path: Resources/Assets.xcassets
       - path: Resources/Fonts
-        type: folder
     dependencies:
       - package: ArkyvKit
     settings:

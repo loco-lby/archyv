@@ -2,9 +2,6 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 #endif
-#if canImport(CoreText)
-import CoreText
-#endif
 
 /// Typography tokens. Two families from Figma:
 /// - `Intel One Mono` for display / labels / folder names
@@ -41,21 +38,33 @@ public enum ArkyvFont {
         return .system(size: size, weight: weight)
     }
 
-    // MARK: - Registration
+    // MARK: - Verification
 
-    /// Registers the bundled `.ttf` files from the given bundle. Call once at
-    /// launch (and from the Share Extension). Safe to call more than once.
-    public static func registerFonts(in bundle: Bundle = .main) {
-        let names = [
-            "IntelOneMono-Regular", "IntelOneMono-Medium", "IntelOneMono-Bold",
-            "InstrumentSans",
-        ]
-        for name in names {
-            guard let url = bundle.url(forResource: name, withExtension: "ttf") else { continue }
-            var error: Unmanaged<CFError>?
-            CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
+    /// Every `.ttf` in `Resources/Fonts` is declared in each target's
+    /// `UIAppFonts` (see `project.yml`), so iOS registers them automatically
+    /// at process launch — manually calling `CTFontManagerRegisterFontsForURL`
+    /// on top of that double-registers the same files, which is what produced
+    /// the `GSFont: file already registered` console spam. There is nothing
+    /// left for this file to *do* at launch; `UIAppFonts` is the whole
+    /// registration story now.
+    ///
+    /// DEBUG-only: confirms the automatic registration actually worked, by
+    /// checking `UIFont(name:size:)` for each PostScript name this file
+    /// hands out via `mono(_:size:)` / `sans(size:weight:)`. If a bundling
+    /// regression (like the folder-reference bug this replaced) ever strips
+    /// a font back out of the bundle, this prints a clear failure instead of
+    /// letting the graceful system-font fallback hide it silently.
+    #if DEBUG
+    public static func verifyFontsAvailable() {
+        #if canImport(UIKit)
+        let postScriptNames = [Mono.regular.rawValue, Mono.medium.rawValue, Mono.bold.rawValue, sansName]
+        for name in postScriptNames {
+            let loaded = UIFont(name: name, size: 12) != nil
+            print("[ArkyvFont] \(name): \(loaded ? "loaded" : "NOT loaded — falling back to system font")")
         }
+        #endif
     }
+    #endif
 
     private static func fontIsRegistered(_ postScriptName: String) -> Bool {
         #if canImport(UIKit)

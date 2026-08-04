@@ -4,7 +4,8 @@ import SwiftUI
 /// Extension, and the macOS app. Asset images resolve from the hosting target's
 /// bundle (each app/extension bundles `Assets.xcassets`).
 
-/// Renders a `FolderIcon` as either an SF Symbol or an emoji glyph.
+/// Renders a `FolderIcon` as a Design System geometric glyph, an SF Symbol
+/// (legacy), or an emoji.
 public struct FolderIconView: View {
     let icon: FolderIcon
     var size: CGFloat
@@ -18,6 +19,10 @@ public struct FolderIconView: View {
 
     public var body: some View {
         switch icon.kind {
+        case .glyph:
+            let glyph = FolderGlyph(rawValue: icon.value) ?? .star
+            FolderGlyphView(glyph: glyph, size: size, color: color)
+                .frame(width: size + 2, height: size + 2)
         case .symbol:
             Image(systemName: icon.value)
                 .font(.system(size: size))

@@ -161,11 +161,11 @@ public struct Repository {
     public func seedIfEmpty() throws {
         guard try folders(includingDeleted: true).isEmpty else { return }
         let seeds: [(String, FolderIcon)] = [
-            ("Deadwest", .symbol("star")),
-            ("Cool Shit", .symbol("face.smiling")),
-            ("Recipes", .symbol("fork.knife")),
-            ("Japan 2026", .symbol("airplane")),
-            ("Inspiration", .symbol("paintpalette")),
+            ("Deadwest", .glyph(.star)),
+            ("Cool Shit", .glyph(.cross)),
+            ("Recipes", .glyph(.triangle)),
+            ("Japan 2026", .glyph(.circle)),
+            ("Inspiration", .glyph(.diamond)),
         ]
         for (index, seed) in seeds.enumerated() {
             let folder = StoredFolder(name: seed.0, icon: seed.1, sortOrder: index)

@@ -58,10 +58,16 @@ final class CaptureCoordinator {
     /// Catch screenshots taken while the app was backgrounded.
     func checkForScreenshots() { detector.checkForNewScreenshots() }
 
-    /// Present the screenshot drawer for an already-captured draft.
+    /// Present the screenshot drawer for an already-captured draft. The
+    /// `.screenshot` case always routes to `ScreenshotCaptureFlowView` (see
+    /// `CaptureSheetView`'s dispatcher) — never the old grid-based sheet, and
+    /// never the manual "+" / Photos-picker path.
     func present(_ draft: CaptureDraft) {
         suggestion = try? repo.suggestedFolder(for: draft)
         drawer = .screenshot(draft)
+        #if DEBUG
+        print("[CaptureCoordinator] presenting .screenshot drawer for draft \(draft.id) (suggestion: \(suggestion?.name ?? "none")) -> ScreenshotCaptureFlowView")
+        #endif
     }
 
     /// Present the in-app "Add to arkyv" drawer (photo picker + note).
@@ -91,7 +97,15 @@ final class CaptureCoordinator {
         suggestion = try? repo.suggestedFolder(for: draft)
     }
 
-    func dismiss() { drawer = nil }
+    func dismiss() {
+        #if DEBUG
+        print("[CaptureCoordinator] dismiss() called — drawer was \(drawer.map { "\($0.id)" } ?? "nil")")
+        #endif
+        drawer = nil
+        #if DEBUG
+        print("[CaptureCoordinator] drawer is now nil")
+        #endif
+    }
 
     #if DEBUG
     /// DEBUG helper: the Simulator can't create real screenshot assets, so this

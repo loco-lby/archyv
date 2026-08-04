@@ -7,8 +7,9 @@ struct RootView: View {
     @Environment(CaptureCoordinator.self) private var capture
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: Tab = .archive
-    /// Content-fitted height for the capture drawer (updated by the sheet).
-    @State private var drawerHeight: CGFloat = 480
+    /// Owned here, not by HomeView, so tapping the already-selected Archive
+    /// tab can reset it from outside without recreating HomeView itself.
+    @State private var archivePath = NavigationPath()
 
     enum Tab { case archive, settings }
 
@@ -20,8 +21,10 @@ struct RootView: View {
             Group {
                 switch tab {
                 case .archive:
-                    NavigationStack { HomeView() }
+                    NavigationStack(path: $archivePath) { HomeView(archivePath: $archivePath) }
                 case .settings:
+                    // No push navigation here yet, so no path to manage —
+                    // this pattern extends the same way if that changes.
                     NavigationStack { SettingsView() }
                 }
             }
@@ -31,37 +34,70 @@ struct RootView: View {
         }
         .background(ArkyvColor.background)
         .sheet(item: $capture.drawer) { drawer in
-            CaptureSheetView(drawer: drawer, measuredHeight: $drawerHeight)
-                .presentationDetents([.height(drawerHeight)])
-                .presentationDragIndicator(.visible)
+            // v0.02: the screenshot flow should read as "no unnecessary app
+            // chrome" — no grabber, no rounded sheet corners pretending
+            // there's something underneath. Add-mode keeps the softer sheet
+            // treatment since it's a genuine in-app action, not a borrowed
+            // moment.
+            CaptureSheetView(drawer: drawer)
+                .presentationDetents([.large])
+                .presentationDragIndicator(drawer.isAdd ? .visible : .hidden)
                 .presentationBackground(ArkyvColor.background)
-                .presentationCornerRadius(ArkyvRadius.sheet)
+                .presentationCornerRadius(drawer.isAdd ? ArkyvRadius.screen : 0)
         }
         .overlay(alignment: .bottom) {
             if let toast = capture.savedToast {
                 SavedToastView(toast: toast)
                     .padding(.bottom, 80)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity)
+                            .animation(.easeOut(duration: 0.3)),
+                        removal: .move(edge: .bottom).combined(with: .opacity)
+                            .animation(.easeIn(duration: 0.2))
+                    ))
                     .task(id: toast.id) {
-                        try? await Task.sleep(for: .seconds(2))
-                        withAnimation(.easeOut) { capture.savedToast = nil }
+                        // Motion spec: visible 3000ms, enter 300ms ease-out, exit 200ms ease-in.
+                        try? await Task.sleep(for: .seconds(3))
+                        capture.savedToast = nil
                     }
             }
         }
-        .animation(.spring(duration: 0.3), value: capture.savedToast)
-        .onChange(of: scenePhase) { _, phase in
+        // Ambient trigger for the toast's state change — the actual enter/exit
+        // curves live on the asymmetric transition above and take precedence.
+        .animation(.easeOut(duration: 0.3), value: capture.savedToast)
+        // `initial: true` is load-bearing: on a cold launch (e.g. the Action
+        // Button spawning a fresh process) `scenePhase` starts at `.active`
+        // directly — plain `.onChange` only fires on *transitions*, so
+        // without `initial: true` detection would never run on first launch,
+        // only on later foreground reactivations.
+        .onChange(of: scenePhase, initial: true) { _, phase in
             if phase == .active {
                 capture.startDetecting()
                 capture.checkForScreenshots()
             }
         }
+        .onChange(of: archivePath.count) { old, new in
+            log("archivePath.count changed: \(old) -> \(new)")
+        }
+    }
+
+    private func log(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        print("[RootView] \(message())")
+        #endif
     }
 
     private var bottomNav: some View {
         VStack(spacing: 0) {
             Rectangle().fill(ArkyvColor.border).frame(height: 1)
             HStack {
-                navItem(.archive, systemImage: "circle.badge.xmark", label: "Archive")
+                // nav-home: grid/squares icon, filled when active. Tapping
+                // while already active resets the Archive path to root
+                // instead of doing nothing.
+                navItem(.archive, systemImage: "square.grid.2x2", activeSystemImage: "square.grid.2x2.fill", label: "Archive") {
+                    log("Archive tab reselected — resetting archivePath to root (was count=\(archivePath.count))")
+                    archivePath = NavigationPath()
+                }
                 Spacer()
                 // Center mark — add existing photos / notes to a folder in-app.
                 Button {
@@ -73,26 +109,44 @@ struct RootView: View {
                 }
                 .offset(y: -6)
                 Spacer()
-                navItem(.settings, systemImage: "gearshape", label: "Settings")
+                // nav-menu: hamburger/lines icon per the Design System.
+                navItem(.settings, systemImage: "line.3.horizontal", label: "Settings")
             }
             .padding(.horizontal, 40)
-            .padding(.top, 12)
-            .frame(height: 64)
-            .background(ArkyvColor.background)
+            .frame(height: 44)
+            // Design System: nav bar background = `surface` (#1A1A1A). That's
+            // still `ArkyvColor.card`'s value until the token migration lands
+            // (next step) — using it here as a temporary correct-value stand-in.
+            .background(ArkyvColor.card)
         }
     }
 
-    private func navItem(_ target: Tab, systemImage: String, label: String) -> some View {
-        Button {
-            tab = target
+    /// - Parameters:
+    ///   - systemImage: default (inactive) glyph.
+    ///   - activeSystemImage: filled variant shown when this tab is selected.
+    ///     Defaults to `systemImage` for icons with no distinct filled form
+    ///     (e.g. `line.3.horizontal`, which reads as "filled" already).
+    ///   - onReselect: fires instead of `tab = target` when this tab is
+    ///     tapped while it's already the active one (e.g. pop to root).
+    ///     Tabs with nothing to reset can omit it and reselecting is a no-op,
+    ///     same as today.
+    private func navItem(_ target: Tab, systemImage: String, activeSystemImage: String? = nil, label: String, onReselect: (() -> Void)? = nil) -> some View {
+        let isActive = tab == target
+        return Button {
+            if isActive, let onReselect {
+                onReselect()
+            } else {
+                tab = target
+            }
         } label: {
             VStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 20))
+                // Navigation bar icons: 24×24pt, ~2px stroke.
+                Image(systemName: isActive ? (activeSystemImage ?? systemImage) : systemImage)
+                    .font(.system(size: 24, weight: .medium))
                 Text(label)
                     .font(ArkyvFont.sans(size: 11, weight: .medium))
             }
-            .foregroundStyle(tab == target ? ArkyvColor.textPrimary : ArkyvColor.textDim)
+            .foregroundStyle(isActive ? ArkyvColor.textPrimary : ArkyvColor.iconDefault)
         }
         .frame(width: 56)
     }

@@ -95,7 +95,7 @@ struct ItemDetailView: View {
         HStack {
             Button { dismiss() } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "arrow.left").font(.system(size: 20))
+                    Image(systemName: "chevron.backward").font(.system(size: 20, weight: .semibold))
                     Text(item.folder?.name ?? "Back").font(ArkyvFont.mono(.medium, size: 17))
                 }
                 .foregroundStyle(ArkyvColor.textPrimary)

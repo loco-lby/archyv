@@ -1,12 +1,13 @@
 import Foundation
 
 /// A folder's icon. Stored as a short token string in the `folders.icon`
-/// column. We support two forms so users can pick an emoji later while the
-/// seeded folders use crisp SF Symbols that match the Figma set:
-///   - `sf:star`     → SF Symbol "star"
-///   - `emoji:🔥`    → literal emoji
+/// column. Three forms:
+///   - `glyph:star`  → a Design System geometric `FolderGlyph` (the default,
+///                     on-brand set — star/triangle/circle/diamond/cross)
+///   - `sf:star`     → SF Symbol "star" (legacy; existing stored folders)
+///   - `emoji:🔥`    → literal emoji (future user picker)
 public struct FolderIcon: Codable, Hashable, Sendable {
-    public enum Kind: String, Codable, Sendable { case symbol, emoji }
+    public enum Kind: String, Codable, Sendable { case symbol, emoji, glyph }
     public var kind: Kind
     public var value: String
 
@@ -17,17 +18,21 @@ public struct FolderIcon: Codable, Hashable, Sendable {
 
     public static func symbol(_ name: String) -> FolderIcon { .init(kind: .symbol, value: name) }
     public static func emoji(_ char: String) -> FolderIcon { .init(kind: .emoji, value: char) }
+    public static func glyph(_ glyph: FolderGlyph) -> FolderIcon { .init(kind: .glyph, value: glyph.rawValue) }
 
     /// Encoded token stored in the DB.
     public var token: String {
         switch kind {
         case .symbol: return "sf:\(value)"
         case .emoji: return "emoji:\(value)"
+        case .glyph: return "glyph:\(value)"
         }
     }
 
     public init(token: String) {
-        if token.hasPrefix("sf:") {
+        if token.hasPrefix("glyph:") {
+            self = .init(kind: .glyph, value: String(token.dropFirst(6)))
+        } else if token.hasPrefix("sf:") {
             self = .symbol(String(token.dropFirst(3)))
         } else if token.hasPrefix("emoji:") {
             self = .emoji(String(token.dropFirst(6)))
@@ -38,15 +43,9 @@ public struct FolderIcon: Codable, Hashable, Sendable {
         }
     }
 
-    public static let `default` = FolderIcon.symbol("folder")
+    public static let `default` = FolderIcon.glyph(.star)
 
-    /// SF Symbols matching the Figma folder icons, offered in the icon picker.
-    public static let palette: [FolderIcon] = [
-        .symbol("star"), .symbol("face.smiling"), .symbol("fork.knife"),
-        .symbol("airplane"), .symbol("paintpalette"), .symbol("heart"),
-        .symbol("bolt"), .symbol("camera"), .symbol("book"),
-        .symbol("music.note"), .symbol("cart"), .symbol("tshirt"),
-        .symbol("house"), .symbol("map"), .symbol("lightbulb"),
-        .symbol("flame"), .symbol("leaf"), .symbol("gamecontroller"),
-    ]
+    /// The Design System's geometric folder-category set, offered in the
+    /// icon picker.
+    public static let palette: [FolderIcon] = FolderGlyph.allCases.map(FolderIcon.glyph)
 }

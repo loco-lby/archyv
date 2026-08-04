@@ -20,11 +20,19 @@ final class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        ArkyvFont.registerFonts(in: .main)
+        // Fonts register automatically via UIAppFonts — this just confirms
+        // it worked in this process too, in Debug builds only.
+        #if DEBUG
+        ArkyvFont.verifyFontsAvailable()
+        #endif
         view.backgroundColor = .clear
 
         // Ensure folders exist even on a fresh App Group container.
-        try? Repository(context: container.mainContext).seedIfEmpty()
+        let repo = Repository(context: container.mainContext)
+        try? repo.seedIfEmpty()
+
+        // ONE-TIME MIGRATION — safe to delete once all devices have run it.
+        IconMigration.runIfNeeded(repository: repo)
 
         let root = ShareDrawerView(
             container: container,

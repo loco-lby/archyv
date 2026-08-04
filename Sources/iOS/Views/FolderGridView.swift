@@ -2,9 +2,25 @@ import SwiftUI
 import SwiftData
 import ArkyvKit
 
+/// A stable, immutable navigation value for pushing to an item's detail
+/// view — same rationale as `FolderRoute` in HomeView.swift: `StoredItem` is
+/// a SwiftData `@Model` class, and using it directly as a NavigationPath
+/// value risks the same live-backing-data hash instability that caused
+/// folders to intermittently fail to open. `itemID` never changes for a
+/// given item's lifetime.
+private struct ItemRoute: Hashable {
+    let itemID: UUID
+}
+
 /// `screen-folder-view`: header + masonry grid of captures & notes.
 struct FolderGridView: View {
     @Bindable var folder: StoredFolder
+    /// Owned by RootView, threaded through HomeView. Item taps push onto
+    /// this same path (via `archivePath.append(ItemRoute(...))`), so
+    /// Archive's path reads: root → FolderRoute → ItemRoute, and Archive-tab
+    /// reselect (which resets the whole path to root) unwinds both levels
+    /// at once, same as it already does for a bare folder push.
+    @Binding var archivePath: NavigationPath
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
     @State private var searching = false
@@ -30,10 +46,22 @@ struct FolderGridView: View {
                 emptyState
             } else {
                 MasonryGrid(items: items, columns: 2, spacing: 12) { item in
-                    NavigationLink(value: item) {
+                    // Full-cell Button + manual append, not
+                    // NavigationLink(value: item) — same lesson as
+                    // HomeView's folder cards: don't put a live SwiftData
+                    // model in the NavigationPath. contentShape is set here
+                    // AND on ItemCardView's own body (see below) so the
+                    // whole visible tile is tappable, not just its
+                    // non-transparent pixels.
+                    Button {
+                        log("item-cell tap received (anywhere on cell): id=\(item.id) — archivePath.count before=\(archivePath.count)")
+                        archivePath.append(ItemRoute(itemID: item.id))
+                        log("archivePath.count after append: \(archivePath.count)")
+                    } label: {
                         ItemCardView(item: item)
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
@@ -42,10 +70,49 @@ struct FolderGridView: View {
         }
         .background(ArkyvColor.background)
         .safeAreaInset(edge: .top) { header }
-        .navigationDestination(for: StoredItem.self) { item in
-            ItemDetailView(item: item)
+        .navigationDestination(for: ItemRoute.self) { route in
+            if let item = resolveItem(route.itemID) {
+                ItemDetailView(item: item)
+                    .onAppear {
+                        log("item lookup succeeded for \(route.itemID)")
+                    }
+            } else {
+                missingItemView
+                    .onAppear {
+                        log("item lookup FAILED for \(route.itemID) — no matching StoredItem (deleted or otherwise missing)")
+                    }
+            }
         }
         .toolbar(.hidden, for: .navigationBar)
+    }
+
+    /// Resolves an `ItemRoute` back to its live `StoredItem` by `id`. Looks
+    /// at `folder.items` directly (not the search-filtered `items` computed
+    /// property above) so a route pushed before a search was typed still
+    /// resolves correctly. Plain function, not `@ViewBuilder` — it returns
+    /// a model, not a View.
+    private func resolveItem(_ id: UUID) -> StoredItem? {
+        folder.items.first(where: { $0.id == id && !$0.isDeleted })
+    }
+
+    private var missingItemView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "questionmark.square.dashed")
+                .font(.system(size: 28))
+                .foregroundStyle(ArkyvColor.textDim)
+            Text("This item no longer exists")
+                .font(.arkyvLabel)
+                .foregroundStyle(ArkyvColor.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 80)
+        .background(ArkyvColor.background)
+    }
+
+    private func log(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        print("[FolderGridView] \(message())")
+        #endif
     }
 
     private var header: some View {
@@ -53,7 +120,7 @@ struct FolderGridView: View {
             HStack {
                 Button { dismiss() } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "arrow.left").font(.system(size: 20))
+                        Image(systemName: "chevron.backward").font(.system(size: 20, weight: .semibold))
                         Text("Archive").font(ArkyvFont.mono(.medium, size: 17))
                     }
                     .foregroundStyle(ArkyvColor.textPrimary)
@@ -136,18 +203,29 @@ struct ItemCardView: View {
     @Bindable var item: StoredItem
 
     var body: some View {
-        switch item.kind {
-        case .screenshot, .image:
-            LocalImageView(filename: item.localFilename)
-                .aspectRatio(item.aspectRatio, contentMode: .fit)
-                .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
-                .overlay(alignment: .topLeading) {
-                    if item.isFavorite { favoriteBadge }
-                }
-        case .note, .text:
-            noteCard
+        Group {
+            switch item.kind {
+            case .screenshot, .image:
+                LocalImageView(filename: item.localFilename)
+                    .aspectRatio(item.aspectRatio, contentMode: .fit)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+                    // Decorative — the cell's tap belongs entirely to the
+                    // enclosing Button in FolderGridView.
+                    .allowsHitTesting(false)
+                    .overlay(alignment: .topLeading) {
+                        if item.isFavorite {
+                            favoriteBadge.allowsHitTesting(false)
+                        }
+                    }
+            case .note, .text:
+                noteCard
+            }
         }
+        // Same reasoning as FolderCardView: set on this view's own
+        // top-level content, not just on the wrapping Button, so the
+        // entire tile — image included — is reliably one tap target.
+        .contentShape(Rectangle())
     }
 
     private var noteCard: some View {

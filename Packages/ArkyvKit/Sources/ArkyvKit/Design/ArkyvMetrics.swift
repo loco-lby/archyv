@@ -8,8 +8,10 @@ public enum ArkyvRadius {
     public static let pill: CGFloat = 4
     /// Cards & media thumbnails — `12px`
     public static let card: CGFloat = 12
-    /// Bottom sheet — `28px`
-    public static let sheet: CGFloat = 28
+    /// Bottom sheet top corners — `16px` (Design System `radius-sheet`)
+    public static let sheet: CGFloat = 16
+    /// Dropdown row corners (folder picker) — `8px` (Design System `radius-sm`)
+    public static let row: CGFloat = 8
     /// Sheet container / screen corners — `32px`
     public static let screen: CGFloat = 32
 }

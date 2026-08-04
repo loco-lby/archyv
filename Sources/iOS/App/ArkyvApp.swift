@@ -9,7 +9,11 @@ struct ArkyvApp: App {
     @State private var capture: CaptureCoordinator
 
     init() {
-        ArkyvFont.registerFonts()
+        // Fonts register automatically via UIAppFonts — this just confirms
+        // it worked, in Debug builds only.
+        #if DEBUG
+        ArkyvFont.verifyFontsAvailable()
+        #endif
         let container = ArkyvStore.makeModelContainer()
         self.modelContainer = container
         _capture = State(initialValue: CaptureCoordinator(container: container))
@@ -17,6 +21,9 @@ struct ArkyvApp: App {
         // Seed the folders from the design on first run.
         let repo = Repository(context: container.mainContext)
         try? repo.seedIfEmpty()
+
+        // ONE-TIME MIGRATION — safe to delete once all devices have run it.
+        IconMigration.runIfNeeded(repository: repo)
     }
 
     var body: some Scene {

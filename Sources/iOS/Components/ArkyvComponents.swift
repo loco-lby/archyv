@@ -11,6 +11,10 @@ struct LocalImageView: View {
     var contentMode: ContentMode = .fill
 
     @State private var image: UIImage?
+    /// The filename `image` actually reflects — lets a stale in-flight load
+    /// (from a filename that's since changed again) recognize itself as
+    /// stale and discard its result instead of clobbering a newer one.
+    @State private var loadedFilename: String?
     @State private var didFail = false
 
     var body: some View {
@@ -23,6 +27,12 @@ struct LocalImageView: View {
                 placeholder
             }
         }
+        // Cross-fade rather than a hard cut: when a folder's cover image
+        // changes (e.g. a new capture just landed in it), the old image
+        // stays on screen and gently dissolves into the new one instead of
+        // the view visibly rebuilding — one less thing churning in the
+        // folder card right as the user might be tapping it.
+        .animation(.easeInOut(duration: 0.2), value: loadedFilename)
         .task(id: filename) { await load() }
     }
 
@@ -41,11 +51,18 @@ struct LocalImageView: View {
 
     private func load() async {
         guard let filename else { return }
+        guard filename != loadedFilename else { return }
+        didFail = false
         let data = await Task.detached(priority: .userInitiated) {
             MediaStore.shared.data(for: filename)
         }.value
+        // The `filename` this view wants may have changed again while this
+        // load was in flight — discard a stale result rather than showing
+        // (or briefly flashing) an image that's no longer the right one.
+        guard filename == self.filename else { return }
         if let data, let ui = UIImage(data: data) {
             image = ui
+            loadedFilename = filename
         } else {
             didFail = true
         }
