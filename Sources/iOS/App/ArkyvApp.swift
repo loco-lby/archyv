@@ -7,6 +7,7 @@ struct ArkyvApp: App {
     /// Shared local-first database (App Group container).
     let modelContainer: ModelContainer
     @State private var capture: CaptureCoordinator
+    @State private var noteFocusSignal = NoteFocusSignal()
 
     init() {
         // Fonts register automatically via UIAppFonts — this just confirms
@@ -30,6 +31,7 @@ struct ArkyvApp: App {
         WindowGroup {
             RootView()
                 .environment(capture)
+                .environment(noteFocusSignal)
                 .tint(ArkyvColor.textPrimary)
                 .preferredColorScheme(.dark)
         }

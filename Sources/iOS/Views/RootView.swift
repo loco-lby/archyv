@@ -5,6 +5,7 @@ import ArkyvKit
 /// capture drawer, and the saved-confirmation toast.
 struct RootView: View {
     @Environment(CaptureCoordinator.self) private var capture
+    @Environment(NoteFocusSignal.self) private var noteFocus
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: Tab = .archive
     /// Owned here, not by HomeView, so tapping the already-selected Archive
@@ -30,8 +31,21 @@ struct RootView: View {
             }
             .padding(.bottom, 64)
 
-            bottomNav
+            // A plain `if`, not `.hidden()`/`.opacity(0)` — those still
+            // occupy layout space and (for `.hidden()`) still exist in the
+            // tree, and this exact view is the thing that was rising above
+            // the keyboard: it lives in this ZStack, a sibling of the
+            // NavigationStack that (several levels deep) hosts the note
+            // composer, so it inherits the `.keyboard` safe-area inset same
+            // as anything else here would. Removing it from the tree
+            // entirely — not just visually — is what actually keeps it out
+            // of layout and hit-testing while a note has focus.
+            if !noteFocus.isActive {
+                bottomNav
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.2), value: noteFocus.isActive)
         .background(ArkyvColor.background)
         .sheet(item: $capture.drawer) { drawer in
             // v0.02: the screenshot flow should read as "no unnecessary app

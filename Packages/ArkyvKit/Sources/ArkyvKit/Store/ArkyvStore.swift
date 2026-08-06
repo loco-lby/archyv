@@ -107,6 +107,23 @@ public struct Repository {
         try context.save()
     }
 
+    /// Updates an item's note body. Whitespace-only text normalizes to
+    /// `nil` — there's no value in persisting a note that's just spaces,
+    /// and this keeps "cleared the note" and "never wrote one" the same
+    /// state rather than two representations of "empty." No-ops (skips the
+    /// write entirely) when the normalized value already matches, so
+    /// callers doing autosave with multiple flush triggers (debounce, focus
+    /// loss, backgrounding, etc.) can call this redundantly without
+    /// generating pointless `dirty`/`updatedAt` churn.
+    public func updateNote(_ item: StoredItem, body: String?) throws {
+        let trimmed = body?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        guard normalized != item.noteBody else { return }
+        item.noteBody = normalized
+        touch(item)
+        try context.save()
+    }
+
     public func softDelete(_ item: StoredItem) throws {
         item.isDeleted = true
         touch(item)
