@@ -34,6 +34,10 @@ final class ShareViewController: UIViewController {
         // ONE-TIME MIGRATION — safe to delete once all devices have run it.
         IconMigration.runIfNeeded(repository: repo)
 
+        // ONE-TIME BACKFILL — additive only, safe to delete once all
+        // devices have run it. See MembershipMigration.swift.
+        MembershipMigration.runIfNeeded(repository: repo)
+
         let root = ShareDrawerView(
             container: container,
             load: { [weak self] in await self?.extractDraft() },

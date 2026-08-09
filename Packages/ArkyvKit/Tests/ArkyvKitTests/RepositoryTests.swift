@@ -54,4 +54,151 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(FolderIcon(token: "emoji:🔥"), .emoji("🔥"))
         XCTAssertEqual(FolderIcon.symbol("heart").token, "sf:heart")
     }
+
+    // MARK: - MembershipMigration (Milestone A backfill)
+
+    @MainActor
+    func testMembershipBackfillCreatesOneMembershipForLegacyFolder() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), into: folder)
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        let memberships = item.memberships.filter { !$0.isDeleted }
+        XCTAssertEqual(memberships.count, 1)
+        XCTAssertEqual(memberships.first?.folder?.id, folder.id)
+        XCTAssertEqual(memberships.first?.item?.id, item.id)
+    }
+
+    @MainActor
+    func testMembershipBackfillSkipsItemsWithNoLegacyFolder() throws {
+        let repo = try makeRepo()
+        // There's no "unfiled" capture path yet (Milestone B), so an
+        // unfiled legacy item is simulated by inserting a StoredItem
+        // directly with folder: nil — the exact shape a real never-filed
+        // item already has today.
+        let item = StoredItem(kind: .note, noteBody: "loose")
+        repo.context.insert(item)
+        try repo.context.save()
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 0)
+    }
+
+    @MainActor
+    func testMembershipBackfillIsIdempotent() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        _ = try repo.fileCapture(.note("hello"), into: folder)
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+        let countAfterFirst = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>()).count
+
+        // Running it again — including via a fresh Repository/second call —
+        // must not create a second row for the same (item, folder) pair.
+        try MembershipMigration.backfillMemberships(repository: repo)
+        let countAfterSecond = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>()).count
+
+        XCTAssertEqual(countAfterFirst, 1)
+        XCTAssertEqual(countAfterSecond, 1)
+    }
+
+    @MainActor
+    func testMembershipBackfillSkipsWhenEquivalentMembershipAlreadyExists() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), into: folder)
+
+        // Simulate a membership that already exists for some other reason
+        // (e.g. a partially-completed prior run) before the backfill runs.
+        let existing = StoredFolderMembership(item: item, folder: folder)
+        repo.context.insert(existing)
+        try repo.context.save()
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 1)
+    }
+
+    @MainActor
+    func testMembershipBackfillGivesEachItemItsOwnMembership() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let itemA = try repo.fileCapture(.note("a"), into: folder)
+        let itemB = try repo.fileCapture(.note("b"), into: folder)
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        XCTAssertEqual(itemA.memberships.filter { !$0.isDeleted }.count, 1)
+        XCTAssertEqual(itemB.memberships.filter { !$0.isDeleted }.count, 1)
+        XCTAssertNotEqual(itemA.memberships.first?.id, itemB.memberships.first?.id)
+        XCTAssertEqual(folder.memberships.filter { !$0.isDeleted }.count, 2)
+    }
+
+    @MainActor
+    func testMembershipBackfillDoesNotMutateItemFields() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .image, localFilename: "abc.jpg", noteBody: "keep me"),
+            into: folder
+        )
+        try repo.toggleFavorite(item)
+        let noteBefore = item.noteBody
+        let favoriteBefore = item.isFavorite
+        let filenameBefore = item.localFilename
+        let createdAtBefore = item.createdAt
+        let updatedAtBefore = item.updatedAt
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        XCTAssertEqual(item.noteBody, noteBefore)
+        XCTAssertEqual(item.isFavorite, favoriteBefore)
+        XCTAssertEqual(item.localFilename, filenameBefore)
+        XCTAssertEqual(item.createdAt, createdAtBefore)
+        XCTAssertEqual(item.updatedAt, updatedAtBefore)
+    }
+
+    @MainActor
+    func testLegacyFolderRelationshipStillWorksAfterMigration() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), into: folder)
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        XCTAssertEqual(item.folder?.id, folder.id)
+        XCTAssertEqual(try repo.items(in: folder).count, 1)
+        XCTAssertEqual(folder.referenceCount, 1)
+    }
+
+    @MainActor
+    func testMembershipBackfillSkipsDeletedItems() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("gone"), into: folder)
+        try repo.softDelete(item)
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 0)
+    }
+
+    @MainActor
+    func testMembershipBackfillSkipsItemsPointingAtADeletedFolder() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Ghost", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("orphan"), into: folder)
+        // The exact "orphaned legacy assignment" shape Milestone B will
+        // eventually allow (folder gone, item surviving) — the backfill
+        // must not manufacture a membership into a dead folder.
+        folder.isDeleted = true
+        try repo.context.save()
+
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 0)
+    }
 }

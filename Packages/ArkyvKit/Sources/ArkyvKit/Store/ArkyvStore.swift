@@ -5,7 +5,7 @@ import SwiftData
 /// Share Extension, and (later) the sync engine. The container lives in the
 /// App Group so every process reads/writes the same local database.
 public enum ArkyvStore {
-    public static let schema = Schema([StoredFolder.self, StoredItem.self])
+    public static let schema = Schema([StoredFolder.self, StoredItem.self, StoredFolderMembership.self])
 
     /// Shared on-disk container. Falls back to an in-memory store if the
     /// on-disk store can't be opened, so the UI never hard-crashes at launch.

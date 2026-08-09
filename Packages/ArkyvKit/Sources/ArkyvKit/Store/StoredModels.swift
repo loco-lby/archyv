@@ -25,6 +25,15 @@ public final class StoredFolder {
     @Relationship(deleteRule: .cascade, inverse: \StoredItem.folder)
     public var items: [StoredItem]
 
+    /// v0.2 additive model: this folder's `StoredFolderMembership` rows —
+    /// the new multi-folder join, living alongside (not replacing) `items`
+    /// above. Cascade here only removes the membership rows themselves when
+    /// a folder is hard-deleted; it does NOT cascade to `StoredItem`, so a
+    /// hard-deleted folder can never take an item down through this
+    /// relationship. Nothing reads this yet — see `MembershipMigration`.
+    @Relationship(deleteRule: .cascade, inverse: \StoredFolderMembership.folder)
+    public var memberships: [StoredFolderMembership]
+
     public init(
         id: UUID = UUID(),
         userID: UUID? = nil,
@@ -44,6 +53,7 @@ public final class StoredFolder {
         self.isDeleted = false
         self.remoteSyncedAt = nil
         self.items = []
+        self.memberships = []
     }
 
     public var icon: FolderIcon {
@@ -92,6 +102,13 @@ public final class StoredItem {
     public var isDeleted: Bool
     public var remoteSyncedAt: Date?
 
+    /// v0.2 additive model: this item's `StoredFolderMembership` rows — the
+    /// new multi-folder join, living alongside (not replacing) `folder`
+    /// above. `folder` remains the sole source of truth for existing
+    /// behavior until Milestone B. See `MembershipMigration`.
+    @Relationship(deleteRule: .cascade, inverse: \StoredFolderMembership.item)
+    public var memberships: [StoredFolderMembership]
+
     public init(
         id: UUID = UUID(),
         userID: UUID? = nil,
@@ -130,6 +147,7 @@ public final class StoredItem {
         self.dirty = true
         self.isDeleted = false
         self.remoteSyncedAt = nil
+        self.memberships = []
     }
 
     public var kind: ItemKind {
@@ -145,5 +163,40 @@ public final class StoredItem {
     public var aspectRatio: Double {
         guard aspectWidth > 0, aspectHeight > 0 else { return 1 }
         return aspectWidth / aspectHeight
+    }
+}
+
+/// v0.2 canonical model: one row per (item, folder) membership. An item may
+/// have zero, one, or many of these — the replacement for the legacy
+/// single-owner `StoredItem.folder` relationship, which this type lives
+/// *alongside* rather than replaces for now (see `MembershipMigration`).
+/// "Unfiled" is not a stored flag — it's simply an item with zero active
+/// (non-`isDeleted`) memberships.
+@Model
+public final class StoredFolderMembership {
+    @Attribute(.unique) public var id: UUID
+    public var item: StoredItem?
+    public var folder: StoredFolder?
+    public var createdAt: Date
+
+    // Sync bookkeeping — same shape as StoredFolder/StoredItem, for Phase 2
+    // symmetry (used from Phase 2 onward).
+    public var dirty: Bool
+    public var isDeleted: Bool
+    public var remoteSyncedAt: Date?
+
+    public init(
+        id: UUID = UUID(),
+        item: StoredItem? = nil,
+        folder: StoredFolder? = nil,
+        createdAt: Date = .now
+    ) {
+        self.id = id
+        self.item = item
+        self.folder = folder
+        self.createdAt = createdAt
+        self.dirty = true
+        self.isDeleted = false
+        self.remoteSyncedAt = nil
     }
 }
