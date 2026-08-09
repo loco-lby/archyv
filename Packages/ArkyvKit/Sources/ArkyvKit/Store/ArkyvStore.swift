@@ -55,27 +55,68 @@ public struct Repository {
         try context.save()
     }
 
+    /// Soft-deletes `folder`. As of v0.2 this NEVER touches `StoredItem` —
+    /// only the folder itself and its `StoredFolderMembership` rows are
+    /// deactivated. A reference that was only in this folder survives with
+    /// zero active memberships (naturally "Unfiled" — see
+    /// `StoredFolderMembership`'s doc comment); a reference also in other
+    /// folders keeps those memberships untouched. Notes, favorites, media
+    /// files, and every other item field are never touched here.
+    ///
+    /// This replaces the pre-v0.2 behavior, which iterated `folder.items`
+    /// and marked every one of them `isDeleted` too — i.e. deleting a
+    /// folder used to destroy its contents. That's exactly what the new
+    /// Archive model forbids ("removing a folder membership never deletes
+    /// the reference"), so it's gone as of this milestone.
     public func softDelete(_ folder: StoredFolder) throws {
         folder.isDeleted = true
         touch(folder)
-        for item in folder.items { item.isDeleted = true; touch(item) }
+        for membership in folder.memberships where !membership.isDeleted {
+            membership.isDeleted = true
+            membership.dirty = true
+        }
         try context.save()
     }
 
     // MARK: Items
 
+    /// Items currently in `folder`, derived from active
+    /// `StoredFolderMembership` rows — the v0.2 canonical read. Same
+    /// signature/behavior contract as before (non-deleted items, newest
+    /// first); only what it consults internally has changed, so existing
+    /// callers don't need to change.
     public func items(in folder: StoredFolder) throws -> [StoredItem] {
-        folder.items
+        folder.memberships
+            .filter { !$0.isDeleted }
+            .compactMap { $0.item }
             .filter { !$0.isDeleted }
             .sorted { $0.createdAt > $1.createdAt }
     }
 
-    /// Files a capture into a folder. This is the "one tap saves it" path.
+    /// Files a capture, creating one `StoredFolderMembership` per folder
+    /// supplied — zero, one, or many, per the v0.2 canonical model. This is
+    /// the repository's source of truth for membership going forward.
+    /// Deleted folders are ignored; duplicate folders in `folders` produce
+    /// exactly one membership each.
+    ///
+    /// TRANSITIONAL COMPATIBILITY DEBT: every current UI surface (HomeView's
+    /// folder list, FolderGridView's masonry grid, ItemDetailView's header)
+    /// still reads the *legacy* `StoredFolder.items` / `StoredItem.folder`
+    /// relationship, not memberships — nothing reads memberships yet (see
+    /// Milestone A). So this also sets `item.folder` to the first folder in
+    /// `folders` (or `nil` if empty), purely so an item filed today still
+    /// shows up wherever the current UI already expects to find it. This is
+    /// NOT bidirectional sync with the full membership set: if more than
+    /// one folder is passed, `item.folder` reflects only the first, and the
+    /// legacy relationship is never consulted or corrected again after this
+    /// call. Remove this assignment once the UI that reads `folder`/`items`
+    /// is replaced by membership-aware views (later milestone).
     @discardableResult
-    public func fileCapture(_ draft: CaptureDraft, into folder: StoredFolder) throws -> StoredItem {
+    public func fileCapture(_ draft: CaptureDraft, folders: [StoredFolder] = []) throws -> StoredItem {
+        let validFolders = folders.filter { !$0.isDeleted }
         let item = StoredItem(
-            userID: folder.userID,
-            folder: folder,
+            userID: validFolders.first?.userID,
+            folder: validFolders.first,
             kind: draft.kind,
             localFilename: draft.localFilename,
             ocrText: draft.ocrText,
@@ -88,17 +129,51 @@ public struct Repository {
             sourceDevice: draft.sourceDevice
         )
         context.insert(item)
-        touch(folder)
+
+        var seenFolderIDs = Set<UUID>()
+        for folder in validFolders where seenFolderIDs.insert(folder.id).inserted {
+            context.insert(StoredFolderMembership(item: item, folder: folder))
+            touch(folder)
+        }
+
         try context.save()
         return item
     }
 
+    /// Legacy single-folder convenience — still the "one tap saves it" path
+    /// every current UI call site uses (`ScreenshotCaptureFlowView`,
+    /// `CaptureCoordinator`, the Share Extension). Internally just
+    /// `fileCapture(_:folders:)` with a one-element array, so none of those
+    /// call sites need to change shape for this milestone.
+    @discardableResult
+    public func fileCapture(_ draft: CaptureDraft, into folder: StoredFolder) throws -> StoredItem {
+        try fileCapture(draft, folders: [folder])
+    }
+
+    /// Reassigns `item`'s legacy single destination folder — the semantics
+    /// Item Detail's "Move to..." UI already expects, unchanged from the
+    /// caller's point of view.
+    ///
+    /// FIX: `items(in:)` became membership-backed in Milestone B, but this
+    /// method originally only reassigned the legacy `item.folder` field —
+    /// so a moved item could still show up in its *old* folder (via its
+    /// stale membership row) and not its new one. This now also reconciles
+    /// membership via `setMemberships`, so after this call the active
+    /// membership set is exactly `{ folder }`, matching what "Move to..."
+    /// visibly does. `item.folder = folder` remains as transitional legacy
+    /// compatibility (same debt already documented on `fileCapture`) — the
+    /// future membership popover replaces this single-destination UX
+    /// entirely and will call `setMemberships` directly.
+    ///
+    /// No-ops (ignores) if `item` or `folder` is deleted, consistent with
+    /// `addMembership`/`removeMembership`. Idempotent: moving to the
+    /// already-current sole folder touches nothing and saves nothing,
+    /// because `setMemberships` itself no-ops when the desired set already
+    /// matches.
     public func move(_ item: StoredItem, to folder: StoredFolder) throws {
-        let old = item.folder
+        guard !item.isDeleted, !folder.isDeleted else { return }
         item.folder = folder
-        touch(item); touch(folder)
-        if let old { touch(old) }
-        try context.save()
+        try setMemberships(item, to: [folder])
     }
 
     public func toggleFavorite(_ item: StoredItem) throws {
@@ -142,6 +217,90 @@ public struct Repository {
                 .compactMap { $0 } + item.tags
             return haystack.contains { $0.lowercased().contains(q) }
         }
+    }
+
+    // MARK: Folder Memberships (v0.2 canonical model)
+    //
+    // The repository-level source of truth for "which folders is this item
+    // in" going forward. Nothing in the current UI reads these yet (see
+    // Milestone A) — this section exists so the future Shared Save Screen
+    // and membership-editing UI have a stable API to build on, without this
+    // milestone touching any view.
+
+    /// Active memberships for `item` — non-deleted rows pointing at a
+    /// non-deleted folder. An item with an empty result here is Unfiled;
+    /// that's derived, never a stored flag.
+    public func memberships(for item: StoredItem) throws -> [StoredFolderMembership] {
+        item.memberships.filter { !$0.isDeleted && $0.folder?.isDeleted == false }
+    }
+
+    /// The folders `item` currently belongs to, derived from active
+    /// memberships.
+    public func folders(for item: StoredItem) throws -> [StoredFolder] {
+        try memberships(for: item).compactMap(\.folder)
+    }
+
+    /// Adds `item` to `folder` if it isn't already an active member.
+    /// Idempotent: a no-op (not an error) if the membership already exists,
+    /// or if either side is deleted.
+    public func addMembership(_ item: StoredItem, to folder: StoredFolder) throws {
+        guard !item.isDeleted, !folder.isDeleted else { return }
+        let alreadyMember = item.memberships.contains { !$0.isDeleted && $0.folder?.id == folder.id }
+        guard !alreadyMember else { return }
+        context.insert(StoredFolderMembership(item: item, folder: folder))
+        touch(item)
+        touch(folder)
+        try context.save()
+    }
+
+    /// Removes `item` from `folder` if an active membership exists.
+    /// Idempotent: a harmless no-op if it doesn't — removing a nonexistent
+    /// membership is not an error. Never touches `item.isDeleted`; an item
+    /// losing its last membership here simply becomes Unfiled.
+    public func removeMembership(_ item: StoredItem, from folder: StoredFolder) throws {
+        let matches = item.memberships.filter { !$0.isDeleted && $0.folder?.id == folder.id }
+        guard !matches.isEmpty else { return }
+        for membership in matches {
+            membership.isDeleted = true
+            membership.dirty = true
+        }
+        touch(item)
+        touch(folder)
+        try context.save()
+    }
+
+    /// Reconciles `item`'s membership set to exactly `folders` — adds
+    /// whatever's missing, removes whatever's no longer desired, and
+    /// otherwise leaves everything alone. Passing an empty array removes
+    /// every membership, leaving the item alive and Unfiled. Calling this
+    /// again with an equivalent desired set is a no-op: no new rows, and
+    /// nothing (item, folder, or any membership) gets touched or saved.
+    public func setMemberships(_ item: StoredItem, to folders: [StoredFolder]) throws {
+        let validDesired = folders.filter { !$0.isDeleted }
+        let desiredIDs = Set(validDesired.map(\.id))
+        let current = try memberships(for: item)
+        let currentIDs = Set(current.compactMap { $0.folder?.id })
+
+        guard desiredIDs != currentIDs else { return }
+
+        var touchedFolders: [UUID: StoredFolder] = [:]
+
+        for membership in current where !desiredIDs.contains(membership.folder?.id ?? UUID()) {
+            membership.isDeleted = true
+            membership.dirty = true
+            if let folder = membership.folder { touchedFolders[folder.id] = folder }
+        }
+
+        let foldersByID = Dictionary(validDesired.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for id in desiredIDs.subtracting(currentIDs) {
+            guard let folder = foldersByID[id] else { continue }
+            context.insert(StoredFolderMembership(item: item, folder: folder))
+            touchedFolders[folder.id] = folder
+        }
+
+        touchedFolders.values.forEach { touch($0) }
+        touch(item)
+        try context.save()
     }
 
     // MARK: Suggestion (rule-based for MVP; AI later)

@@ -201,4 +201,321 @@ final class RepositoryTests: XCTestCase {
 
         XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 0)
     }
+
+    // MARK: - Repository Membership API (Milestone B)
+
+    @MainActor
+    func testAddMembershipCreatesOneMembership() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [])
+
+        try repo.addMembership(item, to: deadwest)
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 1)
+        XCTAssertEqual(try repo.folders(for: item).map(\.id), [deadwest.id])
+    }
+
+    @MainActor
+    func testAddMultipleMembershipsKeepsOneItemRow() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let japan = try repo.createFolder(name: "Japan 2026", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [])
+
+        try repo.addMembership(item, to: deadwest)
+        try repo.addMembership(item, to: inspiration)
+        try repo.addMembership(item, to: japan)
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 3)
+        let allItems = try repo.context.fetch(FetchDescriptor<StoredItem>())
+        XCTAssertEqual(allItems.filter { $0.id == item.id }.count, 1)
+    }
+
+    @MainActor
+    func testAddingSameMembershipTwiceDoesNotDuplicate() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [])
+
+        try repo.addMembership(item, to: deadwest)
+        try repo.addMembership(item, to: deadwest)
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 1)
+    }
+
+    @MainActor
+    func testRemovingOneMembershipPreservesOthers() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest, inspiration])
+
+        try repo.removeMembership(item, from: deadwest)
+
+        let remaining = try repo.folders(for: item)
+        XCTAssertEqual(remaining.map(\.id), [inspiration.id])
+    }
+
+    @MainActor
+    func testRemovingFinalMembershipLeavesItemAliveAndUnfiled() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.removeMembership(item, from: deadwest)
+
+        XCTAssertFalse(item.isDeleted)
+        XCTAssertEqual(try repo.memberships(for: item).count, 0)
+    }
+
+    @MainActor
+    func testRemovingNonexistentMembershipIsHarmlessNoOp() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [])
+
+        try repo.removeMembership(item, from: deadwest) // never was a member
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 0)
+    }
+
+    @MainActor
+    func testSetMembershipsReconcilesToExactDesiredSet() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let recipes = try repo.createFolder(name: "Recipes", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest, recipes])
+
+        try repo.setMemberships(item, to: [deadwest, inspiration])
+
+        let resultIDs = Set(try repo.folders(for: item).map(\.id))
+        XCTAssertEqual(resultIDs, Set([deadwest.id, inspiration.id]))
+    }
+
+    @MainActor
+    func testSetMembershipsWithEmptyCollectionLeavesItemAliveAndUnfiled() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.setMemberships(item, to: [])
+
+        XCTAssertFalse(item.isDeleted)
+        XCTAssertEqual(try repo.memberships(for: item).count, 0)
+    }
+
+    @MainActor
+    func testSetMembershipsWithSameDesiredSetIsANoOp() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+        let membershipCountBefore = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>()).count
+        let itemUpdatedAtBefore = item.updatedAt
+        let folderUpdatedAtBefore = deadwest.updatedAt
+
+        try repo.setMemberships(item, to: [deadwest])
+
+        let membershipCountAfter = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>()).count
+        XCTAssertEqual(membershipCountAfter, membershipCountBefore)
+        XCTAssertEqual(item.updatedAt, itemUpdatedAtBefore)
+        XCTAssertEqual(deadwest.updatedAt, folderUpdatedAtBefore)
+    }
+
+    // MARK: - Folder Delete Semantics (Milestone B)
+
+    @MainActor
+    func testDeletingFolderDoesNotMarkItemDeleted() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.softDelete(deadwest)
+
+        XCTAssertFalse(item.isDeleted)
+    }
+
+    @MainActor
+    func testDeletingFolderRemovesItsMemberships() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.softDelete(deadwest)
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 0)
+    }
+
+    @MainActor
+    func testItemInTwoFoldersSurvivesDeletionOfOne() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest, inspiration])
+
+        try repo.softDelete(deadwest)
+
+        let remaining = try repo.folders(for: item)
+        XCTAssertEqual(remaining.map(\.id), [inspiration.id])
+        XCTAssertFalse(item.isDeleted)
+    }
+
+    @MainActor
+    func testItemSurvivesWithZeroMembershipsWhenOnlyFolderIsDeleted() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.softDelete(deadwest)
+
+        XCTAssertFalse(item.isDeleted)
+        XCTAssertEqual(try repo.memberships(for: item).count, 0)
+    }
+
+    @MainActor
+    func testFolderDeletionDoesNotMutateItemFields() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .image, localFilename: "abc.jpg", noteBody: "keep me"),
+            folders: [deadwest]
+        )
+        try repo.toggleFavorite(item)
+        let noteBefore = item.noteBody
+        let favoriteBefore = item.isFavorite
+        let filenameBefore = item.localFilename
+        let createdAtBefore = item.createdAt
+        let updatedAtBefore = item.updatedAt
+
+        try repo.softDelete(deadwest)
+
+        XCTAssertEqual(item.noteBody, noteBefore)
+        XCTAssertEqual(item.isFavorite, favoriteBefore)
+        XCTAssertEqual(item.localFilename, filenameBefore)
+        XCTAssertEqual(item.createdAt, createdAtBefore)
+        XCTAssertEqual(item.updatedAt, updatedAtBefore)
+    }
+
+    // MARK: - fileCapture with folder sets (Milestone B)
+
+    @MainActor
+    func testFileCaptureWithZeroFoldersSucceeds() throws {
+        let repo = try makeRepo()
+        let item = try repo.fileCapture(.note("hello"), folders: [])
+
+        XCTAssertFalse(item.isDeleted)
+        XCTAssertNil(item.folder)
+        XCTAssertEqual(try repo.memberships(for: item).count, 0)
+    }
+
+    @MainActor
+    func testFileCaptureWithOneFolderCreatesOneMembership() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 1)
+        XCTAssertEqual(item.folder?.id, deadwest.id)
+    }
+
+    @MainActor
+    func testFileCaptureWithMultipleFoldersCreatesOneItemAndMultipleMemberships() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let japan = try repo.createFolder(name: "Japan 2026", icon: .symbol("star"))
+
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .image, localFilename: "shared.jpg"),
+            folders: [deadwest, inspiration, japan]
+        )
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 3)
+        let allItems = try repo.context.fetch(FetchDescriptor<StoredItem>())
+        XCTAssertEqual(allItems.filter { $0.localFilename == "shared.jpg" }.count, 1)
+    }
+
+    @MainActor
+    func testFileCaptureThenMigrationDoesNotDuplicateMembership() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        // fileCapture already creates a membership AND (transitionally)
+        // sets item.folder — confirms the Milestone A backfill sees an
+        // already-satisfied item and does not add a second membership for
+        // the same (item, folder) pair.
+        try MembershipMigration.backfillMemberships(repository: repo)
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 1)
+    }
+
+    // MARK: - move(_:to:) membership reconciliation (Milestone B fix)
+
+    @MainActor
+    func testMoveReassignsLegacyFolderAndReconcilesMembership() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit)
+
+        let resultIDs = Set(try repo.folders(for: item).map(\.id))
+        XCTAssertEqual(resultIDs, Set([coolShit.id]))
+        XCTAssertEqual(item.folder?.id, coolShit.id)
+    }
+
+    @MainActor
+    func testMoveFromMultipleMembershipsCollapsesToSingleDestination() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest, inspiration])
+
+        try repo.move(item, to: coolShit)
+
+        let resultIDs = Set(try repo.folders(for: item).map(\.id))
+        XCTAssertEqual(resultIDs, Set([coolShit.id]))
+    }
+
+    @MainActor
+    func testMoveToExistingSoleFolderIsIdempotent() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: deadwest)
+        try repo.move(item, to: deadwest)
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 1)
+        XCTAssertEqual(item.folder?.id, deadwest.id)
+    }
+
+    @MainActor
+    func testMoveDoesNotMutateUnrelatedItemFields() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .image, localFilename: "abc.jpg", noteBody: "keep me"),
+            folders: [deadwest]
+        )
+        try repo.toggleFavorite(item)
+        let noteBefore = item.noteBody
+        let favoriteBefore = item.isFavorite
+        let filenameBefore = item.localFilename
+        let createdAtBefore = item.createdAt
+
+        try repo.move(item, to: coolShit)
+
+        XCTAssertFalse(item.isDeleted)
+        XCTAssertEqual(item.noteBody, noteBefore)
+        XCTAssertEqual(item.isFavorite, favoriteBefore)
+        XCTAssertEqual(item.localFilename, filenameBefore)
+        XCTAssertEqual(item.createdAt, createdAtBefore)
+    }
 }
