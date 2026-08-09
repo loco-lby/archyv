@@ -8,9 +8,15 @@ struct RootView: View {
     @Environment(NoteFocusSignal.self) private var noteFocus
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: Tab = .archive
-    /// Owned here, not by HomeView, so tapping the already-selected Archive
-    /// tab can reset it from outside without recreating HomeView itself.
+    /// Owned here, not by ArchiveView, so tapping the already-selected
+    /// Archive tab can reset it from outside without recreating ArchiveView
+    /// itself.
     @State private var archivePath = NavigationPath()
+    /// Owned here, alongside `archivePath`, for the same reason: explicit
+    /// application state that survives ArchiveView being torn down/rebuilt,
+    /// and that Archive-tab reselect can reset from outside. Never inferred
+    /// from `archivePath` or from `StoredItem.folder` — see `ArchiveFilter`.
+    @State private var activeFilter: ArchiveFilter = .all
 
     enum Tab { case archive, settings }
 
@@ -22,14 +28,21 @@ struct RootView: View {
             Group {
                 switch tab {
                 case .archive:
-                    NavigationStack(path: $archivePath) { HomeView(archivePath: $archivePath) }
+                    // No bottom padding here (unlike Settings below):
+                    // Archive's masonry content should scroll edge-to-edge
+                    // and pass behind/under the floating dock, not stop
+                    // short of it — the dock is a floating overlay, not a
+                    // layout-reserving bar.
+                    NavigationStack(path: $archivePath) {
+                        ArchiveView(archivePath: $archivePath, activeFilter: $activeFilter)
+                    }
                 case .settings:
                     // No push navigation here yet, so no path to manage —
                     // this pattern extends the same way if that changes.
                     NavigationStack { SettingsView() }
+                        .padding(.bottom, 64)
                 }
             }
-            .padding(.bottom, 64)
 
             // A plain `if`, not `.hidden()`/`.opacity(0)` — those still
             // occupy layout space and (for `.hidden()`) still exist in the
@@ -40,7 +53,12 @@ struct RootView: View {
             // as anything else here would. Removing it from the tree
             // entirely — not just visually — is what actually keeps it out
             // of layout and hit-testing while a note has focus.
-            if !noteFocus.isActive {
+            //
+            // Also hidden once Item Detail is pushed (`archivePath` is
+            // non-empty) — the floating dock belongs to root Archive
+            // screens only, not task/detail screens. Settings has no push
+            // destinations yet, so it's always "root" for this check.
+            if !noteFocus.isActive && (tab == .settings || archivePath.isEmpty) {
                 bottomNav
                     .transition(.opacity)
             }
@@ -105,26 +123,47 @@ struct RootView: View {
         VStack(spacing: 0) {
             Rectangle().fill(ArkyvColor.border).frame(height: 1)
             HStack {
-                // nav-home: grid/squares icon, filled when active. Tapping
-                // while already active resets the Archive path to root
-                // instead of doing nothing.
-                navItem(.archive, systemImage: "square.grid.2x2", activeSystemImage: "square.grid.2x2.fill", label: "Archive") {
-                    log("Archive tab reselected — resetting archivePath to root (was count=\(archivePath.count))")
-                    archivePath = NavigationPath()
+                // Cherry / Home — returns to the root Archive surface.
+                // Tapping while already there resets BOTH the nav path
+                // (old behavior) AND the active filter back to All — the
+                // dock's Home button means "take me to the one Archive,"
+                // not just "pop to root." Obsoletes the old grid-icon
+                // "Archive" tab identity per the v0.2 visual direction.
+                Button {
+                    if tab == .archive {
+                        log("Cherry reselected — resetting archivePath and activeFilter to All (path count was \(archivePath.count))")
+                        archivePath = NavigationPath()
+                        activeFilter = .all
+                    } else {
+                        tab = .archive
+                    }
+                } label: {
+                    VStack(spacing: 6) {
+                        CherryMarkView(size: 22, color: tab == .archive ? ArkyvColor.textPrimary : ArkyvColor.iconDefault)
+                        Text("Home")
+                            .font(ArkyvFont.sans(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(tab == .archive ? ArkyvColor.textPrimary : ArkyvColor.iconDefault)
                 }
+                .frame(width: 56)
                 Spacer()
-                // Center mark — add existing photos / notes to a folder in-app.
+                // Scissors — triggers the same existing capture/add flow as
+                // before (CaptureCoordinator.startAdd()); only the visual
+                // control changed, not the behavior. The future native
+                // Photos-picker Scissors flow is a later milestone.
                 Button {
                     capture.startAdd()
                 } label: {
-                    ArkyvMarkView(height: 26, color: ArkyvColor.textPrimary)
+                    Image(systemName: "scissors")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(ArkyvColor.textPrimary)
                         .frame(width: 52, height: 52)
                         .background(ArkyvColor.surface, in: RoundedRectangle(cornerRadius: ArkyvRadius.button))
                 }
                 .offset(y: -6)
                 Spacer()
-                // nav-menu: hamburger/lines icon per the Design System.
-                navItem(.settings, systemImage: "line.3.horizontal", label: "Settings")
+                // More — same Settings destination as before, relabeled.
+                navItem(.settings, systemImage: "line.3.horizontal", label: "More")
             }
             .padding(.horizontal, 40)
             .frame(height: 44)

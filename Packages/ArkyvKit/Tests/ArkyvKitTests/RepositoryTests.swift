@@ -65,7 +65,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        let memberships = item.memberships.filter { !$0.isDeleted }
+        let memberships = item.memberships.filter { !$0.isSoftDeleted }
         XCTAssertEqual(memberships.count, 1)
         XCTAssertEqual(memberships.first?.folder?.id, folder.id)
         XCTAssertEqual(memberships.first?.item?.id, item.id)
@@ -84,7 +84,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 0)
+        XCTAssertEqual(item.memberships.filter { !$0.isSoftDeleted }.count, 0)
     }
 
     @MainActor
@@ -119,7 +119,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 1)
+        XCTAssertEqual(item.memberships.filter { !$0.isSoftDeleted }.count, 1)
     }
 
     @MainActor
@@ -131,10 +131,10 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(itemA.memberships.filter { !$0.isDeleted }.count, 1)
-        XCTAssertEqual(itemB.memberships.filter { !$0.isDeleted }.count, 1)
+        XCTAssertEqual(itemA.memberships.filter { !$0.isSoftDeleted }.count, 1)
+        XCTAssertEqual(itemB.memberships.filter { !$0.isSoftDeleted }.count, 1)
         XCTAssertNotEqual(itemA.memberships.first?.id, itemB.memberships.first?.id)
-        XCTAssertEqual(folder.memberships.filter { !$0.isDeleted }.count, 2)
+        XCTAssertEqual(folder.memberships.filter { !$0.isSoftDeleted }.count, 2)
     }
 
     @MainActor
@@ -183,7 +183,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 0)
+        XCTAssertEqual(item.memberships.filter { !$0.isSoftDeleted }.count, 0)
     }
 
     @MainActor
@@ -194,12 +194,12 @@ final class RepositoryTests: XCTestCase {
         // The exact "orphaned legacy assignment" shape Milestone B will
         // eventually allow (folder gone, item surviving) — the backfill
         // must not manufacture a membership into a dead folder.
-        folder.isDeleted = true
+        folder.deletedAt = .now
         try repo.context.save()
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(item.memberships.filter { !$0.isDeleted }.count, 0)
+        XCTAssertEqual(item.memberships.filter { !$0.isSoftDeleted }.count, 0)
     }
 
     // MARK: - Repository Membership API (Milestone B)
@@ -266,7 +266,7 @@ final class RepositoryTests: XCTestCase {
 
         try repo.removeMembership(item, from: deadwest)
 
-        XCTAssertFalse(item.isDeleted)
+        XCTAssertFalse(item.isSoftDeleted)
         XCTAssertEqual(try repo.memberships(for: item).count, 0)
     }
 
@@ -303,7 +303,7 @@ final class RepositoryTests: XCTestCase {
 
         try repo.setMemberships(item, to: [])
 
-        XCTAssertFalse(item.isDeleted)
+        XCTAssertFalse(item.isSoftDeleted)
         XCTAssertEqual(try repo.memberships(for: item).count, 0)
     }
 
@@ -334,7 +334,7 @@ final class RepositoryTests: XCTestCase {
 
         try repo.softDelete(deadwest)
 
-        XCTAssertFalse(item.isDeleted)
+        XCTAssertFalse(item.isSoftDeleted)
     }
 
     @MainActor
@@ -359,7 +359,7 @@ final class RepositoryTests: XCTestCase {
 
         let remaining = try repo.folders(for: item)
         XCTAssertEqual(remaining.map(\.id), [inspiration.id])
-        XCTAssertFalse(item.isDeleted)
+        XCTAssertFalse(item.isSoftDeleted)
     }
 
     @MainActor
@@ -370,7 +370,7 @@ final class RepositoryTests: XCTestCase {
 
         try repo.softDelete(deadwest)
 
-        XCTAssertFalse(item.isDeleted)
+        XCTAssertFalse(item.isSoftDeleted)
         XCTAssertEqual(try repo.memberships(for: item).count, 0)
     }
 
@@ -405,7 +405,7 @@ final class RepositoryTests: XCTestCase {
         let repo = try makeRepo()
         let item = try repo.fileCapture(.note("hello"), folders: [])
 
-        XCTAssertFalse(item.isDeleted)
+        XCTAssertFalse(item.isSoftDeleted)
         XCTAssertNil(item.folder)
         XCTAssertEqual(try repo.memberships(for: item).count, 0)
     }
@@ -512,10 +512,227 @@ final class RepositoryTests: XCTestCase {
 
         try repo.move(item, to: coolShit)
 
-        XCTAssertFalse(item.isDeleted)
+        XCTAssertFalse(item.isSoftDeleted)
         XCTAssertEqual(item.noteBody, noteBefore)
         XCTAssertEqual(item.isFavorite, favoriteBefore)
         XCTAssertEqual(item.localFilename, filenameBefore)
         XCTAssertEqual(item.createdAt, createdAtBefore)
+    }
+
+    // MARK: - move(_:to:) exclusive reconciliation regression (Milestone B/C fix)
+    //
+    // Physical-device testing in Milestone C found an item moved via
+    // "Move to..." remaining active in BOTH its old and new folder once
+    // the Archive surface started reading membership directly — invisible
+    // earlier because FolderGridView only ever read the legacy
+    // StoredItem.folder relationship. Root-caused to memberships(for:)
+    // trusting the SwiftData relationship array instead of fetching
+    // directly; see that method's doc comment in ArkyvStore.swift.
+
+    @MainActor
+    func testMoveRemovesPreviousMembership() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit)
+
+        let resultIDs = Set(try repo.folders(for: item).map(\.id))
+        XCTAssertEqual(resultIDs, Set([coolShit.id]))
+    }
+
+    @MainActor
+    func testMoveFromTwoMembershipsCollapsesToExactlyOneDestination() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest, inspiration])
+
+        try repo.move(item, to: coolShit)
+
+        let resultIDs = Set(try repo.folders(for: item).map(\.id))
+        XCTAssertEqual(resultIDs, Set([coolShit.id]))
+        XCTAssertEqual(try repo.memberships(for: item).count, 1)
+    }
+
+    @MainActor
+    func testRepeatedMoveToSameDestinationRemainsExactlyOneMembership() throws {
+        let repo = try makeRepo()
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [coolShit])
+
+        try repo.move(item, to: coolShit)
+        try repo.move(item, to: coolShit)
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 1)
+    }
+
+    /// Directly reproduces the reported drift shape: an active membership
+    /// to one folder while `item.folder` already points somewhere else
+    /// entirely (neither the stale membership's folder nor the eventual
+    /// destination) — the kind of state a migrated-then-partially-updated
+    /// record could end up in. A correct move must still fully reconcile.
+    @MainActor
+    func testMoveReconcilesStaleMembershipDespiteLegacyFolderAlreadyElsewhere() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let elsewhere = try repo.createFolder(name: "Elsewhere", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+        item.folder = elsewhere // simulate drift between the legacy field and membership truth
+
+        try repo.move(item, to: coolShit)
+
+        let resultIDs = Set(try repo.folders(for: item).map(\.id))
+        XCTAssertEqual(resultIDs, Set([coolShit.id]))
+        XCTAssertEqual(item.folder?.id, coolShit.id)
+    }
+
+    @MainActor
+    func testOldMembershipNotReturnedByItemsInOldFolder() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit)
+
+        let deadwestItems = try repo.items(in: deadwest)
+        XCTAssertFalse(deadwestItems.contains(where: { $0.id == item.id }))
+    }
+
+    @MainActor
+    func testDestinationReturnedByItemsInDestination() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit)
+
+        let coolShitItems = try repo.items(in: coolShit)
+        XCTAssertTrue(coolShitItems.contains(where: { $0.id == item.id }))
+    }
+
+    @MainActor
+    func testMoveKeepsExactlyOneItemRowAndItemIsNotUnfiled() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit)
+
+        let allItems = try repo.context.fetch(FetchDescriptor<StoredItem>())
+        XCTAssertEqual(allItems.filter { $0.id == item.id }.count, 1)
+        // Not Unfiled: it still has one active membership (Cool Shit).
+        XCTAssertFalse(try repo.memberships(for: item).isEmpty)
+    }
+
+    @MainActor
+    func testMoveUpdatesLegacyFolderToDestination() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit)
+
+        XCTAssertEqual(item.folder?.id, coolShit.id)
+    }
+
+    @MainActor
+    func testMoveNeverLeavesDuplicateActiveMemberships() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest, inspiration])
+
+        try repo.move(item, to: coolShit)
+        try repo.move(item, to: coolShit)
+
+        let allMemberships = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>())
+        let activeForItem = allMemberships.filter { $0.item?.id == item.id && !$0.isSoftDeleted }
+        XCTAssertEqual(activeForItem.count, 1)
+        XCTAssertEqual(activeForItem.first?.folder?.id, coolShit.id)
+    }
+
+    // MARK: - setMemberships root-cause regression: raw-fetch + cross-context proof
+    //
+    // These directly reproduce what the physical-device MembershipTrace
+    // proved: reconciliation entering the DEACTIVATE branch is not
+    // sufficient evidence of correctness — only a RAW fetch (not
+    // `memberships(for:)`, not `item.memberships`) after `save()` proves
+    // the persisted state actually changed. The second test additionally
+    // reads from a second `ModelContext` on the same container — the
+    // closest a unit test can get to "force-quit and relaunch" without a
+    // real process boundary.
+
+    @MainActor
+    func testMoveRawFetchInSameContextShowsOldRowDeactivated() throws {
+        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let repo = Repository(context: container.mainContext)
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit)
+
+        let rows = try container.mainContext.fetch(FetchDescriptor<StoredFolderMembership>())
+            .filter { $0.item?.id == item.id }
+        let deadwestRow = rows.first { $0.folder?.id == deadwest.id }
+        let coolShitRow = rows.first { $0.folder?.id == coolShit.id }
+
+        XCTAssertEqual(deadwestRow?.isSoftDeleted, true, "old membership must be deactivated by the raw store, not just in-memory")
+        XCTAssertEqual(coolShitRow?.isSoftDeleted, false)
+        XCTAssertEqual(rows.filter { !$0.isSoftDeleted }.count, 1)
+    }
+
+    @MainActor
+    func testMoveDeactivationSurvivesAFreshModelContextOnTheSameContainer() throws {
+        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let repo = Repository(context: container.mainContext)
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit)
+
+        // A second, independent context against the SAME container/store —
+        // proves the reconciliation was actually persisted, not merely
+        // mutated on objects local to the context that performed the move.
+        let freshContext = ModelContext(container)
+        let freshRows = try freshContext.fetch(FetchDescriptor<StoredFolderMembership>())
+            .filter { $0.item?.id == item.id }
+        let freshDeadwestRow = freshRows.first { $0.folder?.id == deadwest.id }
+        let freshCoolShitRow = freshRows.first { $0.folder?.id == coolShit.id }
+
+        XCTAssertEqual(freshDeadwestRow?.isSoftDeleted, true)
+        XCTAssertEqual(freshCoolShitRow?.isSoftDeleted, false)
+        XCTAssertEqual(freshRows.filter { !$0.isSoftDeleted }.count, 1)
+    }
+
+    // MARK: - setMemberships REACTIVATE semantics (new canonical behavior)
+
+    @MainActor
+    func testSetMembershipsReactivatesSoftDeletedRowInsteadOfDuplicating() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.move(item, to: coolShit) // Deadwest membership deactivated
+        try repo.setMemberships(item, to: [deadwest]) // desire Deadwest again
+
+        let resultIDs = Set(try repo.folders(for: item).map(\.id))
+        XCTAssertEqual(resultIDs, Set([deadwest.id]))
+
+        let allRows = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>())
+        let deadwestRows = allRows.filter { $0.item?.id == item.id && $0.folder?.id == deadwest.id }
+        XCTAssertEqual(deadwestRows.count, 1, "the original row should be reactivated, not duplicated")
+        XCTAssertEqual(deadwestRows.first?.isSoftDeleted, false)
     }
 }

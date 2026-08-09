@@ -364,9 +364,16 @@ struct MoveToFolderView: View {
     @Bindable var item: StoredItem
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
-    @Query(filter: #Predicate<StoredFolder> { !$0.isDeleted },
-           sort: \StoredFolder.sortOrder)
-    private var folders: [StoredFolder]
+    // Unfiltered `@Query` + in-memory filter, not a `#Predicate` nil-check —
+    // see ArchiveView.swift's `allFoldersRaw` doc comment: a `deletedAt ==
+    // nil` predicate combined with a `sort:` argument in the same `@Query`
+    // hits a SwiftData/Swift type-checker complexity limit.
+    @Query(sort: \StoredFolder.sortOrder)
+    private var allFoldersRaw: [StoredFolder]
+
+    private var folders: [StoredFolder] {
+        allFoldersRaw.filter { !$0.isSoftDeleted }
+    }
 
     var body: some View {
         NavigationStack {

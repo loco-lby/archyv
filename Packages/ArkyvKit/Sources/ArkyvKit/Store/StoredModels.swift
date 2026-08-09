@@ -18,8 +18,22 @@ public final class StoredFolder {
     // Sync bookkeeping (used from Phase 2).
     /// Local mutation not yet reflected remotely.
     public var dirty: Bool
-    /// Soft-delete tombstone so the deletion can propagate before purge.
-    public var isDeleted: Bool
+    /// Soft-delete tombstone timestamp so the deletion can propagate before
+    /// purge — `nil` means active, non-`nil` means soft-deleted at that
+    /// moment.
+    ///
+    /// NAMING: this was originally a stored `Bool` named `isDeleted`.
+    /// Renamed as a root-cause fix for a Milestone B/C persistence bug —
+    /// `PersistentModel`/SwiftData's Core-Data-derived object graph
+    /// reserves deletion-lifecycle semantics for exactly that identifier,
+    /// and a stored application property of the same name was silently
+    /// losing writes across `ModelContext.save()` specifically for that
+    /// field (confirmed via physical-device trace: the assignment took
+    /// effect in memory and pre-save, but reverted after a successful
+    /// save, while a sibling `Bool` set the same way one line away
+    /// persisted correctly). See `isSoftDeleted` below for the boolean
+    /// convenience every existing call site used.
+    public var deletedAt: Date?
     public var remoteSyncedAt: Date?
 
     @Relationship(deleteRule: .cascade, inverse: \StoredItem.folder)
@@ -50,7 +64,7 @@ public final class StoredFolder {
         self.createdAt = createdAt
         self.updatedAt = createdAt
         self.dirty = true
-        self.isDeleted = false
+        self.deletedAt = nil
         self.remoteSyncedAt = nil
         self.items = []
         self.memberships = []
@@ -61,9 +75,14 @@ public final class StoredFolder {
         set { iconToken = newValue.token }
     }
 
+    /// `true` iff `deletedAt` is set. Kept as the boolean call sites already
+    /// expect (`!folder.isSoftDeleted`, mirroring the old `!folder.isDeleted`)
+    /// rather than rewriting every predicate to a nil-check by hand.
+    public var isSoftDeleted: Bool { deletedAt != nil }
+
     /// Live count of non-deleted items ("N references" in the UI).
     public var referenceCount: Int {
-        items.filter { !$0.isDeleted }.count
+        items.filter { !$0.isSoftDeleted }.count
     }
 }
 
@@ -99,7 +118,9 @@ public final class StoredItem {
 
     // Sync bookkeeping.
     public var dirty: Bool
-    public var isDeleted: Bool
+    /// Soft-delete tombstone timestamp — see `StoredFolder.deletedAt`'s doc
+    /// comment for why this is a `Date?`, not a `Bool` named `isDeleted`.
+    public var deletedAt: Date?
     public var remoteSyncedAt: Date?
 
     /// v0.2 additive model: this item's `StoredFolderMembership` rows — the
@@ -145,7 +166,7 @@ public final class StoredItem {
         self.createdAt = createdAt
         self.updatedAt = createdAt
         self.dirty = true
-        self.isDeleted = false
+        self.deletedAt = nil
         self.remoteSyncedAt = nil
         self.memberships = []
     }
@@ -164,6 +185,9 @@ public final class StoredItem {
         guard aspectWidth > 0, aspectHeight > 0 else { return 1 }
         return aspectWidth / aspectHeight
     }
+
+    /// `true` iff `deletedAt` is set — see `StoredFolder.isSoftDeleted`.
+    public var isSoftDeleted: Bool { deletedAt != nil }
 }
 
 /// v0.2 canonical model: one row per (item, folder) membership. An item may
@@ -171,7 +195,7 @@ public final class StoredItem {
 /// single-owner `StoredItem.folder` relationship, which this type lives
 /// *alongside* rather than replaces for now (see `MembershipMigration`).
 /// "Unfiled" is not a stored flag — it's simply an item with zero active
-/// (non-`isDeleted`) memberships.
+/// (non-soft-deleted) memberships.
 @Model
 public final class StoredFolderMembership {
     @Attribute(.unique) public var id: UUID
@@ -182,7 +206,12 @@ public final class StoredFolderMembership {
     // Sync bookkeeping — same shape as StoredFolder/StoredItem, for Phase 2
     // symmetry (used from Phase 2 onward).
     public var dirty: Bool
-    public var isDeleted: Bool
+    /// Soft-delete tombstone timestamp — see `StoredFolder.deletedAt`'s doc
+    /// comment. This field is exactly where the Milestone B/C "old
+    /// membership survives an exclusive move" bug was root-caused: a
+    /// stored `Bool` here named `isDeleted` was the property whose writes
+    /// were being silently lost across `save()`.
+    public var deletedAt: Date?
     public var remoteSyncedAt: Date?
 
     public init(
@@ -196,7 +225,10 @@ public final class StoredFolderMembership {
         self.folder = folder
         self.createdAt = createdAt
         self.dirty = true
-        self.isDeleted = false
+        self.deletedAt = nil
         self.remoteSyncedAt = nil
     }
+
+    /// `true` iff `deletedAt` is set — see `StoredFolder.isSoftDeleted`.
+    public var isSoftDeleted: Bool { deletedAt != nil }
 }

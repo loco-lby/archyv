@@ -37,7 +37,7 @@ public struct Repository {
             sortBy: [SortDescriptor(\.sortOrder), SortDescriptor(\.createdAt)]
         )
         let all = try context.fetch(descriptor)
-        return includingDeleted ? all : all.filter { !$0.isDeleted }
+        return includingDeleted ? all : all.filter { !$0.isSoftDeleted }
     }
 
     @discardableResult
@@ -64,15 +64,15 @@ public struct Repository {
     /// files, and every other item field are never touched here.
     ///
     /// This replaces the pre-v0.2 behavior, which iterated `folder.items`
-    /// and marked every one of them `isDeleted` too — i.e. deleting a
-    /// folder used to destroy its contents. That's exactly what the new
-    /// Archive model forbids ("removing a folder membership never deletes
-    /// the reference"), so it's gone as of this milestone.
+    /// and marked every one of them deleted too — i.e. deleting a folder
+    /// used to destroy its contents. That's exactly what the new Archive
+    /// model forbids ("removing a folder membership never deletes the
+    /// reference"), so it's gone as of this milestone.
     public func softDelete(_ folder: StoredFolder) throws {
-        folder.isDeleted = true
+        folder.deletedAt = .now
         touch(folder)
-        for membership in folder.memberships where !membership.isDeleted {
-            membership.isDeleted = true
+        for membership in folder.memberships where !membership.isSoftDeleted {
+            membership.deletedAt = .now
             membership.dirty = true
         }
         try context.save()
@@ -87,9 +87,9 @@ public struct Repository {
     /// callers don't need to change.
     public func items(in folder: StoredFolder) throws -> [StoredItem] {
         folder.memberships
-            .filter { !$0.isDeleted }
+            .filter { !$0.isSoftDeleted }
             .compactMap { $0.item }
-            .filter { !$0.isDeleted }
+            .filter { !$0.isSoftDeleted }
             .sorted { $0.createdAt > $1.createdAt }
     }
 
@@ -113,7 +113,7 @@ public struct Repository {
     /// is replaced by membership-aware views (later milestone).
     @discardableResult
     public func fileCapture(_ draft: CaptureDraft, folders: [StoredFolder] = []) throws -> StoredItem {
-        let validFolders = folders.filter { !$0.isDeleted }
+        let validFolders = folders.filter { !$0.isSoftDeleted }
         let item = StoredItem(
             userID: validFolders.first?.userID,
             folder: validFolders.first,
@@ -171,7 +171,7 @@ public struct Repository {
     /// because `setMemberships` itself no-ops when the desired set already
     /// matches.
     public func move(_ item: StoredItem, to folder: StoredFolder) throws {
-        guard !item.isDeleted, !folder.isDeleted else { return }
+        guard !item.isSoftDeleted, !folder.isSoftDeleted else { return }
         item.folder = folder
         try setMemberships(item, to: [folder])
     }
@@ -200,7 +200,7 @@ public struct Repository {
     }
 
     public func softDelete(_ item: StoredItem) throws {
-        item.isDeleted = true
+        item.deletedAt = .now
         touch(item)
         if let folder = item.folder { touch(folder) }
         try context.save()
@@ -212,7 +212,7 @@ public struct Repository {
         guard !q.isEmpty else { return [] }
         let descriptor = FetchDescriptor<StoredItem>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
         return try context.fetch(descriptor).filter { item in
-            guard !item.isDeleted else { return false }
+            guard !item.isSoftDeleted else { return false }
             let haystack = [item.title, item.noteBody, item.ocrText, item.sourceURL]
                 .compactMap { $0 } + item.tags
             return haystack.contains { $0.lowercased().contains(q) }
@@ -230,8 +230,18 @@ public struct Repository {
     /// Active memberships for `item` — non-deleted rows pointing at a
     /// non-deleted folder. An item with an empty result here is Unfiled;
     /// that's derived, never a stored flag.
+    ///
+    /// Fetches every `StoredFolderMembership` row straight from the store
+    /// and filters by `item.id` in plain Swift, rather than reading
+    /// `item.memberships` (the relationship array) — the result is
+    /// authoritative regardless of how, when, or in which process/session
+    /// a given row was created.
     public func memberships(for item: StoredItem) throws -> [StoredFolderMembership] {
-        item.memberships.filter { !$0.isDeleted && $0.folder?.isDeleted == false }
+        let itemID = item.id
+        let all = try context.fetch(FetchDescriptor<StoredFolderMembership>())
+        return all.filter { membership in
+            membership.item?.id == itemID && !membership.isSoftDeleted && membership.folder?.isSoftDeleted == false
+        }
     }
 
     /// The folders `item` currently belongs to, derived from active
@@ -244,8 +254,8 @@ public struct Repository {
     /// Idempotent: a no-op (not an error) if the membership already exists,
     /// or if either side is deleted.
     public func addMembership(_ item: StoredItem, to folder: StoredFolder) throws {
-        guard !item.isDeleted, !folder.isDeleted else { return }
-        let alreadyMember = item.memberships.contains { !$0.isDeleted && $0.folder?.id == folder.id }
+        guard !item.isSoftDeleted, !folder.isSoftDeleted else { return }
+        let alreadyMember = try memberships(for: item).contains { $0.folder?.id == folder.id }
         guard !alreadyMember else { return }
         context.insert(StoredFolderMembership(item: item, folder: folder))
         touch(item)
@@ -255,13 +265,14 @@ public struct Repository {
 
     /// Removes `item` from `folder` if an active membership exists.
     /// Idempotent: a harmless no-op if it doesn't — removing a nonexistent
-    /// membership is not an error. Never touches `item.isDeleted`; an item
-    /// losing its last membership here simply becomes Unfiled.
+    /// membership is not an error. Never touches `item`'s own soft-delete
+    /// state; an item losing its last membership here simply becomes
+    /// Unfiled.
     public func removeMembership(_ item: StoredItem, from folder: StoredFolder) throws {
-        let matches = item.memberships.filter { !$0.isDeleted && $0.folder?.id == folder.id }
+        let matches = try memberships(for: item).filter { $0.folder?.id == folder.id }
         guard !matches.isEmpty else { return }
         for membership in matches {
-            membership.isDeleted = true
+            membership.deletedAt = .now
             membership.dirty = true
         }
         touch(item)
@@ -270,33 +281,69 @@ public struct Repository {
     }
 
     /// Reconciles `item`'s membership set to exactly `folders` — adds
-    /// whatever's missing, removes whatever's no longer desired, and
-    /// otherwise leaves everything alone. Passing an empty array removes
-    /// every membership, leaving the item alive and Unfiled. Calling this
-    /// again with an equivalent desired set is a no-op: no new rows, and
-    /// nothing (item, folder, or any membership) gets touched or saved.
+    /// whatever's missing, reactivates any matching soft-deleted row,
+    /// deactivates whatever's no longer desired, and otherwise leaves
+    /// everything alone. Passing an empty array removes every membership,
+    /// leaving the item alive and Unfiled. Calling this again with an
+    /// equivalent desired set is a no-op: no new rows, and nothing (item,
+    /// folder, or any membership) gets touched or saved.
+    ///
+    /// Fetches every `StoredFolderMembership` row for `item` directly from
+    /// the store in one pass — unfiltered by soft-delete state, so
+    /// previously-deactivated rows are visible for reactivation — and
+    /// mutates those exact row instances straight through to `save()`. (An
+    /// earlier version computed its working set via a separate accessor
+    /// call and was found, via physical-device tracing, to let a stale
+    /// membership survive an otherwise-correct "exclusive" move — root-
+    /// caused to `StoredFolder`/`StoredItem`/`StoredFolderMembership`
+    /// previously naming their soft-delete flag `isDeleted`, which collides
+    /// with SwiftData's own reserved deletion-lifecycle semantics for that
+    /// identifier and silently dropped writes to it across `save()`. Fixed
+    /// by renaming the stored field to `deletedAt: Date?` — see
+    /// `StoredModels.swift` — and confirmed on physical device.)
     public func setMemberships(_ item: StoredItem, to folders: [StoredFolder]) throws {
-        let validDesired = folders.filter { !$0.isDeleted }
+        let itemID = item.id
+        let validDesired = folders.filter { !$0.isSoftDeleted }
         let desiredIDs = Set(validDesired.map(\.id))
-        let current = try memberships(for: item)
-        let currentIDs = Set(current.compactMap { $0.folder?.id })
+        let foldersByID = Dictionary(validDesired.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
-        guard desiredIDs != currentIDs else { return }
+        let allRows = try context.fetch(FetchDescriptor<StoredFolderMembership>())
+            .filter { $0.item?.id == itemID }
 
+        var seenFolderIDs = Set<UUID>()
+        var changed = false
         var touchedFolders: [UUID: StoredFolder] = [:]
 
-        for membership in current where !desiredIDs.contains(membership.folder?.id ?? UUID()) {
-            membership.isDeleted = true
-            membership.dirty = true
-            if let folder = membership.folder { touchedFolders[folder.id] = folder }
+        for row in allRows {
+            guard let folder = row.folder else { continue }
+            let wanted = desiredIDs.contains(folder.id) && !folder.isSoftDeleted
+
+            if wanted {
+                seenFolderIDs.insert(folder.id)
+                if row.isSoftDeleted {
+                    row.deletedAt = nil
+                    row.dirty = true
+                    touchedFolders[folder.id] = folder
+                    changed = true
+                }
+                // else: already active and desired — nothing to do.
+            } else if !row.isSoftDeleted {
+                row.deletedAt = .now
+                row.dirty = true
+                touchedFolders[folder.id] = folder
+                changed = true
+            }
+            // else: already inactive and not desired — nothing to do.
         }
 
-        let foldersByID = Dictionary(validDesired.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for id in desiredIDs.subtracting(currentIDs) {
+        for id in desiredIDs.subtracting(seenFolderIDs) {
             guard let folder = foldersByID[id] else { continue }
             context.insert(StoredFolderMembership(item: item, folder: folder))
             touchedFolders[folder.id] = folder
+            changed = true
         }
+
+        guard changed else { return }
 
         touchedFolders.values.forEach { touch($0) }
         touch(item)
