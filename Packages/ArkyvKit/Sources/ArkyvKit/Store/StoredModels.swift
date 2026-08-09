@@ -6,18 +6,35 @@ import SwiftData
 /// filed and referenced before it ever reaches Supabase.
 @Model
 public final class StoredFolder {
-    @Attribute(.unique) public var id: UUID
+    /// CLOUDKIT READINESS (D1): no longer `@Attribute(.unique)`. SwiftData's
+    /// CloudKit sync doesn't support unique constraints — CloudKit is an
+    /// eventually-consistent, multi-device system with no cross-device
+    /// transactional uniqueness check. Nothing replaces this at the
+    /// database level; we rely on UUID collision-improbability, which is
+    /// already the actual mechanism (every `init()` here already generates
+    /// a fresh random `UUID()` — nothing has ever relied on `.unique`
+    /// catching a real collision). CloudKit itself is NOT enabled by this
+    /// change; this is schema-shape prep only.
+    public var id: UUID = UUID()
     public var userID: UUID?
-    public var name: String
+    /// CLOUDKIT READINESS (D1): every non-optional property below now
+    /// carries an inline default value, in addition to (not instead of)
+    /// the existing `init()` parameter defaults. This is required because
+    /// CloudKit's own materialization path does not go through our custom
+    /// `init()` — a property needs its own default at the declaration site
+    /// to be CloudKit-compatible, or it must be Optional. These inline
+    /// defaults don't change any existing call site's behavior: `init()`
+    /// still explicitly assigns every one of them, same as before.
+    public var name: String = ""
     /// Encoded `FolderIcon` token, e.g. "sf:star".
-    public var iconToken: String
-    public var sortOrder: Int
-    public var createdAt: Date
-    public var updatedAt: Date
+    public var iconToken: String = FolderIcon.default.token
+    public var sortOrder: Int = 0
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
 
     // Sync bookkeeping (used from Phase 2).
     /// Local mutation not yet reflected remotely.
-    public var dirty: Bool
+    public var dirty: Bool = true
     /// Soft-delete tombstone timestamp so the deletion can propagate before
     /// purge — `nil` means active, non-`nil` means soft-deleted at that
     /// moment.
@@ -91,33 +108,55 @@ public final class StoredFolder {
 /// local image caching for offline use.
 @Model
 public final class StoredItem {
-    @Attribute(.unique) public var id: UUID
+    /// CLOUDKIT READINESS (D1): no longer `@Attribute(.unique)` — see
+    /// `StoredFolder.id`'s doc comment for why.
+    public var id: UUID = UUID()
     public var userID: UUID?
     public var folder: StoredFolder?
 
-    public var kindRaw: String
+    public var kindRaw: String = ItemKind.image.rawValue
     /// Remote Storage path (set after upload).
     public var storagePath: String?
-    /// Local cached image filename in Application Support/Media.
+    /// Local cached image filename in Application Support/Media. This
+    /// remains the primary local read path (`LocalImageView` et al. are
+    /// unchanged) — see `imageData` below for the separate CloudKit
+    /// transport field.
     public var localFilename: String?
+
+    /// CLOUDKIT READINESS (D1): the CloudKit sync transport for this
+    /// item's image bytes, once CloudKit is actually enabled (a later
+    /// milestone). `.externalStorage` tells SwiftData to keep large binary
+    /// data out of the main SQLite row (the same mechanism CloudKit sync
+    /// uses to map a field to a `CKAsset`) — this is a general SwiftData
+    /// large-blob optimization, not itself CloudKit-specific, so it's safe
+    /// to add with CloudKit fully off.
+    ///
+    /// NOT wired into any read or write path yet: `fileCapture` does not
+    /// populate it, and nothing reads it — it is `nil` for every item,
+    /// existing and newly captured, until the backfill migration (a later
+    /// milestone) populates it and CloudKit sync is switched on. The
+    /// existing `localFilename` → `MediaStore` local cache remains the
+    /// only active image storage/read path for the whole of this
+    /// milestone; nothing about it changes.
+    @Attribute(.externalStorage) public var imageData: Data?
 
     public var ocrText: String?
     public var noteBody: String?
     public var title: String?
     public var sourceURL: String?
-    public var tags: [String]
-    public var isFavorite: Bool
+    public var tags: [String] = []
+    public var isFavorite: Bool = false
 
     /// Aspect ratio hint for masonry layout (width/height), 0 if unknown.
-    public var aspectWidth: Double
-    public var aspectHeight: Double
+    public var aspectWidth: Double = 0
+    public var aspectHeight: Double = 0
 
-    public var sourceDeviceRaw: String
-    public var createdAt: Date
-    public var updatedAt: Date
+    public var sourceDeviceRaw: String = SourcePlatform.unknown.rawValue
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
 
     // Sync bookkeeping.
-    public var dirty: Bool
+    public var dirty: Bool = true
     /// Soft-delete tombstone timestamp — see `StoredFolder.deletedAt`'s doc
     /// comment for why this is a `Date?`, not a `Bool` named `isDeleted`.
     public var deletedAt: Date?
@@ -137,6 +176,7 @@ public final class StoredItem {
         kind: ItemKind,
         storagePath: String? = nil,
         localFilename: String? = nil,
+        imageData: Data? = nil,
         ocrText: String? = nil,
         noteBody: String? = nil,
         title: String? = nil,
@@ -154,6 +194,7 @@ public final class StoredItem {
         self.kindRaw = kind.rawValue
         self.storagePath = storagePath
         self.localFilename = localFilename
+        self.imageData = imageData
         self.ocrText = ocrText
         self.noteBody = noteBody
         self.title = title
@@ -198,14 +239,16 @@ public final class StoredItem {
 /// (non-soft-deleted) memberships.
 @Model
 public final class StoredFolderMembership {
-    @Attribute(.unique) public var id: UUID
+    /// CLOUDKIT READINESS (D1): no longer `@Attribute(.unique)` — see
+    /// `StoredFolder.id`'s doc comment for why.
+    public var id: UUID = UUID()
     public var item: StoredItem?
     public var folder: StoredFolder?
-    public var createdAt: Date
+    public var createdAt: Date = Date.now
 
     // Sync bookkeeping — same shape as StoredFolder/StoredItem, for Phase 2
     // symmetry (used from Phase 2 onward).
-    public var dirty: Bool
+    public var dirty: Bool = true
     /// Soft-delete tombstone timestamp — see `StoredFolder.deletedAt`'s doc
     /// comment. This field is exactly where the Milestone B/C "old
     /// membership survives an exclusive move" bug was root-caused: a

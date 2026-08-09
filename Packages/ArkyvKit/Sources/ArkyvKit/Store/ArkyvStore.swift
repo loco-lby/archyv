@@ -5,7 +5,11 @@ import SwiftData
 /// Share Extension, and (later) the sync engine. The container lives in the
 /// App Group so every process reads/writes the same local database.
 public enum ArkyvStore {
-    public static let schema = Schema([StoredFolder.self, StoredItem.self, StoredFolderMembership.self])
+    /// CLOUDKIT READINESS (D1): now derived from `ArkyvSchemaV1` rather than
+    /// a flat, unversioned `Schema([...])` — see `ArkyvSchema.swift`. The
+    /// set of models and their shape is unchanged by this; only how the
+    /// schema is declared changed.
+    public static let schema = Schema(versionedSchema: ArkyvSchemaV1.self)
 
     /// Shared on-disk container. Falls back to an in-memory store if the
     /// on-disk store can't be opened, so the UI never hard-crashes at launch.
@@ -15,11 +19,11 @@ public enum ArkyvStore {
             ? ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
             : ModelConfiguration(schema: schema, url: url)
         do {
-            return try ModelContainer(for: schema, configurations: [config])
+            return try ModelContainer(for: schema, migrationPlan: ArkyvMigrationPlan.self, configurations: [config])
         } catch {
             let mem = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
             // If even this throws we genuinely can't run; crashing here is correct.
-            return try! ModelContainer(for: schema, configurations: [mem])
+            return try! ModelContainer(for: schema, migrationPlan: ArkyvMigrationPlan.self, configurations: [mem])
         }
     }
 }
