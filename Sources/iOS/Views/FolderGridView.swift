@@ -27,7 +27,7 @@ struct FolderGridView: View {
     @State private var query = ""
 
     private var items: [StoredItem] {
-        let live = folder.items.filter { !$0.isSoftDeleted }
+        let live = (folder.items ?? []).filter { !$0.isSoftDeleted }
         let sorted = live.sorted { $0.createdAt > $1.createdAt }
         guard searching, !query.isEmpty else { return sorted }
         let q = query.lowercased()
@@ -92,7 +92,7 @@ struct FolderGridView: View {
     /// resolves correctly. Plain function, not `@ViewBuilder` — it returns
     /// a model, not a View.
     private func resolveItem(_ id: UUID) -> StoredItem? {
-        folder.items.first(where: { $0.id == id && !$0.isSoftDeleted })
+        (folder.items ?? []).first(where: { $0.id == id && !$0.isSoftDeleted })
     }
 
     private var missingItemView: some View {

@@ -77,7 +77,7 @@ public enum MembershipMigration {
             guard let folder = item.folder else { skippedNoFolder += 1; continue }
             guard !folder.isSoftDeleted else { skippedDeletedFolder += 1; continue }
 
-            let alreadyMember = item.memberships.contains {
+            let alreadyMember = (item.memberships ?? []).contains {
                 !$0.isSoftDeleted && $0.folder?.id == folder.id
             }
             guard !alreadyMember else { skippedAlreadyMember += 1; continue }

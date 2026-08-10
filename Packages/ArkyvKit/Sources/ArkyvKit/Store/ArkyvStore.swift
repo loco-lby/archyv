@@ -11,17 +11,33 @@ public enum ArkyvStore {
     /// schema is declared changed.
     public static let schema = Schema(versionedSchema: ArkyvSchemaV1.self)
 
+    /// D2: the CloudKit private database this store mirrors to, once opened
+    /// with `cloudKitDatabase:` below. Registered under the app's iCloud
+    /// container entitlement — see `Arkyv.entitlements` /
+    /// `ArkyvShare.entitlements`. CloudKit sync is opportunistic and
+    /// entirely background: SwiftData still reads/writes the local on-disk
+    /// store first and immediately, the same as before this milestone, so
+    /// the app has no new dependency on network/iCloud availability for any
+    /// existing read or write path.
+    private static let cloudKitContainerID = "iCloud.com.expatinsurance.arkyv"
+
     /// Shared on-disk container. Falls back to an in-memory store if the
     /// on-disk store can't be opened, so the UI never hard-crashes at launch.
     public static func makeModelContainer(inMemory: Bool = false) -> ModelContainer {
         let url = AppGroup.containerURL.appendingPathComponent("arkyv.store")
         let config = inMemory
-            ? ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-            : ModelConfiguration(schema: schema, url: url)
+            ? ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+            : ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .private(cloudKitContainerID))
         do {
             return try ModelContainer(for: schema, migrationPlan: ArkyvMigrationPlan.self, configurations: [config])
         } catch {
-            let mem = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            #if DEBUG
+            print("[ArkyvStore] CloudKit-backed container failed to open, falling back to IN-MEMORY store (existing on-disk data is untouched): \(error)")
+            #endif
+            // In-memory only: CloudKit mirroring requires a persistent
+            // store, so this fallback is never CloudKit-backed regardless
+            // of why the primary container above failed.
+            let mem = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
             // If even this throws we genuinely can't run; crashing here is correct.
             return try! ModelContainer(for: schema, migrationPlan: ArkyvMigrationPlan.self, configurations: [mem])
         }
@@ -75,7 +91,7 @@ public struct Repository {
     public func softDelete(_ folder: StoredFolder) throws {
         folder.deletedAt = .now
         touch(folder)
-        for membership in folder.memberships where !membership.isSoftDeleted {
+        for membership in folder.memberships ?? [] where !membership.isSoftDeleted {
             membership.deletedAt = .now
             membership.dirty = true
         }
@@ -90,7 +106,7 @@ public struct Repository {
     /// first); only what it consults internally has changed, so existing
     /// callers don't need to change.
     public func items(in folder: StoredFolder) throws -> [StoredItem] {
-        folder.memberships
+        (folder.memberships ?? [])
             .filter { !$0.isSoftDeleted }
             .compactMap { $0.item }
             .filter { !$0.isSoftDeleted }

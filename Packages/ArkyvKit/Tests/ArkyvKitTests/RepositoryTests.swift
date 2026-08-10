@@ -65,7 +65,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        let memberships = item.memberships.filter { !$0.isSoftDeleted }
+        let memberships = (item.memberships ?? []).filter { !$0.isSoftDeleted }
         XCTAssertEqual(memberships.count, 1)
         XCTAssertEqual(memberships.first?.folder?.id, folder.id)
         XCTAssertEqual(memberships.first?.item?.id, item.id)
@@ -84,7 +84,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(item.memberships.filter { !$0.isSoftDeleted }.count, 0)
+        XCTAssertEqual((item.memberships ?? []).filter { !$0.isSoftDeleted }.count, 0)
     }
 
     @MainActor
@@ -119,7 +119,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(item.memberships.filter { !$0.isSoftDeleted }.count, 1)
+        XCTAssertEqual((item.memberships ?? []).filter { !$0.isSoftDeleted }.count, 1)
     }
 
     @MainActor
@@ -131,10 +131,10 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(itemA.memberships.filter { !$0.isSoftDeleted }.count, 1)
-        XCTAssertEqual(itemB.memberships.filter { !$0.isSoftDeleted }.count, 1)
-        XCTAssertNotEqual(itemA.memberships.first?.id, itemB.memberships.first?.id)
-        XCTAssertEqual(folder.memberships.filter { !$0.isSoftDeleted }.count, 2)
+        XCTAssertEqual((itemA.memberships ?? []).filter { !$0.isSoftDeleted }.count, 1)
+        XCTAssertEqual((itemB.memberships ?? []).filter { !$0.isSoftDeleted }.count, 1)
+        XCTAssertNotEqual((itemA.memberships ?? []).first?.id, (itemB.memberships ?? []).first?.id)
+        XCTAssertEqual((folder.memberships ?? []).filter { !$0.isSoftDeleted }.count, 2)
     }
 
     @MainActor
@@ -183,7 +183,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(item.memberships.filter { !$0.isSoftDeleted }.count, 0)
+        XCTAssertEqual((item.memberships ?? []).filter { !$0.isSoftDeleted }.count, 0)
     }
 
     @MainActor
@@ -199,7 +199,7 @@ final class RepositoryTests: XCTestCase {
 
         try MembershipMigration.backfillMemberships(repository: repo)
 
-        XCTAssertEqual(item.memberships.filter { !$0.isSoftDeleted }.count, 0)
+        XCTAssertEqual((item.memberships ?? []).filter { !$0.isSoftDeleted }.count, 0)
     }
 
     // MARK: - Repository Membership API (Milestone B)

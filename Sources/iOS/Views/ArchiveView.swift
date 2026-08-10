@@ -92,11 +92,11 @@ struct ArchiveView: View {
     /// computed property) since it's two lines and this milestone's scope
     /// explicitly keeps repository changes at zero.
     private func isUnfiled(_ item: StoredItem) -> Bool {
-        item.memberships.filter { !$0.isSoftDeleted && $0.folder?.isSoftDeleted == false }.isEmpty
+        (item.memberships ?? []).filter { !$0.isSoftDeleted && $0.folder?.isSoftDeleted == false }.isEmpty
     }
 
     private func isMember(_ item: StoredItem, of folderID: UUID) -> Bool {
-        item.memberships.contains { !$0.isSoftDeleted && $0.folder?.id == folderID && $0.folder?.isSoftDeleted == false }
+        (item.memberships ?? []).contains { !$0.isSoftDeleted && $0.folder?.id == folderID && $0.folder?.isSoftDeleted == false }
     }
 
     /// FILTER chooses the lens; everything below only ever narrows within

@@ -53,8 +53,16 @@ public final class StoredFolder {
     public var deletedAt: Date?
     public var remoteSyncedAt: Date?
 
+    /// CLOUDKIT READINESS (D2): `Optional`, not a plain `[StoredItem]`.
+    /// SwiftData's CloudKit integration rejected the original non-optional
+    /// array at container-open time with "CloudKit integration requires
+    /// that all relationships be optional" — to-many relationships need
+    /// this too, not just to-one. This is a schema-declaration change only;
+    /// it doesn't change what's physically stored (child rows and their
+    /// foreign keys are unaffected), so every read site below coalesces
+    /// with `?? []` to preserve exact prior behavior.
     @Relationship(deleteRule: .cascade, inverse: \StoredItem.folder)
-    public var items: [StoredItem]
+    public var items: [StoredItem]?
 
     /// v0.2 additive model: this folder's `StoredFolderMembership` rows —
     /// the new multi-folder join, living alongside (not replacing) `items`
@@ -62,8 +70,11 @@ public final class StoredFolder {
     /// a folder is hard-deleted; it does NOT cascade to `StoredItem`, so a
     /// hard-deleted folder can never take an item down through this
     /// relationship. Nothing reads this yet — see `MembershipMigration`.
+    ///
+    /// CLOUDKIT READINESS (D2): `Optional` for the same reason as `items`
+    /// above.
     @Relationship(deleteRule: .cascade, inverse: \StoredFolderMembership.folder)
-    public var memberships: [StoredFolderMembership]
+    public var memberships: [StoredFolderMembership]?
 
     public init(
         id: UUID = UUID(),
@@ -99,7 +110,7 @@ public final class StoredFolder {
 
     /// Live count of non-deleted items ("N references" in the UI).
     public var referenceCount: Int {
-        items.filter { !$0.isSoftDeleted }.count
+        (items ?? []).filter { !$0.isSoftDeleted }.count
     }
 }
 
@@ -166,8 +177,11 @@ public final class StoredItem {
     /// new multi-folder join, living alongside (not replacing) `folder`
     /// above. `folder` remains the sole source of truth for existing
     /// behavior until Milestone B. See `MembershipMigration`.
+    ///
+    /// CLOUDKIT READINESS (D2): `Optional` — see `StoredFolder.items`'s doc
+    /// comment for why.
     @Relationship(deleteRule: .cascade, inverse: \StoredFolderMembership.item)
-    public var memberships: [StoredFolderMembership]
+    public var memberships: [StoredFolderMembership]?
 
     public init(
         id: UUID = UUID(),
