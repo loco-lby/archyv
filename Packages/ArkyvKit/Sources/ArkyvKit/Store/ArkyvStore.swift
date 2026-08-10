@@ -134,11 +134,21 @@ public struct Repository {
     @discardableResult
     public func fileCapture(_ draft: CaptureDraft, folders: [StoredFolder] = []) throws -> StoredItem {
         let validFolders = folders.filter { !$0.isSoftDeleted }
+        // D3A: read the just-written JPEG back from MediaStore and carry it
+        // into `imageData` (the CloudKit `.externalStorage` transport field
+        // added in D1, unused until now) so newly captured images actually
+        // sync — not just their metadata rows (proven in D2). `localFilename`
+        // stays the only local read path; this is a second, CloudKit-only
+        // copy, deliberately redundant on-device storage for now. `nil` for
+        // non-image drafts (no `localFilename`) and for every item that
+        // predates this milestone — no backfill happens here.
+        let imageData = draft.localFilename.flatMap { MediaStore.shared.data(for: $0) }
         let item = StoredItem(
             userID: validFolders.first?.userID,
             folder: validFolders.first,
             kind: draft.kind,
             localFilename: draft.localFilename,
+            imageData: imageData,
             ocrText: draft.ocrText,
             noteBody: draft.noteBody,
             title: draft.title,

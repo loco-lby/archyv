@@ -28,6 +28,35 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(folder.referenceCount, 1)
     }
 
+    // D3A: fileCapture reads the just-written MediaStore file back into
+    // StoredItem.imageData (the CloudKit `.externalStorage` transport field)
+    // for image-kind drafts only, without disturbing the existing
+    // localFilename local-read path.
+    @MainActor
+    func testFileCaptureWithImageDraftPopulatesImageDataFromMediaStore() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let bytes = Data("fake-jpeg-bytes".utf8)
+        let filename = try MediaStore.shared.save(data: bytes)
+
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .screenshot, localFilename: filename),
+            into: folder
+        )
+
+        XCTAssertEqual(item.imageData, bytes)
+        // The local read path is untouched — localFilename still resolves.
+        XCTAssertEqual(item.localFilename, filename)
+    }
+
+    @MainActor
+    func testFileCaptureWithNoteDraftLeavesImageDataNil() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), into: folder)
+        XCTAssertNil(item.imageData)
+    }
+
     @MainActor
     func testSuggestionMatchesKeyword() throws {
         let repo = try makeRepo()
