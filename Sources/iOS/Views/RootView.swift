@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import ArkyvKit
 
 /// App shell: Archive / Settings sections with the minimal bottom nav, the
@@ -7,6 +8,7 @@ struct RootView: View {
     @Environment(CaptureCoordinator.self) private var capture
     @Environment(NoteFocusSignal.self) private var noteFocus
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.modelContext) private var modelContext
     @State private var tab: Tab = .archive
     /// Owned here, not by ArchiveView, so tapping the already-selected
     /// Archive tab can reset it from outside without recreating ArchiveView
@@ -106,6 +108,15 @@ struct RootView: View {
             if phase == .active {
                 capture.startDetecting()
                 capture.checkForScreenshots()
+                // D3B: one small backfill batch per foreground activation,
+                // off the main actor — a fresh background ModelContext on
+                // the same container, never mainContext itself, so this
+                // never competes with UI reads/writes on the main thread.
+                let container = modelContext.container
+                Task.detached(priority: .background) {
+                    let backgroundContext = ModelContext(container)
+                    ImageBackfill.runNextBatch(context: backgroundContext)
+                }
             }
         }
         .onChange(of: archivePath.count) { old, new in

@@ -57,6 +57,101 @@ final class RepositoryTests: XCTestCase {
         XCTAssertNil(item.imageData)
     }
 
+    // MARK: - ImageBackfill (D3B)
+
+    /// Simulates a "historical" item — the shape everything captured before
+    /// D3A has: a real MediaStore file on disk, but `imageData` never
+    /// populated. Inserted directly (bypassing `fileCapture`, which has
+    /// populated `imageData` for new captures since D3A).
+    @MainActor
+    private func makeHistoricalImageItem(repo: Repository, bytes: Data = Data("historical-jpeg".utf8)) throws -> StoredItem {
+        let filename = try MediaStore.shared.save(data: bytes)
+        let item = StoredItem(kind: .screenshot, localFilename: filename)
+        repo.context.insert(item)
+        try repo.context.save()
+        return item
+    }
+
+    @MainActor
+    func testImageBackfillPopulatesHistoricalItemFromMediaStore() throws {
+        let repo = try makeRepo()
+        let bytes = Data("historical-jpeg".utf8)
+        let item = try makeHistoricalImageItem(repo: repo, bytes: bytes)
+        XCTAssertNil(item.imageData)
+
+        let backfilled = ImageBackfill.runNextBatch(context: repo.context)
+
+        XCTAssertEqual(backfilled, 1)
+        XCTAssertEqual(item.imageData, bytes)
+    }
+
+    @MainActor
+    func testImageBackfillNeverOverwritesPopulatedImageData() throws {
+        let repo = try makeRepo()
+        let sentinel = Data("do-not-touch".utf8)
+        let item = try makeHistoricalImageItem(repo: repo)
+        item.imageData = sentinel
+        try repo.context.save()
+
+        let backfilled = ImageBackfill.runNextBatch(context: repo.context)
+
+        XCTAssertEqual(backfilled, 0)
+        XCTAssertEqual(item.imageData, sentinel)
+    }
+
+    @MainActor
+    func testImageBackfillLeavesNoteItemsUntouched() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), into: folder)
+
+        let backfilled = ImageBackfill.runNextBatch(context: repo.context)
+
+        XCTAssertEqual(backfilled, 0)
+        XCTAssertNil(item.imageData)
+    }
+
+    @MainActor
+    func testImageBackfillSkipsItemWithUnreadableMediaStoreFile() throws {
+        let repo = try makeRepo()
+        // A localFilename that was never actually written to MediaStore —
+        // simulates a permanently missing/corrupt file.
+        let item = StoredItem(kind: .screenshot, localFilename: "does-not-exist.jpg")
+        repo.context.insert(item)
+        try repo.context.save()
+
+        let backfilled = ImageBackfill.runNextBatch(context: repo.context)
+
+        XCTAssertEqual(backfilled, 0)
+        XCTAssertNil(item.imageData)
+    }
+
+    @MainActor
+    func testImageBackfillRespectsBatchLimit() throws {
+        let repo = try makeRepo()
+        for _ in 0..<5 {
+            _ = try makeHistoricalImageItem(repo: repo)
+        }
+
+        let backfilled = ImageBackfill.runNextBatch(context: repo.context, limit: 2)
+
+        XCTAssertEqual(backfilled, 2)
+    }
+
+    @MainActor
+    func testImageBackfillIsIdempotentAcrossRepeatedRuns() throws {
+        let repo = try makeRepo()
+        for _ in 0..<3 {
+            _ = try makeHistoricalImageItem(repo: repo)
+        }
+
+        let first = ImageBackfill.runNextBatch(context: repo.context, limit: 10)
+        XCTAssertEqual(first, 3)
+
+        let second = ImageBackfill.runNextBatch(context: repo.context, limit: 10)
+        XCTAssertEqual(second, 0)
+    }
+
     @MainActor
     func testSuggestionMatchesKeyword() throws {
         let repo = try makeRepo()
