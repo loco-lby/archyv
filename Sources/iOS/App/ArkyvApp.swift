@@ -19,9 +19,13 @@ struct ArkyvApp: App {
         self.modelContainer = container
         _capture = State(initialValue: CaptureCoordinator(container: container))
 
-        // Seed the folders from the design on first run.
         let repo = Repository(context: container.mainContext)
-        try? repo.seedIfEmpty()
+
+        // Default-folder seeding is NOT decided here — a single check at
+        // launch can't safely tell "brand new user" apart from "existing
+        // CloudKit user whose import just hasn't landed yet." See
+        // SeedGate.swift; RootView's scenePhase hook owns this now,
+        // checked repeatedly rather than once.
 
         // ONE-TIME MIGRATION — safe to delete once all devices have run it.
         IconMigration.runIfNeeded(repository: repo)

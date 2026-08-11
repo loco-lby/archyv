@@ -408,26 +408,6 @@ public struct Repository {
         return all.max(by: { $0.updatedAt < $1.updatedAt }) ?? all.first
     }
 
-    // MARK: Seeding
-
-    /// Seeds the folders shown in the Figma design on first run.
-    public func seedIfEmpty() throws {
-        guard try folders(includingDeleted: true).isEmpty else { return }
-        let seeds: [(String, FolderIcon)] = [
-            ("Deadwest", .glyph(.star)),
-            ("Cool Shit", .glyph(.cross)),
-            ("Recipes", .glyph(.triangle)),
-            ("Japan 2026", .glyph(.circle)),
-            ("Inspiration", .glyph(.diamond)),
-        ]
-        for (index, seed) in seeds.enumerated() {
-            let folder = StoredFolder(name: seed.0, icon: seed.1, sortOrder: index)
-            folder.dirty = false // seeded folders aren't "user changes" to push
-            context.insert(folder)
-        }
-        try context.save()
-    }
-
     // MARK: Helpers
 
     private func touch(_ folder: StoredFolder) {

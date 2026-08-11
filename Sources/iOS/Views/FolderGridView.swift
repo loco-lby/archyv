@@ -206,7 +206,7 @@ struct ItemCardView: View {
         Group {
             switch item.kind {
             case .screenshot, .image:
-                LocalImageView(filename: item.localFilename)
+                LocalImageView(filename: item.localFilename, fallbackImageData: { item.imageData })
                     .aspectRatio(item.aspectRatio, contentMode: .fit)
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))

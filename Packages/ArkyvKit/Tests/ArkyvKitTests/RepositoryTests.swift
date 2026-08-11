@@ -12,11 +12,130 @@ final class RepositoryTests: XCTestCase {
     @MainActor
     func testSeedCreatesFiveFolders() throws {
         let repo = try makeRepo()
-        try repo.seedIfEmpty()
+        // No iCloud account: seeds immediately, deterministic, no timing.
+        SeedGate.evaluate(context: repo.context, hasICloudAccount: false, timedSeedPermission: .allowed, defaults: makeIsolatedDefaults())
         XCTAssertEqual(try repo.folders().count, 5)
-        // Idempotent.
-        try repo.seedIfEmpty()
+    }
+
+    // D4: SeedGate's CloudKit-import race guard. Each test uses a fresh,
+    // isolated UserDefaults suite so tests never share or leak state
+    // through the real App Group suite a device/process would use.
+
+    @MainActor
+    private func makeIsolatedDefaults() -> UserDefaults {
+        UserDefaults(suiteName: "SeedGateTests-\(UUID().uuidString)")!
+    }
+
+    @MainActor
+    func testSeedGateRecordsFirstObservationWithoutSeeding() throws {
+        let repo = try makeRepo()
+        let defaults = makeIsolatedDefaults()
+        let seeded = SeedGate.evaluate(context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed, defaults: defaults)
+        XCTAssertFalse(seeded)
+        XCTAssertEqual(try repo.folders().count, 0)
+    }
+
+    @MainActor
+    func testSeedGateDoesNotSeedBeforeWindowElapses() throws {
+        let repo = try makeRepo()
+        let defaults = makeIsolatedDefaults()
+        let start = Date()
+        SeedGate.evaluate(context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed, now: start, defaults: defaults)
+        let stillWaiting = SeedGate.evaluate(
+            context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed,
+            now: start.addingTimeInterval(30), elapsedWindow: 90, defaults: defaults
+        )
+        XCTAssertFalse(stillWaiting)
+        XCTAssertEqual(try repo.folders().count, 0)
+    }
+
+    @MainActor
+    func testSeedGateSeedsAfterWindowElapsesInMainAppMode() throws {
+        let repo = try makeRepo()
+        let defaults = makeIsolatedDefaults()
+        let start = Date()
+        SeedGate.evaluate(context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed, now: start, defaults: defaults)
+        let seeded = SeedGate.evaluate(
+            context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed,
+            now: start.addingTimeInterval(91), elapsedWindow: 90, defaults: defaults
+        )
+        XCTAssertTrue(seeded)
         XCTAssertEqual(try repo.folders().count, 5)
+    }
+
+    @MainActor
+    func testSeedGateNeverSeedsInObserveOnlyModeRegardlessOfElapsedTime() throws {
+        let repo = try makeRepo()
+        let defaults = makeIsolatedDefaults()
+        let start = Date()
+        SeedGate.evaluate(context: repo.context, hasICloudAccount: true, timedSeedPermission: .observeOnly, now: start, defaults: defaults)
+        let seeded = SeedGate.evaluate(
+            context: repo.context, hasICloudAccount: true, timedSeedPermission: .observeOnly,
+            now: start.addingTimeInterval(1000), elapsedWindow: 90, defaults: defaults
+        )
+        XCTAssertFalse(seeded)
+        XCTAssertEqual(try repo.folders().count, 0)
+    }
+
+    @MainActor
+    func testSeedGateCancelsPermanentlyOnceRealDataArrives() throws {
+        let repo = try makeRepo()
+        let defaults = makeIsolatedDefaults()
+        let start = Date()
+        SeedGate.evaluate(context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed, now: start, defaults: defaults)
+
+        // Real CloudKit data lands during the window.
+        try repo.createFolder(name: "Real Synced Folder", icon: .symbol("star"))
+
+        // Even well past the window, evaluate must never seed once real
+        // data exists — regardless of the persisted timestamp.
+        let seeded = SeedGate.evaluate(
+            context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed,
+            now: start.addingTimeInterval(1000), elapsedWindow: 90, defaults: defaults
+        )
+        XCTAssertFalse(seeded)
+        let folders = try repo.folders()
+        XCTAssertEqual(folders.count, 1)
+        XCTAssertEqual(folders.first?.name, "Real Synced Folder")
+    }
+
+    @MainActor
+    func testSeedGateIsIdempotentAcrossRepeatedCalls() throws {
+        let repo = try makeRepo()
+        let defaults = makeIsolatedDefaults()
+        let start = Date()
+        for tick in 0...5 {
+            SeedGate.evaluate(
+                context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed,
+                now: start.addingTimeInterval(TimeInterval(tick) * 20), elapsedWindow: 90, defaults: defaults
+            )
+        }
+        XCTAssertEqual(try repo.folders().count, 5)
+        // Further calls after seeding are no-ops, not additional inserts.
+        SeedGate.evaluate(
+            context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed,
+            now: start.addingTimeInterval(500), elapsedWindow: 90, defaults: defaults
+        )
+        XCTAssertEqual(try repo.folders().count, 5)
+    }
+
+    @MainActor
+    func testSeedGateContinuesCountdownAcrossAFreshContextSimulatingARelaunch() throws {
+        let repo = try makeRepo()
+        let defaults = makeIsolatedDefaults()
+        let start = Date()
+        SeedGate.evaluate(context: repo.context, hasICloudAccount: true, timedSeedPermission: .allowed, now: start, defaults: defaults)
+
+        // A brand-new Repository/context against the same persisted
+        // defaults — simulating a fresh process launch after a
+        // force-quit/crash — must continue the same countdown, not reset
+        // it back to "first observation."
+        let freshRepo = try makeRepo()
+        let seeded = SeedGate.evaluate(
+            context: freshRepo.context, hasICloudAccount: true, timedSeedPermission: .allowed,
+            now: start.addingTimeInterval(91), elapsedWindow: 90, defaults: defaults
+        )
+        XCTAssertTrue(seeded)
     }
 
     @MainActor
@@ -155,7 +274,7 @@ final class RepositoryTests: XCTestCase {
     @MainActor
     func testSuggestionMatchesKeyword() throws {
         let repo = try makeRepo()
-        try repo.seedIfEmpty()
+        SeedGate.evaluate(context: repo.context, hasICloudAccount: false, timedSeedPermission: .allowed)
         let draft = CaptureDraft(kind: .screenshot, ocrText: "Best recipes for ramen")
         let suggestion = try repo.suggestedFolder(for: draft)
         XCTAssertEqual(suggestion?.name, "Recipes")

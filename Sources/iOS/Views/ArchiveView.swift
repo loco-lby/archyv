@@ -143,7 +143,7 @@ struct ArchiveView: View {
                         // title, date, or favorite badge. Content is the
                         // color and texture of this surface; anything more
                         // belongs in Item Detail.
-                        LocalImageView(filename: item.localFilename)
+                        LocalImageView(filename: item.localFilename, fallbackImageData: { item.imageData })
                             .aspectRatio(item.aspectRatio, contentMode: .fit)
                             .frame(maxWidth: .infinity)
                             .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.button))

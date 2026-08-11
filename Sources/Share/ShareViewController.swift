@@ -27,9 +27,16 @@ final class ShareViewController: UIViewController {
         #endif
         view.backgroundColor = .clear
 
-        // Ensure folders exist even on a fresh App Group container.
         let repo = Repository(context: container.mainContext)
-        try? repo.seedIfEmpty()
+
+        // D4: one-shot, restricted-mode SeedGate check. Records the
+        // shared "first observed empty" timestamp and still handles the
+        // zero-ambiguity no-iCloud-account case immediately, but never
+        // itself concludes "the window has elapsed" — RootView's
+        // recurring hook in the main app owns that decision. See
+        // SeedGate.TimedSeedPermission and ShareDrawerContent's Unfiled
+        // fallback below for what happens here while unresolved.
+        SeedGate.evaluate(context: container.mainContext, timedSeedPermission: .observeOnly)
 
         // ONE-TIME MIGRATION — safe to delete once all devices have run it.
         IconMigration.runIfNeeded(repository: repo)
@@ -47,9 +54,24 @@ final class ShareViewController: UIViewController {
         let host = UIHostingController(rootView: root)
         host.view.backgroundColor = .clear
         addChild(host)
-        host.view.frame = view.bounds
-        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // Was a one-time `host.view.frame = view.bounds` + autoresizing
+        // mask — that snapshot is taken in viewDidLoad(), before this
+        // view controller's own view has necessarily received its final
+        // size from the extension's presentation system, and the
+        // touch-delivery bug traced back to exactly that: content
+        // rendered correctly (autoresizing kept the *visual* layer
+        // tracking later size changes) while the hosting view's actual
+        // hit-testable frame didn't reliably follow. Auto Layout
+        // constraints pin the hosting view to the parent continuously,
+        // not as a single snapshot, which removes that gap entirely.
+        host.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.topAnchor.constraint(equalTo: view.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
         host.didMove(toParent: self)
     }
 
@@ -97,7 +119,12 @@ final class ShareViewController: UIViewController {
         extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
     }
     private func cancel() {
-        extensionContext?.cancelRequest(withError: NSError(domain: "arkyv.share", code: 0))
+        // Was cancelRequest(withError:) — that API is meant for reporting
+        // a genuine failure back to the host, not routine user
+        // cancellation, and didn't reliably dismiss the extension.
+        // completeRequest with no items is the same mechanism the normal
+        // save path already uses successfully.
+        extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
     }
 }
 
@@ -137,6 +164,9 @@ private struct ShareDrawerContent: View {
     @State private var draft: CaptureDraft?
     @State private var note = ""
     @State private var savingInto: UUID?
+    /// D4: separate in-flight marker for the Unfiled fallback, shown
+    /// only while `folders` is empty — see `unfiledButton`/`fileUnfiled`.
+    @State private var savingUnfiled = false
 
     private var isReady: Bool { draft != nil }
 
@@ -155,9 +185,12 @@ private struct ShareDrawerContent: View {
     private var drawer: some View {
         VStack(spacing: 16) {
             HStack {
-                Button("Cancel") { onCancel() }
-                    .font(.arkyvCaption)
-                    .foregroundStyle(ArkyvColor.textSecondary)
+                // Cancel used to live here — relocated below the
+                // folder/Unfiled section, into the region proven
+                // reliably interactive by diagnostic testing. This row
+                // (and the mark/title below) never need to be
+                // interactive, so leaving them here is harmless even
+                // though this area doesn't receive touches reliably.
                 Spacer()
                 Text(isReady ? readyLabel : "Preparing…")
                     .font(.arkyvCaption)
@@ -176,11 +209,34 @@ private struct ShareDrawerContent: View {
                     .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
             }
 
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                ForEach(folders) { folder in
-                    folderButton(folder)
+            // D4: while folders is empty — either genuinely no folders
+            // exist yet, or SeedGate hasn't resolved whether this is a
+            // fresh account or an in-flight CloudKit restore — show a
+            // fallback that can still save the capture, rather than an
+            // unusable empty grid. SeedGate itself is never triggered
+            // from here; this only reads the current (reactive) folder
+            // list, same as `folderButton` below.
+            if folders.isEmpty {
+                unfiledButton()
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    ForEach(folders) { folder in
+                        folderButton(folder)
+                    }
                 }
             }
+
+            // Relocated from the top-left row — diagnostic testing
+            // (a temporary button wired to this exact same onCancel
+            // closure, placed here) proved this position reliably
+            // receives touches, while the original top-row position did
+            // not, for reasons isolated to hit-testing/layout in that
+            // area, not the dismissal logic itself. Same callback,
+            // same completeRequest-based dismissal — only the position
+            // and visual styling changed.
+            Button("Cancel") { onCancel() }
+                .font(.arkyvCaption)
+                .foregroundStyle(ArkyvColor.textSecondary)
 
             noteField
         }
@@ -222,7 +278,40 @@ private struct ShareDrawerContent: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .arkyvOutlinedSurface()
         }
-        .disabled(!isReady)
+        .disabled(!isReady || savingUnfiled)
+        .opacity(isReady ? 1 : 0.4)
+    }
+
+    /// D4: the folder-picker's fallback while `folders` is empty — files
+    /// the capture with zero folder memberships, the existing, already
+    /// fully-supported "Unfiled" shape (`fileCapture`'s `folders`
+    /// parameter defaults to `[]`). No new data-layer capability, no
+    /// folders created — this never seeds anything itself.
+    private func unfiledButton() -> some View {
+        Button {
+            fileUnfiled()
+        } label: {
+            HStack(spacing: 8) {
+                if savingUnfiled {
+                    ProgressView().tint(ArkyvColor.textPrimary)
+                } else {
+                    Image(systemName: "tray")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(ArkyvColor.textPrimary)
+                }
+                Text("Save without a folder")
+                    .font(.arkyvLabel)
+                    .foregroundStyle(ArkyvColor.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .arkyvOutlinedSurface()
+        }
+        .disabled(!isReady || savingInto != nil)
         .opacity(isReady ? 1 : 0.4)
     }
 
@@ -249,6 +338,19 @@ private struct ShareDrawerContent: View {
             onDone()
         } catch {
             savingInto = nil
+        }
+    }
+
+    private func fileUnfiled() {
+        guard var draft, savingInto == nil, !savingUnfiled else { return }
+        savingUnfiled = true
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { draft.noteBody = trimmed }
+        do {
+            try Repository(context: context).fileCapture(draft, folders: [])
+            onDone()
+        } catch {
+            savingUnfiled = false
         }
     }
 }

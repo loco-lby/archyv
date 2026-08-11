@@ -8,6 +8,18 @@ import ArkyvKit
 /// thread, with a graceful placeholder while missing/loading.
 struct LocalImageView: View {
     let filename: String?
+    /// D4: CloudKit-restore fallback source, called only when the normal
+    /// MediaStore file is missing (a fresh-device restore, where
+    /// `imageData` synced via CloudKit but the local file was never
+    /// written on this device). A closure, not a plain `Data?` — reading
+    /// `item.imageData` eagerly on every view evaluation would fault in
+    /// the (often multi-hundred-KB-to-multi-MB) externalStorage blob on
+    /// the main thread for every grid cell, every time, even though
+    /// MediaStore already has the file in the overwhelming common case.
+    /// Defaults to `{ nil }` so every existing call site (staged/draft
+    /// captures, which have no backing `StoredItem` at all) needs no
+    /// change.
+    var fallbackImageData: () -> Data? = { nil }
     var contentMode: ContentMode = .fill
 
     @State private var image: UIImage?
@@ -53,19 +65,46 @@ struct LocalImageView: View {
         guard let filename else { return }
         guard filename != loadedFilename else { return }
         didFail = false
-        let data = await Task.detached(priority: .userInitiated) {
+
+        // Phase 1: the normal, fast path — off the main thread, unchanged
+        // from before D4. No StoredItem/SwiftData access here at all.
+        let primary = await Task.detached(priority: .userInitiated) {
             MediaStore.shared.data(for: filename)
         }.value
-        // The `filename` this view wants may have changed again while this
-        // load was in flight — discard a stale result rather than showing
-        // (or briefly flashing) an image that's no longer the right one.
-        guard filename == self.filename else { return }
-        if let data, let ui = UIImage(data: data) {
-            image = ui
-            loadedFilename = filename
-        } else {
+        if handle(primary, for: filename) { return }
+
+        // Phase 2: D4 fallback, only reached when MediaStore didn't have
+        // the file. `fallbackImageData()` reads a SwiftData model
+        // property (`item.imageData`), so it MUST run here — on the main
+        // actor, where `.task` already runs — never inside the detached
+        // Task above, which SwiftData model objects aren't safe to touch
+        // from. Only the resulting plain `Data` (Sendable) crosses into
+        // the next detached hop to write it to disk.
+        guard let restored = fallbackImageData() else {
+            if filename == self.filename { didFail = true }
+            return
+        }
+        let materialized = await Task.detached(priority: .userInitiated) {
+            MediaStore.shared.data(for: filename, restoringFrom: restored)
+        }.value
+        if !handle(materialized, for: filename), filename == self.filename {
             didFail = true
         }
+    }
+
+    /// Applies a load result if `filename` is still what this view wants.
+    /// Returns `true` iff resolution is complete — either a usable image
+    /// was applied, or the request is stale and should just be ignored.
+    /// `false` means "no image yet, caller should try the next fallback
+    /// (or give up)" — callers are responsible for setting `didFail` in
+    /// that case, since a stale, still-`false` result must NOT set it.
+    @discardableResult
+    private func handle(_ data: Data?, for filename: String) -> Bool {
+        guard filename == self.filename else { return true }
+        guard let data, let ui = UIImage(data: data) else { return false }
+        image = ui
+        loadedFilename = filename
+        return true
     }
 }
 

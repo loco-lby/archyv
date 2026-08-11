@@ -37,7 +37,7 @@ struct ItemDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if item.kind.isMedia {
-                        LocalImageView(filename: item.localFilename, contentMode: .fit)
+                        LocalImageView(filename: item.localFilename, fallbackImageData: { item.imageData }, contentMode: .fit)
                             .frame(maxWidth: .infinity)
                             .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
                             .padding(.horizontal, 20)

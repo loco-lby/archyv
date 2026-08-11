@@ -19,6 +19,11 @@ struct RootView: View {
     /// and that Archive-tab reselect can reset from outside. Never inferred
     /// from `archivePath` or from `StoredItem.folder` — see `ArchiveFilter`.
     @State private var activeFilter: ArchiveFilter = .all
+    /// D4: SeedGate's in-foreground polling loop — see `startSeedGateLoop`.
+    /// Cancelled the moment the app leaves `.active`; `nil` whenever no
+    /// loop is currently running (either never started, or already
+    /// stopped after resolving).
+    @State private var seedGateTask: Task<Void, Never>?
 
     enum Tab { case archive, settings }
 
@@ -117,6 +122,12 @@ struct RootView: View {
                     let backgroundContext = ModelContext(container)
                     ImageBackfill.runNextBatch(context: backgroundContext)
                 }
+                startSeedGateLoop()
+            } else {
+                // D4: stop polling the moment we leave .active — never
+                // runs while backgrounded, restarted fresh next activation.
+                seedGateTask?.cancel()
+                seedGateTask = nil
             }
         }
         .onChange(of: archivePath.count) { old, new in
@@ -128,6 +139,29 @@ struct RootView: View {
         #if DEBUG
         print("[RootView] \(message())")
         #endif
+    }
+
+    /// D4: while the app stays continuously foregrounded, periodically
+    /// re-evaluate SeedGate so a genuinely new user isn't stuck waiting
+    /// for a background/reopen cycle to receive default folders once the
+    /// window elapses. Non-blocking — runs entirely off the main actor,
+    /// on a fresh background ModelContext each tick, same as the
+    /// ImageBackfill call above. Stops itself the moment the store is no
+    /// longer empty, for any reason (we just seeded, or real CloudKit
+    /// data landed independently) — never polls forever. Also stopped
+    /// externally the moment scenePhase leaves .active.
+    private func startSeedGateLoop() {
+        guard seedGateTask == nil else { return }
+        let container = modelContext.container
+        seedGateTask = Task.detached(priority: .background) {
+            while !Task.isCancelled {
+                let backgroundContext = ModelContext(container)
+                SeedGate.evaluate(context: backgroundContext, timedSeedPermission: .allowed)
+                let stillEmpty = (try? Repository(context: backgroundContext).folders(includingDeleted: true).isEmpty) ?? false
+                guard stillEmpty else { return }
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
     }
 
     private var bottomNav: some View {

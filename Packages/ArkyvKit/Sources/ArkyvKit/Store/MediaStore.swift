@@ -31,6 +31,26 @@ public struct MediaStore: Sendable {
         try? Data(contentsOf: url(for: filename))
     }
 
+    /// D4: reads `filename` from disk, materializing it first from
+    /// `fallbackData` if the file doesn't exist locally yet — the
+    /// situation a CloudKit-restored `StoredItem` is in on a fresh
+    /// device: its `imageData` synced correctly, but `MediaStore` itself
+    /// (a plain local file, never synced by CloudKit) never had this file
+    /// written on this device. Once materialized, the file exists exactly
+    /// as if `MediaStore` had written it at capture time — a one-time,
+    /// self-healing write; every subsequent read for the same filename
+    /// hits `data(for:)` above with no fallback involved.
+    ///
+    /// Never overwrites an existing file — the plain `data(for:)` lookup
+    /// is tried first, and `fallbackData` is only ever used when that
+    /// comes back nil.
+    public func data(for filename: String, restoringFrom fallbackData: Data?) -> Data? {
+        if let existing = data(for: filename) { return existing }
+        guard let fallbackData else { return nil }
+        try? fallbackData.write(to: url(for: filename), options: .atomic)
+        return fallbackData
+    }
+
     public func delete(filename: String) {
         try? FileManager.default.removeItem(at: url(for: filename))
     }
