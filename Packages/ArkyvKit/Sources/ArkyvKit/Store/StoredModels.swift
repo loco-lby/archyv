@@ -1,9 +1,9 @@
 import Foundation
 import SwiftData
 
-/// Local-first folder record. Mirrors the `folders` table plus local-only
-/// sync bookkeeping. IDs are UUIDs generated on-device so a capture can be
-/// filed and referenced before it ever reaches Supabase.
+/// Local-first folder record. IDs are UUIDs generated on-device so a
+/// capture can be filed and referenced immediately, before it's synced to
+/// CloudKit.
 @Model
 public final class StoredFolder {
     /// CLOUDKIT READINESS (D1): no longer `@Attribute(.unique)`. SwiftData's

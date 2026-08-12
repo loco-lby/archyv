@@ -2,8 +2,8 @@ import SwiftUI
 import ArkyvKit
 
 /// Phase 3 will turn this into a menu-bar app (MenuBarExtra) with a compact
-/// popover, drag-out, and Cmd+C shared-clipboard via Supabase Realtime. For
-/// now it's a minimal compiling shell so the target builds alongside iOS.
+/// popover, drag-out, and Cmd+C shared-clipboard sync. For now it's a
+/// minimal compiling shell so the target builds alongside iOS.
 @main
 struct ArkyvMacApp: App {
     // NOTE: unlike the iOS targets, project.yml declares no macOS-side font
