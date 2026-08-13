@@ -162,6 +162,25 @@ public final class StoredItem {
     public var aspectWidth: Double = 0
     public var aspectHeight: Double = 0
 
+    /// Non-destructive crop model: the original image (`localFilename`/
+    /// `imageData` above) is always the canonical source and is never
+    /// modified by cropping. These four fields are the user's normalized
+    /// "point of view" into it — see `CropRegion`. Defaults of
+    /// (0, 0, 1, 1) mean "full image, no crop," which is both the correct
+    /// default for brand-new items and, not incidentally, the correct
+    /// *existing* value for every item that predates this field: no
+    /// backfill is needed, since "no crop stored" already means exactly
+    /// what every pre-existing screenshot actually is.
+    ///
+    /// Plain scalar fields rather than a nested/Codable type, matching
+    /// this file's existing convention (`iconToken`→`icon`, `kindRaw`→
+    /// `kind`) — the safe, already-proven shape for a CloudKit-synced
+    /// computed convenience property.
+    public var cropX: Double = 0
+    public var cropY: Double = 0
+    public var cropWidth: Double = 1
+    public var cropHeight: Double = 1
+
     public var sourceDeviceRaw: String = SourcePlatform.unknown.rawValue
     public var createdAt: Date = Date.now
     public var updatedAt: Date = Date.now
@@ -229,6 +248,20 @@ public final class StoredItem {
     public var kind: ItemKind {
         get { ItemKind(rawValue: kindRaw) ?? .image }
         set { kindRaw = newValue.rawValue }
+    }
+
+    /// Convenience wrapper over `cropX`/`cropY`/`cropWidth`/`cropHeight`
+    /// — see their doc comment. Not yet written to by `fileCapture` or
+    /// read by any rendering code; that threading is a later, separate
+    /// milestone. Every item currently reads as `.fullImage`.
+    public var cropRegion: CropRegion {
+        get { CropRegion(x: cropX, y: cropY, width: cropWidth, height: cropHeight) }
+        set {
+            cropX = newValue.rect.minX
+            cropY = newValue.rect.minY
+            cropWidth = newValue.rect.width
+            cropHeight = newValue.rect.height
+        }
     }
 
     public var sourceDevice: SourcePlatform {
