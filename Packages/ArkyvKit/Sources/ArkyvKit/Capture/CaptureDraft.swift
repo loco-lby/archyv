@@ -16,6 +16,13 @@ public struct CaptureDraft: Identifiable, Sendable {
     public var sourceURL: String?
     public var tags: [String]
     public var sourceDevice: SourcePlatform
+    /// The user's point of view into `localFilename`'s original pixels —
+    /// see `CropRegion`. Defaults to `.fullImage`, so a draft that never
+    /// sets this behaves exactly as every capture does today: the whole
+    /// screenshot, unchanged. Not yet set by any producer (`ScreenshotDetector`,
+    /// the Share Extension, the "+" flow) — this is persistence plumbing
+    /// only; a future crop UI would set this before the draft is filed.
+    public var cropRegion: CropRegion
 
     public init(
         id: UUID = UUID(),
@@ -27,7 +34,8 @@ public struct CaptureDraft: Identifiable, Sendable {
         title: String? = nil,
         sourceURL: String? = nil,
         tags: [String] = [],
-        sourceDevice: SourcePlatform = .unknown
+        sourceDevice: SourcePlatform = .unknown,
+        cropRegion: CropRegion = .fullImage
     ) {
         self.id = id
         self.kind = kind
@@ -39,6 +47,7 @@ public struct CaptureDraft: Identifiable, Sendable {
         self.sourceURL = sourceURL
         self.tags = tags
         self.sourceDevice = sourceDevice
+        self.cropRegion = cropRegion
     }
 
     /// A text/note draft from the quick-capture field.

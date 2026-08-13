@@ -176,6 +176,75 @@ final class RepositoryTests: XCTestCase {
         XCTAssertNil(item.imageData)
     }
 
+    // MARK: - Crop foundation: CaptureDraft/Repository persistence
+
+    /// A draft that never sets cropRegion (every current producer) files
+    /// with the full-image default — the existing, unchanged behavior.
+    @MainActor
+    func testFileCaptureWithoutCropRegionPersistsFullImage() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(CaptureDraft(kind: .screenshot), into: folder)
+        XCTAssertEqual(item.cropRegion, .fullImage)
+    }
+
+    /// An explicit, non-default crop on the draft persists onto the
+    /// resulting item exactly.
+    @MainActor
+    func testFileCaptureWithExplicitCropRegionPersistsIt() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let region = CropRegion(x: 0.1, y: 0.15, width: 0.6, height: 0.5)
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .screenshot, cropRegion: region),
+            into: folder
+        )
+        XCTAssertEqual(item.cropRegion, region)
+    }
+
+    @MainActor
+    func testUpdateCropRegionPersistsANewRegion() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(CaptureDraft(kind: .screenshot), into: folder)
+        XCTAssertEqual(item.cropRegion, .fullImage)
+
+        let region = CropRegion(x: 0.2, y: 0.2, width: 0.4, height: 0.4)
+        try repo.updateCropRegion(item, to: region)
+        XCTAssertEqual(item.cropRegion, region)
+    }
+
+    /// Non-destructive: updating the crop never touches the original
+    /// pixels/localFilename.
+    @MainActor
+    func testUpdateCropRegionLeavesLocalFilenameUntouched() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let bytes = Data("fake-jpeg-bytes".utf8)
+        let filename = try MediaStore.shared.save(data: bytes)
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .screenshot, localFilename: filename),
+            into: folder
+        )
+
+        try repo.updateCropRegion(item, to: CropRegion(x: 0.3, y: 0.3, width: 0.3, height: 0.3))
+
+        XCTAssertEqual(item.localFilename, filename)
+        XCTAssertEqual(item.imageData, bytes)
+    }
+
+    @MainActor
+    func testUpdateCropRegionIsANoOpWhenRegionAlreadyMatches() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(CaptureDraft(kind: .screenshot), into: folder)
+        let updatedAtBefore = item.updatedAt
+
+        try repo.updateCropRegion(item, to: .fullImage)
+
+        XCTAssertEqual(item.updatedAt, updatedAtBefore)
+    }
+
     // MARK: - ImageBackfill (D3B)
 
     /// Simulates a "historical" item — the shape everything captured before

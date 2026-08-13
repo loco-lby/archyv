@@ -158,6 +158,11 @@ public struct Repository {
             aspectHeight: draft.pixelSize.map { Double($0.height) } ?? 0,
             sourceDevice: draft.sourceDevice
         )
+        // Crop foundation: persists draft.cropRegion onto the new item.
+        // draft.cropRegion defaults to .fullImage, so any draft that
+        // never sets it (every producer today) files exactly as before —
+        // this is additive persistence plumbing, not a behavior change.
+        item.cropRegion = draft.cropRegion
         context.insert(item)
 
         var seenFolderIDs = Set<UUID>()
@@ -225,6 +230,19 @@ public struct Repository {
         let normalized = (trimmed?.isEmpty ?? true) ? nil : trimmed
         guard normalized != item.noteBody else { return }
         item.noteBody = normalized
+        touch(item)
+        try context.save()
+    }
+
+    /// Updates an existing item's crop non-destructively — only the
+    /// `cropX`/`cropY`/`cropWidth`/`cropHeight` metadata changes;
+    /// `localFilename`/`imageData` (the original pixels) are never
+    /// touched. `CropRegion`'s own `init` already guarantees `region` is
+    /// valid, so there's no clamping/validation to do here. No-ops when
+    /// the region already matches, same reasoning as `updateNote`.
+    public func updateCropRegion(_ item: StoredItem, to region: CropRegion) throws {
+        guard region != item.cropRegion else { return }
+        item.cropRegion = region
         touch(item)
         try context.save()
     }
