@@ -21,6 +21,15 @@ struct LocalImageView: View {
     /// change.
     var fallbackImageData: () -> Data? = { nil }
     var contentMode: ContentMode = .fill
+    /// Non-destructive crop — see `CropRegion`. Defaults to `.fullImage`,
+    /// which takes a completely different, *unchanged* rendering path
+    /// (the plain `.aspectRatio(contentMode:)` below) — not the new
+    /// crop-fill path applied for any other value. This isn't an
+    /// optimization: it's what guarantees every existing call site, and
+    /// every item that's never had a real crop applied, renders exactly
+    /// as it always has, byte-for-byte the same code path as before this
+    /// property existed.
+    var cropRegion: CropRegion = .fullImage
 
     @State private var image: UIImage?
     /// The filename `image` actually reflects — lets a stale in-flight load
@@ -32,9 +41,13 @@ struct LocalImageView: View {
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
+                if cropRegion.isFullImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                } else {
+                    croppedImage(image)
+                }
             } else {
                 placeholder
             }
@@ -46,6 +59,26 @@ struct LocalImageView: View {
         // folder card right as the user might be tapping it.
         .animation(.easeInOut(duration: 0.2), value: loadedFilename)
         .task(id: filename) { await load() }
+    }
+
+    /// Non-destructive crop rendering: the *full* image, scaled and
+    /// offset via `CropRegion.renderTransform` so the crop exactly fills
+    /// this view's container, then clipped. No pixels are touched —
+    /// `image` here is always the untouched original. `GeometryReader`
+    /// supplies the container size the transform is computed against;
+    /// callers that want a specific crop aspect ratio should constrain
+    /// this view's frame externally (e.g. via `.aspectRatio(item.aspectRatio,
+    /// contentMode: .fit)`, the same pattern already used for the grid).
+    private func croppedImage(_ image: UIImage) -> some View {
+        GeometryReader { geometry in
+            let transform = cropRegion.renderTransform(imageSize: image.size, containerSize: geometry.size)
+            Image(uiImage: image)
+                .resizable()
+                .frame(width: image.size.width * transform.scale, height: image.size.height * transform.scale)
+                .offset(transform.offset)
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipped()
+        }
     }
 
     private var placeholder: some View {

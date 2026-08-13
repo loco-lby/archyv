@@ -37,11 +37,42 @@ struct ItemDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if item.kind.isMedia {
-                        LocalImageView(filename: item.localFilename, fallbackImageData: { item.imageData }, contentMode: .fit)
+                        // aspectRatio now reflects the crop (see
+                        // StoredItem.aspectRatio) — for a .fullImage item
+                        // this equals the original's own aspect ratio, so
+                        // this outer constraint is a no-op there, same as
+                        // today. It only actually shapes the frame once a
+                        // real crop exists, giving LocalImageView's
+                        // internal GeometryReader a correctly-shaped
+                        // container to fill.
+                        LocalImageView(filename: item.localFilename, fallbackImageData: { item.imageData }, contentMode: .fit, cropRegion: item.cropRegion)
+                            .aspectRatio(item.aspectRatio, contentMode: .fit)
                             .frame(maxWidth: .infinity)
                             .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
                             .padding(.horizontal, 20)
                             .padding(.top, 12)
+                            #if DEBUG
+                            // TEMPORARY DEBUG HARNESS — exercises the real
+                            // persisted crop path (Repository.updateCropRegion)
+                            // on a real StoredItem, not a local rendering
+                            // override, so we can physically verify the crop
+                            // renders correctly before the real crop editor
+                            // exists. Long-press toggles between .fullImage
+                            // and a fixed centered-square test region. Remove
+                            // this whole #if DEBUG block once the real editor
+                            // ships.
+                            .onLongPressGesture {
+                                let next: CropRegion = item.cropRegion.isFullImage
+                                    ? CropRegion(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+                                    : .fullImage
+                                do {
+                                    try repo.updateCropRegion(item, to: next)
+                                    log("DEBUG harness — toggled cropRegion to \(next)")
+                                } catch {
+                                    log("DEBUG harness — updateCropRegion FAILED: \(error)")
+                                }
+                            }
+                            #endif
                     }
 
                     VStack(alignment: .leading, spacing: 16) {

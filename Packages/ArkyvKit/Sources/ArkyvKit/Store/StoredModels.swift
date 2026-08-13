@@ -269,9 +269,15 @@ public final class StoredItem {
         set { sourceDeviceRaw = newValue.rawValue }
     }
 
+    /// The *cropped* aspect ratio — factors in `cropRegion` so grid/detail
+    /// layout sizes to what's actually rendered (the crop), not the
+    /// original's raw dimensions. For every item with the default
+    /// `.fullImage` crop (`cropWidth == cropHeight == 1`), this reduces
+    /// to exactly `aspectWidth / aspectHeight` — the same value this
+    /// property has always returned — so existing items are unaffected.
     public var aspectRatio: Double {
-        guard aspectWidth > 0, aspectHeight > 0 else { return 1 }
-        return aspectWidth / aspectHeight
+        guard aspectWidth > 0, aspectHeight > 0, cropWidth > 0, cropHeight > 0 else { return 1 }
+        return (aspectWidth * cropWidth) / (aspectHeight * cropHeight)
     }
 
     /// `true` iff `deletedAt` is set — see `StoredFolder.isSoftDeleted`.

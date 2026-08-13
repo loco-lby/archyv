@@ -52,4 +52,57 @@ public struct CropRegion: Equatable, Sendable {
 
     /// `true` iff this is (equivalent to) the full, uncropped image.
     public var isFullImage: Bool { self == .fullImage }
+
+    // MARK: - Non-destructive rendering
+
+    /// How to render the *original, untouched* image so this crop region
+    /// exactly and fully fills a given container — scale the whole image
+    /// up, then translate it so the crop's origin aligns with the
+    /// container's origin, then (the caller's responsibility) clip to the
+    /// container bounds. No pixels are ever modified; this only describes
+    /// a transform to apply to the full image.
+    ///
+    /// Behaves like aspect-*fill* for the crop itself: if the crop's own
+    /// aspect ratio doesn't exactly match the container's, the crop is
+    /// centered within the container and any excess is left for the
+    /// caller's clip to remove, rather than letterboxing.
+    ///
+    /// `scale`/`offset` are plain, animatable values by construction —
+    /// interpolating between the transform for `item.cropRegion` and the
+    /// transform for `.fullImage` is exactly the "zoom out to reveal the
+    /// original" interaction this is meant to support later, without
+    /// this type needing to know anything about that UI.
+    public struct RenderTransform: Equatable {
+        public var scale: CGFloat
+        public var offset: CGSize
+    }
+
+    /// - Parameters:
+    ///   - imageSize: the *original* image's pixel dimensions (not a
+    ///     downscaled preview's).
+    ///   - containerSize: the size, in points, the image should fill.
+    public func renderTransform(imageSize: CGSize, containerSize: CGSize) -> RenderTransform {
+        guard imageSize.width > 0, imageSize.height > 0,
+              containerSize.width > 0, containerSize.height > 0 else {
+            return RenderTransform(scale: 1, offset: .zero)
+        }
+
+        let cropPixelSize = CGSize(width: rect.width * imageSize.width, height: rect.height * imageSize.height)
+        guard cropPixelSize.width > 0, cropPixelSize.height > 0 else {
+            return RenderTransform(scale: 1, offset: .zero)
+        }
+
+        let scale = max(containerSize.width / cropPixelSize.width, containerSize.height / cropPixelSize.height)
+        let scaledImageSize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        let cropOriginInScaledImage = CGPoint(x: rect.minX * scaledImageSize.width, y: rect.minY * scaledImageSize.height)
+        let scaledCropSize = CGSize(width: cropPixelSize.width * scale, height: cropPixelSize.height * scale)
+
+        // Center the (possibly container-exceeding) scaled crop rect
+        // within the container, on each axis independently.
+        let offset = CGSize(
+            width: containerSize.width / 2 - cropOriginInScaledImage.x - scaledCropSize.width / 2,
+            height: containerSize.height / 2 - cropOriginInScaledImage.y - scaledCropSize.height / 2
+        )
+        return RenderTransform(scale: scale, offset: offset)
+    }
 }

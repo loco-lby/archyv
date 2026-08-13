@@ -66,4 +66,52 @@ final class CropRegionTests: XCTestCase {
         XCTAssertEqual(item.cropWidth, 0.3, accuracy: 0.0001)
         XCTAssertEqual(item.cropHeight, 0.4, accuracy: 0.0001)
     }
+
+    // MARK: - renderTransform (non-destructive rendering math)
+
+    func testFullImageSquareIntoSquareContainerHasNoOffset() {
+        let transform = CropRegion.fullImage.renderTransform(
+            imageSize: CGSize(width: 1000, height: 1000),
+            containerSize: CGSize(width: 300, height: 300)
+        )
+        XCTAssertEqual(transform.scale, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(transform.offset, .zero)
+    }
+
+    func testFullImageAspectMismatchCentersOnTheShortAxis() {
+        // Tall image (1:2) into a square container — aspect-fill behavior:
+        // scaled to cover width, vertical excess centered (offset < 0).
+        let transform = CropRegion.fullImage.renderTransform(
+            imageSize: CGSize(width: 1000, height: 2000),
+            containerSize: CGSize(width: 300, height: 300)
+        )
+        XCTAssertEqual(transform.scale, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(transform.offset.width, 0, accuracy: 0.0001)
+        XCTAssertEqual(transform.offset.height, -150, accuracy: 0.0001)
+    }
+
+    func testCenteredSquareCropRendersAtExpectedScaleAndOffset() {
+        let region = CropRegion(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+        let transform = region.renderTransform(
+            imageSize: CGSize(width: 1000, height: 1000),
+            containerSize: CGSize(width: 300, height: 300)
+        )
+        // crop is 500x500 px; scale to fill 300x300 -> 0.6.
+        XCTAssertEqual(transform.scale, 0.6, accuracy: 0.0001)
+        // scaled image is 600x600; crop origin in scaled image is (150,150);
+        // centering that 300x300 crop window in the 300x300 container means
+        // shifting the whole scaled image by (-150,-150).
+        XCTAssertEqual(transform.offset.width, -150, accuracy: 0.0001)
+        XCTAssertEqual(transform.offset.height, -150, accuracy: 0.0001)
+    }
+
+    func testRenderTransformDegenerateSizesReturnIdentityRatherThanCrashing() {
+        let zeroImage = CropRegion.fullImage.renderTransform(imageSize: .zero, containerSize: CGSize(width: 300, height: 300))
+        XCTAssertEqual(zeroImage.scale, 1)
+        XCTAssertEqual(zeroImage.offset, .zero)
+
+        let zeroContainer = CropRegion.fullImage.renderTransform(imageSize: CGSize(width: 100, height: 100), containerSize: .zero)
+        XCTAssertEqual(zeroContainer.scale, 1)
+        XCTAssertEqual(zeroContainer.offset, .zero)
+    }
 }
