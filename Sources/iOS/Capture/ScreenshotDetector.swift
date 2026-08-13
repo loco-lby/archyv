@@ -44,6 +44,15 @@ final class ScreenshotDetector {
     /// shortcut-bridge path. Starting narrow (~5s) per physical-device
     /// testing; tune this one constant if it proves too tight or too loose.
     private let launchWindow: TimeInterval = 5
+    /// Same idea as `launchWindow`, but for the native-screenshot path.
+    /// Without this, a real `.photoScreenshot`-tagged asset had no time
+    /// bound at all — any screenshot newer than the high-water mark, no
+    /// matter how long ago it was taken, would be offered on the next
+    /// activation (cold launch or a plain background/foreground resume),
+    /// even when that activation had nothing to do with it. Wider than
+    /// `launchWindow` since this path already has strong confidence from
+    /// the subtype tag alone and doesn't need as tight a bound.
+    private let nativeScreenshotWindow: TimeInterval = 30
     /// Bounded, non-blocking retry for Photos indexing lag. Checks
     /// immediately, then retries on this interval until `maxRetryWindow`
     /// elapses — never polls indefinitely.
@@ -170,15 +179,16 @@ final class ScreenshotDetector {
             }
             let isScreenshotSubtype = asset.mediaSubtypes.contains(.photoScreenshot)
             let isRecent = abs(Date().timeIntervalSince(created)) < launchWindow
+            let isRecentForNative = abs(Date().timeIntervalSince(created)) < nativeScreenshotWindow
             let matchesScreen = matchesScreenDimensions(asset)
             let newerThanMark = priorMark.map { created > $0 } ?? true
 
-            let passesNativeScreenshotPath = isScreenshotSubtype && newerThanMark
+            let passesNativeScreenshotPath = isScreenshotSubtype && newerThanMark && isRecentForNative
             let passesShortcutBridgePath = isRecent && matchesScreen && newerThanMark
             let accepted = passesNativeScreenshotPath || passesShortcutBridgePath
             let reason = passesNativeScreenshotPath ? "native screenshot" : (passesShortcutBridgePath ? "shortcut-bridge heuristic" : "rejected")
 
-            log(describe(asset, isScreenshotSubtype: isScreenshotSubtype, isRecent: isRecent, matchesScreen: matchesScreen, newerThanMark: newerThanMark, verdict: reason))
+            log(describe(asset, isScreenshotSubtype: isScreenshotSubtype, isRecent: isRecent, isRecentForNative: isRecentForNative, matchesScreen: matchesScreen, newerThanMark: newerThanMark, verdict: reason))
 
             if accepted { return asset }
         }
@@ -271,13 +281,14 @@ final class ScreenshotDetector {
         _ asset: PHAsset,
         isScreenshotSubtype: Bool,
         isRecent: Bool,
+        isRecentForNative: Bool,
         matchesScreen: Bool,
         newerThanMark: Bool,
         verdict: String
     ) -> String {
         let filename = PHAssetResource.assetResources(for: asset).first?.originalFilename ?? "?"
         let created = asset.creationDate.map { "\($0)" } ?? "nil"
-        return "candidate id:\(asset.localIdentifier) created:\(created) mediaType:\(asset.mediaType.rawValue) subtypes:\(asset.mediaSubtypes.rawValue) size:\(asset.pixelWidth)x\(asset.pixelHeight) file:\(filename) — screenshotSubtype:\(isScreenshotSubtype) recent(<\(Int(launchWindow))s):\(isRecent) matchesScreen:\(matchesScreen) newerThanMark:\(newerThanMark) -> \(verdict.uppercased())"
+        return "candidate id:\(asset.localIdentifier) created:\(created) mediaType:\(asset.mediaType.rawValue) subtypes:\(asset.mediaSubtypes.rawValue) size:\(asset.pixelWidth)x\(asset.pixelHeight) file:\(filename) — screenshotSubtype:\(isScreenshotSubtype) recent(<\(Int(launchWindow))s):\(isRecent) recentForNative(<\(Int(nativeScreenshotWindow))s):\(isRecentForNative) matchesScreen:\(matchesScreen) newerThanMark:\(newerThanMark) -> \(verdict.uppercased())"
     }
 
     private func log(_ message: @autoclosure () -> String) {
