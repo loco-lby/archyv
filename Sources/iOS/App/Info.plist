@@ -33,6 +33,10 @@
 		<string>IntelOneMono-Bold.ttf</string>
 		<string>InstrumentSans.ttf</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
