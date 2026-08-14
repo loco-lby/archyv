@@ -25,33 +25,31 @@ struct ItemDetailView: View {
     @State private var noteSaveTask: Task<Void, Never>?
     @State private var noteSaveState: NoteSaveState = .idle
     @State private var saveStateFadeTask: Task<Void, Never>?
-    #if DEBUG
-    // TEMPORARY DEBUG HARNESS — Stage 2 of the crop editor. Presents the
-    // real CropEditorView shell against this item's actual image and
-    // persisted cropRegion, so the aspect-fit/letterbox/dim-mask/handle
-    // geometry can be checked on a physical device before any gestures
-    // exist. Separate from the long-press harness above (which still
-    // exercises Repository.updateCropRegion) — this one is read-only and
-    // purely visual. Remove this whole block once CropEditorView is
-    // wired into a real flow.
-    //
-    // A single Identifiable payload, presented via .fullScreenCover(item:)
-    // — not a separate Bool + optional. That combination (isPresented:
-    // Bool driving presentation, content reading a different @State
-    // optional) is what caused a real, physically confirmed bug: the
-    // console trace showed showDebugCropEditor go true while the content
-    // closure's separate `debugCropEditorImage` read kept observing nil,
-    // so CropEditorView never got created during that window. .fullScreenCover(item:)
-    // makes that structurally impossible — presence and payload are the
-    // same value, passed directly into the closure, never re-read from a
-    // second piece of state.
-    private struct DebugCropEditorPreview: Identifiable {
+    /// The item's actual image, loaded on demand for the crop editor — a
+    /// single `Identifiable` payload, presented via `.fullScreenCover(item:)`
+    /// rather than a separate `Bool` + optional. That combination
+    /// (`isPresented: Bool` driving presentation, content reading a
+    /// different `@State` optional) is what caused a real, physically
+    /// confirmed bug during development: the presented-state boolean
+    /// could flip true while the content closure's separately-read
+    /// optional still observed nil, so the editor never actually
+    /// rendered. `.fullScreenCover(item:)` makes that structurally
+    /// impossible — presence and payload are the same value.
+    private struct CropEditingSession: Identifiable {
         let id = UUID()
         let image: UIImage
         let region: CropRegion
     }
-    @State private var debugCropEditorPreview: DebugCropEditorPreview?
-    #endif
+    @State private var cropEditingSession: CropEditingSession?
+    /// `false` (default) = the saved crop, "what I picked" — matches the
+    /// artifact the user just tapped from Archive/a folder. `true` = the
+    /// untouched original screenshot, "where did this come from" — a
+    /// secondary, explicitly-entered view, never the default. Resets to
+    /// `false` on a successful re-crop (see `confirmCrop`), so the reward
+    /// for confirming a new crop is landing back on it, not staying in
+    /// context. A fresh `@State` per navigation push, so it never leaks
+    /// between different items.
+    @State private var showingFullContext = false
 
     private enum NoteSaveState { case idle, saving, saved }
 
@@ -64,42 +62,37 @@ struct ItemDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if item.kind.isMedia {
-                        // aspectRatio now reflects the crop (see
-                        // StoredItem.aspectRatio) — for a .fullImage item
-                        // this equals the original's own aspect ratio, so
-                        // this outer constraint is a no-op there, same as
-                        // today. It only actually shapes the frame once a
-                        // real crop exists, giving LocalImageView's
-                        // internal GeometryReader a correctly-shaped
-                        // container to fill.
-                        LocalImageView(filename: item.localFilename, fallbackImageData: { item.imageData }, contentMode: .fit, cropRegion: item.cropRegion)
-                            .aspectRatio(item.aspectRatio, contentMode: .fit)
-                            .frame(maxWidth: .infinity)
-                            .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
-                            .padding(.horizontal, 20)
-                            .padding(.top, 12)
-                            #if DEBUG
-                            // TEMPORARY DEBUG HARNESS — exercises the real
-                            // persisted crop path (Repository.updateCropRegion)
-                            // on a real StoredItem, not a local rendering
-                            // override, so we can physically verify the crop
-                            // renders correctly before the real crop editor
-                            // exists. Long-press toggles between .fullImage
-                            // and a fixed centered-square test region. Remove
-                            // this whole #if DEBUG block once the real editor
-                            // ships.
-                            .onLongPressGesture {
-                                let next: CropRegion = item.cropRegion.isFullImage
-                                    ? CropRegion(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
-                                    : .fullImage
-                                do {
-                                    try repo.updateCropRegion(item, to: next)
-                                    log("DEBUG harness — toggled cropRegion to \(next)")
-                                } catch {
-                                    log("DEBUG harness — updateCropRegion FAILED: \(error)")
-                                }
+                        // Defaults to the saved crop — "what I picked,"
+                        // the same artifact Archive/folder grids just
+                        // showed when the user tapped into this item.
+                        // showingFullContext is the explicit, secondary
+                        // "where did this come from" view of the
+                        // untouched original. Same non-destructive
+                        // rendering LocalImageView already uses in
+                        // Archive: cropRegion: .fullImage takes its own
+                        // unchanged code path, so a never-cropped item
+                        // renders identically regardless of this toggle.
+                        LocalImageView(
+                            filename: item.localFilename,
+                            fallbackImageData: { item.imageData },
+                            contentMode: .fit,
+                            cropRegion: showingFullContext ? .fullImage : item.cropRegion
+                        )
+                        .aspectRatio(showingFullContext ? originalAspectRatio : item.aspectRatio, contentMode: .fit)
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+                        .padding(.horizontal, 20)
+                        .padding(.top, 12)
+                        .overlay(alignment: .topTrailing) {
+                            if !item.cropRegion.isFullImage {
+                                contextToggleButton
                             }
-                            #endif
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard !item.cropRegion.isFullImage else { return }
+                            withAnimation(.easeInOut(duration: 0.2)) { showingFullContext.toggle() }
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 16) {
@@ -173,23 +166,14 @@ struct ItemDetailView: View {
                 MoveToFolderView(item: item)
                     .presentationDetents([.medium, .large])
             }
-            #if DEBUG
-            .fullScreenCover(item: $debugCropEditorPreview) { preview in
-                ZStack(alignment: .topTrailing) {
-                    CropEditorView(image: preview.image, region: preview.region)
-                        .ignoresSafeArea()
-                    Button {
-                        debugCropEditorPreview = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundStyle(.white, .black.opacity(0.5))
-                    }
-                    .padding(20)
-                }
-                .onAppear { log("DEBUG crop editor preview — fullScreenCover content .onAppear fired") }
+            .fullScreenCover(item: $cropEditingSession) { session in
+                CropEditorView(
+                    image: session.image,
+                    region: session.region,
+                    onConfirm: { region in confirmCrop(region) },
+                    onDismiss: { cropEditingSession = nil }
+                )
             }
-            #endif
             .onAppear {
                 noteDraft = item.noteBody ?? ""
                 log("appeared for item \(item.id), noteBody length=\(item.noteBody?.count ?? 0)")
@@ -222,6 +206,34 @@ struct ItemDetailView: View {
         }
     }
 
+    /// The untouched original's own aspect ratio — `item.aspectRatio` is
+    /// deliberately crop-aware (see `StoredItem.aspectRatio`), which is
+    /// exactly wrong when `showingFullContext` is displaying the
+    /// original: forcing the crop's shape onto the full image would
+    /// stretch or letterbox it incorrectly.
+    private var originalAspectRatio: Double {
+        item.aspectHeight > 0 ? item.aspectWidth / item.aspectHeight : 1
+    }
+
+    /// Small top-right affordance toggling `showingFullContext`, so the
+    /// capability is discoverable rather than relying only on the hidden
+    /// tap-the-image gesture. Icon direction communicates which way the
+    /// tap goes: outward arrows to expand into context, inward arrows to
+    /// collapse back to the saved crop.
+    private var contextToggleButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { showingFullContext.toggle() }
+        } label: {
+            Image(systemName: showingFullContext ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white)
+                .padding(8)
+                .background(.black.opacity(0.5), in: Circle())
+        }
+        .padding(10)
+        .accessibilityLabel(showingFullContext ? "Show saved crop" : "Show full screenshot")
+    }
+
     private var defaultTitle: String {
         switch item.kind {
         case .screenshot: return "Screenshot"
@@ -244,17 +256,24 @@ struct ItemDetailView: View {
                 .foregroundStyle(ArkyvColor.textPrimary)
             }
             Spacer()
-            #if DEBUG
-            if item.kind.isMedia {
+            // Re-crop belongs to Full Context, not the default cropped
+            // view: while looking at the saved crop, the primary action
+            // is simply viewing it — the option to change it only
+            // surfaces once the user has expanded into the original to
+            // see where it came from. Exception: a `.fullImage` item has
+            // no distinct "saved crop" to default to — its default view
+            // already *is* full context — so Crop must stay reachable
+            // even though `showingFullContext` never becomes true for it.
+            if item.kind.isMedia && (item.cropRegion.isFullImage || showingFullContext) {
                 Button {
-                    presentDebugCropEditorPreview()
+                    presentCropEditor()
                 } label: {
                     Image(systemName: "crop").font(.system(size: 20))
                         .foregroundStyle(ArkyvColor.textPrimary)
                 }
-                .accessibilityLabel("Debug crop editor preview")
+                .accessibilityLabel("Crop")
+                .accessibilityHint("Opens the crop editor to change what Archive shows for this item.")
             }
-            #endif
             ShareLink(item: shareText) {
                 Image(systemName: "square.and.arrow.up").font(.system(size: 20))
                     .foregroundStyle(ArkyvColor.textPrimary)
@@ -434,34 +453,55 @@ struct ItemDetailView: View {
         #endif
     }
 
-    #if DEBUG
     /// Loads this item's actual image data the same two-phase way
     /// `LocalImageView` does — `item.imageData` is a SwiftData model
     /// property and must be read on the main actor, only the resulting
     /// `Data` crosses into the detached task — then presents
     /// `CropEditorView` with it and the item's current persisted
-    /// `cropRegion`, as one atomic payload (see `DebugCropEditorPreview`'s
+    /// `cropRegion`, as one atomic payload (see `CropEditingSession`'s
     /// doc comment for why that matters).
-    private func presentDebugCropEditorPreview() {
+    private func presentCropEditor() {
         guard let filename = item.localFilename else {
-            log("DEBUG crop editor preview — no localFilename, nothing to show")
+            log("crop editor — no localFilename, nothing to show")
             return
         }
-        log("DEBUG crop editor preview — tap received")
+        log("crop editor — tap received")
         let fallback = item.imageData
         Task {
             let data = await Task.detached(priority: .userInitiated) {
                 MediaStore.shared.data(for: filename) ?? fallback
             }.value
             guard let data, let image = UIImage(data: data) else {
-                log("DEBUG crop editor preview — failed to load image data")
+                log("crop editor — failed to load image data")
                 return
             }
-            log("DEBUG crop editor preview — image loaded (\(Int(image.size.width))x\(Int(image.size.height))), presenting")
-            debugCropEditorPreview = DebugCropEditorPreview(image: image, region: item.cropRegion)
+            log("crop editor — image loaded (\(Int(image.size.width))x\(Int(image.size.height))), presenting")
+            cropEditingSession = CropEditingSession(image: image, region: item.cropRegion)
         }
     }
-    #endif
+
+    /// Persists the confirmed crop via the same non-destructive path
+    /// established since the schema-foundation milestone — only the
+    /// crop scalars change, original pixels/localFilename untouched.
+    /// Returns whether the write succeeded; `CropEditorView` dismisses
+    /// itself immediately on `true` — on `false` it stays open with the
+    /// user's edit untouched, so a persistence failure never silently
+    /// discards it. Also resets `showingFullContext` to `false` on
+    /// success: returning from a re-crop should land back on the newly-
+    /// saved crop (the reward/confirmation), not linger in context.
+    /// Dismissal itself (`cropEditingSession = nil`) happens from
+    /// `onDismiss`.
+    private func confirmCrop(_ region: CropRegion) -> Bool {
+        do {
+            try repo.updateCropRegion(item, to: region)
+            log("crop editor — confirmed and persisted \(region)")
+            showingFullContext = false
+            return true
+        } catch {
+            log("crop editor — updateCropRegion FAILED, editor stays open: \(error)")
+            return false
+        }
+    }
 }
 
 /// Wrapping tag row.

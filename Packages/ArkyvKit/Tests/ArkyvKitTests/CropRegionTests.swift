@@ -105,6 +105,99 @@ final class CropRegionTests: XCTestCase {
         XCTAssertEqual(transform.offset.height, -150, accuracy: 0.0001)
     }
 
+    // These tests do not trust `renderTransform`'s internal scale/offset
+    // algebra at all. They independently re-derive, from first principles,
+    // which normalized region of the *original* image ends up visible in
+    // the container under the transform — using the same direct-origin
+    // placement contract the consuming views use (`.position()` at
+    // `offset + scaledSize/2`, i.e. image top-left placed directly at
+    // `offset`, not a `.offset()`-style shift from a centered default).
+    // If `renderTransform` or its consumption drifts from that contract,
+    // these fail by showing the wrong *source content*, not just a wrong
+    // number.
+    private func visibleSourceFraction(
+        region: CropRegion,
+        imageSize: CGSize,
+        containerSize: CGSize
+    ) -> CGRect {
+        let transform = region.renderTransform(imageSize: imageSize, containerSize: containerSize)
+        let minX = (0 - transform.offset.width) / transform.scale / imageSize.width
+        let maxX = (containerSize.width - transform.offset.width) / transform.scale / imageSize.width
+        let minY = (0 - transform.offset.height) / transform.scale / imageSize.height
+        let maxY = (containerSize.height - transform.offset.height) / transform.scale / imageSize.height
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    private func assertVisibleFraction(
+        _ region: CropRegion,
+        imageSize: CGSize,
+        containerSize: CGSize,
+        expected: CGRect,
+        accuracy: CGFloat = 0.0001,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let visible = visibleSourceFraction(region: region, imageSize: imageSize, containerSize: containerSize)
+        XCTAssertEqual(visible.minX, expected.minX, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(visible.minY, expected.minY, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(visible.width, expected.width, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(visible.height, expected.height, accuracy: accuracy, file: file, line: line)
+    }
+
+    func testFullImageRegionRevealsTheEntireSource() {
+        assertVisibleFraction(
+            .fullImage,
+            imageSize: CGSize(width: 1000, height: 1000),
+            containerSize: CGSize(width: 300, height: 300),
+            expected: CGRect(x: 0, y: 0, width: 1, height: 1)
+        )
+    }
+
+    func testLeftHalfRegionRevealsOnlyTheLeftHalfOfTheSource() {
+        assertVisibleFraction(
+            CropRegion(x: 0, y: 0, width: 0.5, height: 1),
+            imageSize: CGSize(width: 1000, height: 1000),
+            containerSize: CGSize(width: 300, height: 600),
+            expected: CGRect(x: 0, y: 0, width: 0.5, height: 1)
+        )
+    }
+
+    func testRightHalfRegionRevealsOnlyTheRightHalfOfTheSource() {
+        assertVisibleFraction(
+            CropRegion(x: 0.5, y: 0, width: 0.5, height: 1),
+            imageSize: CGSize(width: 1000, height: 1000),
+            containerSize: CGSize(width: 300, height: 600),
+            expected: CGRect(x: 0.5, y: 0, width: 0.5, height: 1)
+        )
+    }
+
+    func testTopHalfRegionRevealsOnlyTheTopHalfOfTheSource() {
+        assertVisibleFraction(
+            CropRegion(x: 0, y: 0, width: 1, height: 0.5),
+            imageSize: CGSize(width: 1000, height: 1000),
+            containerSize: CGSize(width: 600, height: 300),
+            expected: CGRect(x: 0, y: 0, width: 1, height: 0.5)
+        )
+    }
+
+    func testBottomHalfRegionRevealsOnlyTheBottomHalfOfTheSource() {
+        assertVisibleFraction(
+            CropRegion(x: 0, y: 0.5, width: 1, height: 0.5),
+            imageSize: CGSize(width: 1000, height: 1000),
+            containerSize: CGSize(width: 600, height: 300),
+            expected: CGRect(x: 0, y: 0.5, width: 1, height: 0.5)
+        )
+    }
+
+    func testCenteredMiddleRegionRevealsOnlyTheCenteredMiddleOfTheSource() {
+        assertVisibleFraction(
+            CropRegion(x: 0.25, y: 0.25, width: 0.5, height: 0.5),
+            imageSize: CGSize(width: 1000, height: 1000),
+            containerSize: CGSize(width: 300, height: 300),
+            expected: CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+        )
+    }
+
     func testRenderTransformDegenerateSizesReturnIdentityRatherThanCrashing() {
         let zeroImage = CropRegion.fullImage.renderTransform(imageSize: .zero, containerSize: CGSize(width: 300, height: 300))
         XCTAssertEqual(zeroImage.scale, 1)

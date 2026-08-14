@@ -72,13 +72,19 @@ struct LocalImageView: View {
     private func croppedImage(_ image: UIImage) -> some View {
         GeometryReader { geometry in
             let transform = cropRegion.renderTransform(imageSize: image.size, containerSize: geometry.size)
+            let scaledSize = CGSize(width: image.size.width * transform.scale, height: image.size.height * transform.scale)
+            // `transform.offset` is the image's top-left origin placed directly
+            // in container coordinates — NOT a `.offset()`-style shift from a
+            // centered default. `.position()` is what actually honors that
+            // contract; using `.offset()` here previously shifted the image
+            // from the wrong baseline and rendered the wrong source region.
+            let imageCenter = CGPoint(x: transform.offset.width + scaledSize.width / 2, y: transform.offset.height + scaledSize.height / 2)
             Image(uiImage: image)
                 .resizable()
-                .frame(width: image.size.width * transform.scale, height: image.size.height * transform.scale)
-                .offset(transform.offset)
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .clipped()
+                .frame(width: scaledSize.width, height: scaledSize.height)
+                .position(x: imageCenter.x, y: imageCenter.y)
         }
+        .clipped()
     }
 
     private var placeholder: some View {
