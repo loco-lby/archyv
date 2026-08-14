@@ -6,29 +6,38 @@ import SwiftUI
 /// `xmark`/`checkmark` glyphs — deliberately squared stroke ends (SwiftUI's
 /// `StrokeStyle` default `.butt` cap / `.miter` join, called out explicitly
 /// below rather than left implicit) so the marks read as immediate and
-/// tool-like, not a generic system button. Used by both `CropEditorView`
-/// and `ScreenshotCaptureFlowView` so the confirm/cancel grammar is
-/// identical across the whole capture flow.
+/// tool-like, not a generic system button. Neither control has any UIKit
+/// dependency, so this lives in ArkyvKit (not the iOS app target it
+/// originated in) — shared by `CropEditorView`/`ScreenshotCaptureFlowView`
+/// in the app and the Share Extension alike, so the confirm/cancel grammar
+/// is identical everywhere Cherries captures something.
 ///
 /// X always cancels the current capture; check always confirms whatever
 /// the current stage's job is (persisting a crop, filing the capture) —
 /// callers should stay consistent with that, not repurpose either glyph's
 /// meaning per-screen.
 
-struct CherriesCancelControl: View {
+public struct CherriesCancelControl: View {
     var action: () -> Void
     /// The glyph's own visible height — "approximately 28–32pt" per the
     /// design direction. Width follows from the shape's natural (square,
     /// for X) aspect ratio.
-    var visibleMarkSize: CGFloat = 30
-    var color: Color = .white
+    var visibleMarkSize: CGFloat
+    var color: Color
     /// Generous invisible tap area around the glyph — never drawn (no
     /// circle/pill/fill/border), just `contentShape`. The glyph itself
     /// stays small and precise; the tap target doesn't have to look that
     /// way to behave that way.
-    var minimumHitTarget: CGFloat = 44
+    var minimumHitTarget: CGFloat
 
-    var body: some View {
+    public init(action: @escaping () -> Void, visibleMarkSize: CGFloat = 30, color: Color = .white, minimumHitTarget: CGFloat = 44) {
+        self.action = action
+        self.visibleMarkSize = visibleMarkSize
+        self.color = color
+        self.minimumHitTarget = minimumHitTarget
+    }
+
+    public var body: some View {
         Button(action: action) {
             CherriesXMarkShape()
                 .fill(color)
@@ -40,22 +49,29 @@ struct CherriesCancelControl: View {
     }
 }
 
-struct CherriesConfirmControl: View {
+public struct CherriesConfirmControl: View {
     var action: () -> Void
     /// Disabled state is communicated only via reduced opacity, never a
-    /// different color — same convention `CropEditorView`'s Done already
-    /// used before this restyle.
-    var isEnabled: Bool = true
-    var visibleMarkSize: CGFloat = 30
-    var color: Color = .white
-    var minimumHitTarget: CGFloat = 44
+    /// different color.
+    var isEnabled: Bool
+    var visibleMarkSize: CGFloat
+    var color: Color
+    var minimumHitTarget: CGFloat
 
     /// The check's source vector isn't square (54.5617 × 37.8853) — this
     /// preserves that natural proportion at any `visibleMarkSize` rather
     /// than distorting it into a square box to match the X.
     private static let aspectRatio: CGFloat = 54.5617 / 37.8853
 
-    var body: some View {
+    public init(action: @escaping () -> Void, isEnabled: Bool = true, visibleMarkSize: CGFloat = 30, color: Color = .white, minimumHitTarget: CGFloat = 44) {
+        self.action = action
+        self.isEnabled = isEnabled
+        self.visibleMarkSize = visibleMarkSize
+        self.color = color
+        self.minimumHitTarget = minimumHitTarget
+    }
+
+    public var body: some View {
         Button(action: action) {
             CherriesCheckMarkShape()
                 .fill(color)

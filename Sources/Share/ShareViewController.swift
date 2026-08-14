@@ -128,8 +128,8 @@ final class ShareViewController: UIViewController {
     }
 }
 
-/// The share drawer. Folders show instantly; the shared attachment loads in the
-/// background and enables one-tap filing the moment it's ready.
+/// The share drawer. The folder control and ✓ show instantly; the shared
+/// attachment loads in the background — ✓ is only live once it's ready.
 private struct ShareDrawerView: View {
     let container: ModelContainer
     let load: () async -> CaptureDraft?
@@ -144,6 +144,12 @@ private struct ShareDrawerView: View {
     }
 }
 
+/// Same Cherries single-surface language as the Action Capture flow
+/// (`ScreenshotCaptureFlowView`): full-bleed dark canvas, X always cancels,
+/// ✓ always performs the one save — folder selection is an optional
+/// enhancement to that save, never a prerequisite. No crop editor here yet
+/// (see the Share Extension parity milestone notes) — the preview is a
+/// plain, non-interactive thumbnail of the untouched original.
 private struct ShareDrawerContent: View {
     let load: () async -> CaptureDraft?
     let onDone: () -> Void
@@ -163,156 +169,174 @@ private struct ShareDrawerContent: View {
 
     @State private var draft: CaptureDraft?
     @State private var note = ""
-    @State private var savingInto: UUID?
-    /// D4: separate in-flight marker for the Unfiled fallback, shown
-    /// only while `folders` is empty — see `unfiledButton`/`fileUnfiled`.
-    @State private var savingUnfiled = false
+    @State private var showingPicker = false
+    /// Chosen in the dropdown (see `chooseFolder`), not yet saved — ✓ is
+    /// what actually files the share (see `confirmSave`). `nil` means
+    /// Unfiled, the existing canonical zero-membership shape.
+    @State private var selectedFolder: StoredFolder?
+    @State private var isSaving = false
+    @State private var saveError = false
 
+    /// The attachment genuinely can take a perceptible moment to load
+    /// (Photos library fetch, a large remote image) — unlike the Action
+    /// Button flow's near-instant local read, this is a real wait worth
+    /// showing, not a same-frame technical gate.
     private var isReady: Bool { draft != nil }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            drawer
+        ZStack {
+            VStack(spacing: 0) {
+                actionBar
+                folderAccessory
+                Spacer(minLength: 12)
+                if let preview = draft?.localFilename {
+                    MediaThumbnail(filename: preview)
+                        .frame(maxWidth: .infinity)
+                        .frame(maxHeight: 360)
+                        .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+                        .padding(.horizontal, 20)
+                }
+                Spacer(minLength: 12)
+                noteField
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+            }
+            .opacity(showingPicker ? 0.3 : 1)
+            .allowsHitTesting(!showingPicker)
+
+            if showingPicker {
+                dropdownOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.35).ignoresSafeArea())
+        .background(ArkyvColor.background.ignoresSafeArea())
+        .ignoresSafeArea(edges: .bottom)
+        .animation(.easeOut(duration: 0.18), value: showingPicker)
         .task {
             draft = await load()
         }
     }
 
-    private var drawer: some View {
-        VStack(spacing: 16) {
-            HStack {
-                // Cancel used to live here — relocated below the
-                // folder/Unfiled section, into the region proven
-                // reliably interactive by diagnostic testing. This row
-                // (and the mark/title below) never need to be
-                // interactive, so leaving them here is harmless even
-                // though this area doesn't receive touches reliably.
-                Spacer()
-                Text(isReady ? readyLabel : "Preparing…")
-                    .font(.arkyvCaption)
+    // MARK: X / ✓ — same shared Cherries controls the app's capture flow
+    // uses, same positioning.
+
+    private var actionBar: some View {
+        HStack {
+            CherriesCancelControl(action: onCancel)
+            Spacer()
+            CherriesConfirmControl(action: confirmSave, isEnabled: isReady && !isSaving)
+        }
+        .padding(.horizontal, 32)
+        .padding(.top, 20)
+        .padding(.bottom, 12)
+    }
+
+    // MARK: Folder accessory — "Unfiled ˅" (italic) until a folder is
+    // explicitly chosen, then that folder's name (roman). Selecting a
+    // folder only updates in-flight state; ✓ is the only thing that saves.
+
+    private var folderAccessory: some View {
+        VStack(spacing: 4) {
+            Button {
+                showingPicker = true
+            } label: {
+                Text(selectedFolder.map { "\($0.name) ˅" } ?? "Unfiled ˅")
+                    .font(ArkyvFont.mono(.medium, size: 16))
+                    .italic(selectedFolder == nil)
+                    .foregroundStyle(.white)
+            }
+            .disabled(showingPicker)
+            if !isReady {
+                Text("Preparing…")
+                    .font(ArkyvFont.mono(.regular, size: 11))
                     .foregroundStyle(ArkyvColor.textDim)
             }
-
-            ArkyvMarkView(height: 36, color: ArkyvColor.textPrimary)
-            Text("Save to arkyv")
-                .font(ArkyvFont.mono(.bold, size: 24))
-                .foregroundStyle(ArkyvColor.textPrimary)
-
-            if let preview = draft?.localFilename {
-                MediaThumbnail(filename: preview)
-                    .frame(height: 120)
-                    .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+            if saveError {
+                Text("Couldn't save — try again")
+                    .font(ArkyvFont.mono(.regular, size: 11))
+                    .foregroundStyle(ArkyvColor.accent)
+                    .transition(.opacity)
             }
-
-            // D4: while folders is empty — either genuinely no folders
-            // exist yet, or SeedGate hasn't resolved whether this is a
-            // fresh account or an in-flight CloudKit restore — show a
-            // fallback that can still save the capture, rather than an
-            // unusable empty grid. SeedGate itself is never triggered
-            // from here; this only reads the current (reactive) folder
-            // list, same as `folderButton` below.
-            if folders.isEmpty {
-                unfiledButton()
-            } else {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                    ForEach(folders) { folder in
-                        folderButton(folder)
-                    }
-                }
-            }
-
-            // Relocated from the top-left row — diagnostic testing
-            // (a temporary button wired to this exact same onCancel
-            // closure, placed here) proved this position reliably
-            // receives touches, while the original top-row position did
-            // not, for reasons isolated to hit-testing/layout in that
-            // area, not the dismissal logic itself. Same callback,
-            // same completeRequest-based dismissal — only the position
-            // and visual styling changed.
-            Button("Cancel") { onCancel() }
-                .font(.arkyvCaption)
-                .foregroundStyle(ArkyvColor.textSecondary)
-
-            noteField
         }
-        .padding(20)
-        .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
-        .background(ArkyvColor.background)
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: ArkyvRadius.sheet, topTrailingRadius: ArkyvRadius.sheet))
-        .ignoresSafeArea(edges: .bottom)
+        .padding(.bottom, 12)
     }
 
-    private var readyLabel: String {
-        switch draft?.kind {
-        case .screenshot, .image: return "Photo ready"
-        case .text: return "Link ready"
-        default: return "Note ready"
+    // MARK: Folder dropdown
+
+    private var dropdownOverlay: some View {
+        VStack {
+            Spacer().frame(height: 110)
+            folderPanel
+            Spacer()
         }
+        .padding(.horizontal, 24)
     }
 
-    private func folderButton(_ folder: StoredFolder) -> some View {
-        Button {
-            file(into: folder)
-        } label: {
-            HStack(spacing: 8) {
-                if savingInto == folder.id {
-                    ProgressView().tint(ArkyvColor.textPrimary)
-                } else {
-                    FolderIconView(icon: folder.icon, size: 18)
+    private var folderPanel: some View {
+        VStack(spacing: 4) {
+            if folders.isEmpty {
+                Text("No folders yet")
+                    .font(ArkyvFont.mono(.regular, size: 13))
+                    .foregroundStyle(ArkyvColor.textDim)
+                    .padding(.vertical, 10)
+            } else {
+                ForEach(folders) { folder in
+                    folderRow(folder)
                 }
+            }
+        }
+        .padding(8)
+        .background(ArkyvColor.card, in: RoundedRectangle(cornerRadius: ArkyvRadius.sheet))
+        .overlay(
+            RoundedRectangle(cornerRadius: ArkyvRadius.sheet)
+                .strokeBorder(ArkyvColor.border, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 12, y: 12)
+    }
+
+    private func folderRow(_ folder: StoredFolder) -> some View {
+        let isSelected = folder.id == selectedFolder?.id
+        return Button {
+            chooseFolder(folder)
+        } label: {
+            HStack(spacing: 10) {
+                FolderIconView(icon: folder.icon, size: 13, color: ArkyvColor.accent)
                 Text(folder.name)
-                    .font(.arkyvLabel)
+                    .font(ArkyvFont.mono(.regular, size: 13))
                     .foregroundStyle(ArkyvColor.textPrimary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
                 Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(ArkyvColor.accent)
+                }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .arkyvOutlinedSurface()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                isSelected ? ArkyvColor.accent.opacity(0.06) : Color.clear,
+                in: RoundedRectangle(cornerRadius: ArkyvRadius.row)
+            )
+            .overlay(alignment: .leading) {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(ArkyvColor.accent)
+                        .frame(width: 2)
+                        .padding(.vertical, 2)
+                }
+            }
         }
-        .disabled(!isReady || savingUnfiled)
-        .opacity(isReady ? 1 : 0.4)
     }
 
-    /// D4: the folder-picker's fallback while `folders` is empty — files
-    /// the capture with zero folder memberships, the existing, already
-    /// fully-supported "Unfiled" shape (`fileCapture`'s `folders`
-    /// parameter defaults to `[]`). No new data-layer capability, no
-    /// folders created — this never seeds anything itself.
-    private func unfiledButton() -> some View {
-        Button {
-            fileUnfiled()
-        } label: {
-            HStack(spacing: 8) {
-                if savingUnfiled {
-                    ProgressView().tint(ArkyvColor.textPrimary)
-                } else {
-                    Image(systemName: "tray")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(ArkyvColor.textPrimary)
-                }
-                Text("Save without a folder")
-                    .font(.arkyvLabel)
-                    .foregroundStyle(ArkyvColor.textPrimary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .arkyvOutlinedSurface()
-        }
-        .disabled(!isReady || savingInto != nil)
-        .opacity(isReady ? 1 : 0.4)
+    /// Tapping a folder row *selects* it — closes the dropdown and returns
+    /// to the drawer with that folder's name now in place of "Unfiled ˅".
+    /// Nothing is persisted yet; ✓ is the actual save (see `confirmSave`).
+    private func chooseFolder(_ folder: StoredFolder) {
+        selectedFolder = folder
+        showingPicker = false
     }
 
     private var noteField: some View {
@@ -328,29 +352,31 @@ private struct ShareDrawerContent: View {
         .arkyvOutlinedSurface(fill: ArkyvColor.card, stroke: ArkyvColor.border)
     }
 
-    private func file(into folder: StoredFolder) {
-        guard var draft, savingInto == nil else { return }
-        savingInto = folder.id
-        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { draft.noteBody = trimmed }
-        do {
-            try Repository(context: context).fileCapture(draft, into: folder)
-            onDone()
-        } catch {
-            savingInto = nil
-        }
-    }
+    // MARK: Save
 
-    private func fileUnfiled() {
-        guard var draft, savingInto == nil, !savingUnfiled else { return }
-        savingUnfiled = true
+    /// ✓ IS the save — the one existing `Repository.fileCapture` call,
+    /// unchanged from before this restyle, just no longer triggered by
+    /// tapping a folder row directly. `selectedFolder == nil` files with
+    /// no `folders:` argument at all — the existing, already-canonical
+    /// Unfiled shape. Dismisses (`onDone`, which calls
+    /// `extensionContext.completeRequest`) immediately on success; a
+    /// failed write leaves the user free to just try again.
+    private func confirmSave() {
+        guard var draft, isReady, !isSaving else { return }
+        isSaving = true
+        saveError = false
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { draft.noteBody = trimmed }
         do {
-            try Repository(context: context).fileCapture(draft, folders: [])
+            if let selectedFolder {
+                try Repository(context: context).fileCapture(draft, into: selectedFolder)
+            } else {
+                try Repository(context: context).fileCapture(draft, folders: [])
+            }
             onDone()
         } catch {
-            savingUnfiled = false
+            isSaving = false
+            saveError = true
         }
     }
 }
