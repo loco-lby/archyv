@@ -25,6 +25,33 @@ struct ItemDetailView: View {
     @State private var noteSaveTask: Task<Void, Never>?
     @State private var noteSaveState: NoteSaveState = .idle
     @State private var saveStateFadeTask: Task<Void, Never>?
+    #if DEBUG
+    // TEMPORARY DEBUG HARNESS — Stage 2 of the crop editor. Presents the
+    // real CropEditorView shell against this item's actual image and
+    // persisted cropRegion, so the aspect-fit/letterbox/dim-mask/handle
+    // geometry can be checked on a physical device before any gestures
+    // exist. Separate from the long-press harness above (which still
+    // exercises Repository.updateCropRegion) — this one is read-only and
+    // purely visual. Remove this whole block once CropEditorView is
+    // wired into a real flow.
+    //
+    // A single Identifiable payload, presented via .fullScreenCover(item:)
+    // — not a separate Bool + optional. That combination (isPresented:
+    // Bool driving presentation, content reading a different @State
+    // optional) is what caused a real, physically confirmed bug: the
+    // console trace showed showDebugCropEditor go true while the content
+    // closure's separate `debugCropEditorImage` read kept observing nil,
+    // so CropEditorView never got created during that window. .fullScreenCover(item:)
+    // makes that structurally impossible — presence and payload are the
+    // same value, passed directly into the closure, never re-read from a
+    // second piece of state.
+    private struct DebugCropEditorPreview: Identifiable {
+        let id = UUID()
+        let image: UIImage
+        let region: CropRegion
+    }
+    @State private var debugCropEditorPreview: DebugCropEditorPreview?
+    #endif
 
     private enum NoteSaveState { case idle, saving, saved }
 
@@ -146,6 +173,23 @@ struct ItemDetailView: View {
                 MoveToFolderView(item: item)
                     .presentationDetents([.medium, .large])
             }
+            #if DEBUG
+            .fullScreenCover(item: $debugCropEditorPreview) { preview in
+                ZStack(alignment: .topTrailing) {
+                    CropEditorView(image: preview.image, region: preview.region)
+                        .ignoresSafeArea()
+                    Button {
+                        debugCropEditorPreview = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.white, .black.opacity(0.5))
+                    }
+                    .padding(20)
+                }
+                .onAppear { log("DEBUG crop editor preview — fullScreenCover content .onAppear fired") }
+            }
+            #endif
             .onAppear {
                 noteDraft = item.noteBody ?? ""
                 log("appeared for item \(item.id), noteBody length=\(item.noteBody?.count ?? 0)")
@@ -200,6 +244,17 @@ struct ItemDetailView: View {
                 .foregroundStyle(ArkyvColor.textPrimary)
             }
             Spacer()
+            #if DEBUG
+            if item.kind.isMedia {
+                Button {
+                    presentDebugCropEditorPreview()
+                } label: {
+                    Image(systemName: "crop").font(.system(size: 20))
+                        .foregroundStyle(ArkyvColor.textPrimary)
+                }
+                .accessibilityLabel("Debug crop editor preview")
+            }
+            #endif
             ShareLink(item: shareText) {
                 Image(systemName: "square.and.arrow.up").font(.system(size: 20))
                     .foregroundStyle(ArkyvColor.textPrimary)
@@ -378,6 +433,35 @@ struct ItemDetailView: View {
         print("[ItemDetailView] \(message())")
         #endif
     }
+
+    #if DEBUG
+    /// Loads this item's actual image data the same two-phase way
+    /// `LocalImageView` does — `item.imageData` is a SwiftData model
+    /// property and must be read on the main actor, only the resulting
+    /// `Data` crosses into the detached task — then presents
+    /// `CropEditorView` with it and the item's current persisted
+    /// `cropRegion`, as one atomic payload (see `DebugCropEditorPreview`'s
+    /// doc comment for why that matters).
+    private func presentDebugCropEditorPreview() {
+        guard let filename = item.localFilename else {
+            log("DEBUG crop editor preview — no localFilename, nothing to show")
+            return
+        }
+        log("DEBUG crop editor preview — tap received")
+        let fallback = item.imageData
+        Task {
+            let data = await Task.detached(priority: .userInitiated) {
+                MediaStore.shared.data(for: filename) ?? fallback
+            }.value
+            guard let data, let image = UIImage(data: data) else {
+                log("DEBUG crop editor preview — failed to load image data")
+                return
+            }
+            log("DEBUG crop editor preview — image loaded (\(Int(image.size.width))x\(Int(image.size.height))), presenting")
+            debugCropEditorPreview = DebugCropEditorPreview(image: image, region: item.cropRegion)
+        }
+    }
+    #endif
 }
 
 /// Wrapping tag row.
