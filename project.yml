@@ -99,7 +99,12 @@ targets:
           NSExtensionPrincipalClass: ShareViewController
           NSExtensionAttributes:
             NSExtensionActivationRule:
-              NSExtensionActivationSupportsImageWithMaxCount: 10
+              # v0.1 is officially single-image only — extractDraft() only
+              # ever processes the first shared image, so this must not
+              # advertise support for more than the implementation
+              # actually handles. Batch filing is a deliberate future
+              # feature, not implemented here.
+              NSExtensionActivationSupportsImageWithMaxCount: 1
               NSExtensionActivationSupportsWebURLWithMaxCount: 1
               NSExtensionActivationSupportsText: true
 
