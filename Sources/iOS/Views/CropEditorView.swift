@@ -69,12 +69,30 @@ struct CropEditorView: View {
     /// Called to actually close the presentation — by Cancel (no region
     /// computed, nothing persisted) or right after a successful confirm.
     private let onDismiss: () -> Void
+    /// Optional caller content rendered directly below `confirmationBar`,
+    /// in the same top chrome strip — e.g. initial capture's folder
+    /// control. Defaults to nothing, so every existing call site (re-crop
+    /// from Item Detail) is completely unaffected: an `EmptyView` here
+    /// contributes zero height to the VStack, leaving the crop viewport's
+    /// own geometry pixel-identical to before this existed. Type-erased to
+    /// `AnyView` and stored (not a generic stored property) so this type
+    /// itself stays concrete — its several `fileprivate static` helpers
+    /// are called from `ImagePanZoomSurface`, a sibling type, which would
+    /// otherwise need an explicit type argument for every one of them.
+    private let accessory: AnyView
 
-    init(image: UIImage, region: CropRegion, onConfirm: @escaping (CropRegion) -> Bool, onDismiss: @escaping () -> Void) {
+    init<Accessory: View>(
+        image: UIImage,
+        region: CropRegion,
+        onConfirm: @escaping (CropRegion) -> Bool,
+        onDismiss: @escaping () -> Void,
+        @ViewBuilder accessory: () -> Accessory = { EmptyView() }
+    ) {
         self.image = image
         self.initialRegion = region
         self.onConfirm = onConfirm
         self.onDismiss = onDismiss
+        self.accessory = AnyView(accessory())
     }
 
     /// Breathing room between the raw presentation surface and the
@@ -194,6 +212,8 @@ struct CropEditorView: View {
             // over (or intercept touches meant for) this row.
             confirmationBar
                 .zIndex(1)
+            accessory
+                .zIndex(1)
             GeometryReader { geometry in
                 Group {
                     if hasInitializedLayout {
@@ -242,28 +262,24 @@ struct CropEditorView: View {
         }
     }
 
-    /// Cancel / Done — the editor's only exit points, sitting in their
-    /// own chrome strip above the crop viewport, never overlapping it.
-    /// Deliberately minimal: plain text, one shared neutral color, no
-    /// icon/pill/bar styling — the crop itself stays the visual focus.
-    /// Done resolves the current *real* geometry into a `CropRegion` and
-    /// hands it to `onConfirm`; disabled (communicated only via reduced
-    /// opacity, not a different color) until layout has initialized, so
-    /// it can never fire against a degenerate `.zero` frameRect/imageDisplayRect.
+    /// Cancel / Done — the editor's only exit points, sitting in their own
+    /// chrome strip above the crop viewport, never overlapping it. The
+    /// shared `CherriesCancelControl`/`CherriesConfirmControl` language
+    /// (bold, sharp-edged marks, no filled background) — tool-like rather
+    /// than a generic "Cancel / Done" bar; the crop itself stays the
+    /// visual focus. Done resolves the current *real* geometry into a
+    /// `CropRegion` and hands it to `onConfirm`; disabled until layout has
+    /// initialized, so it can never fire against a degenerate `.zero`
+    /// frameRect/imageDisplayRect.
     private var confirmationBar: some View {
         HStack {
-            Button("Cancel", action: onDismiss)
+            CherriesCancelControl(action: onDismiss)
             Spacer()
-            Button("Done", action: confirm)
-                .disabled(!hasInitializedLayout)
-                .opacity(hasInitializedLayout ? 1 : 0.4)
+            CherriesConfirmControl(action: confirm, isEnabled: hasInitializedLayout)
         }
-        .buttonStyle(.plain)
-        .font(ArkyvFont.mono(.medium, size: 17))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
-        .padding(.bottom, 20)
+        .padding(.horizontal, 32)
+        .padding(.top, 20)
+        .padding(.bottom, 12)
     }
 
     /// Resolves the confirmed region and tries to persist it via
@@ -320,20 +336,6 @@ struct CropEditorView: View {
         let presentedFrameRect = presentationTransform.apply(to: frameRect)
         let presentedImageRect = presentationTransform.apply(to: imageDisplayRect)
 
-        #if DEBUG
-        // Invariant: applying the SAME uniform transform to both operands
-        // of region(for:in:) cancels out algebraically — presentedRegion
-        // should equal semanticRegion at every single render, not just at
-        // gesture boundaries. If this ever fires, frameRect/imageDisplayRect
-        // have genuinely diverged from what's on screen, not just a
-        // presentation-transform quirk.
-        let semanticRegionThisRender = CropEditorMath.region(for: frameRect, in: imageDisplayRect)
-        let presentedRegionThisRender = CropEditorMath.region(for: presentedFrameRect, in: presentedImageRect)
-        if !Self.regionsMatch(semanticRegionThisRender, presentedRegionThisRender) {
-            print("🚨 PRESENTATION/SEMANTIC REGION DIVERGENCE — semantic=\(semanticRegionThisRender) presented=\(presentedRegionThisRender) frameRect=\(frameRect) imageDisplayRect=\(imageDisplayRect) presentationTransform=\(presentationTransform)")
-        }
-        #endif
-
         return ZStack {
             Color.black
 
@@ -367,45 +369,9 @@ struct CropEditorView: View {
 
             edgeHitTargets(presentedFrameRect, viewport: viewport)
             cornerHitTargets(presentedFrameRect, viewport: viewport)
-
-            #if DEBUG
-            // Live "ground truth" — the semantic region, rendered through
-            // the EXACT same CropRegion.renderTransform clip technique
-            // LocalImageView/Archive use, refreshed every render. Watch
-            // this continuously during a session: if it ever shows
-            // something different from what the main viewport displays,
-            // that's direct visual proof of a real frameRect/imageDisplayRect
-            // divergence, not just a presentation-transform artifact.
-            // allowsHitTesting(false) — purely observational, fixed
-            // bottom-leading position regardless of crop/pan/zoom state.
-            truthPreviewOverlay(containerSize: containerSize)
-            #endif
         }
         .frame(width: containerSize.width, height: containerSize.height)
     }
-
-    #if DEBUG
-    private func truthPreviewOverlay(containerSize: CGSize) -> some View {
-        let region = CropEditorMath.region(for: frameRect, in: imageDisplayRect)
-        let previewSize: CGFloat = 72
-        let transform = region.renderTransform(imageSize: image.size, containerSize: CGSize(width: previewSize, height: previewSize))
-        let scaledSize = CGSize(width: image.size.width * transform.scale, height: image.size.height * transform.scale)
-        // Same direct-origin contract as `LocalImageView.croppedImage` —
-        // `.position()`, not `.offset()`, is what honors it.
-        let imageCenter = CGPoint(x: transform.offset.width + scaledSize.width / 2, y: transform.offset.height + scaledSize.height / 2)
-        return ZStack {
-            Image(uiImage: image)
-                .resizable()
-                .frame(width: scaledSize.width, height: scaledSize.height)
-                .position(x: imageCenter.x, y: imageCenter.y)
-        }
-        .frame(width: previewSize, height: previewSize)
-        .clipped()
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.yellow, lineWidth: 2))
-        .position(x: previewSize / 2 + 12, y: containerSize.height - previewSize / 2 - 12)
-        .allowsHitTesting(false)
-    }
-    #endif
 
     // MARK: - imageDisplayRect write chokepoint (diagnostic)
 
@@ -473,17 +439,9 @@ struct CropEditorView: View {
     /// reusing a stale one.
     private func scheduleFocusSettleCheck(viewport: CGRect) {
         settleCheckTask?.cancel()
-        #if DEBUG
-        let frameRectAtSchedule = frameRect
-        #endif
         settleCheckTask = Task {
             try? await Task.sleep(for: Self.focusSettleDelay)
             guard !Task.isCancelled else { return }
-            #if DEBUG
-            if frameRect != frameRectAtSchedule {
-                print("🚨 frameRect CHANGED BETWEEN gesture-end AND settle firing (120ms later) with no cancellation in between — atSchedule=\(frameRectAtSchedule) atFire=\(frameRect)")
-            }
-            #endif
             let target = CropEditorMath.idealPresentationTransform(for: frameRect, fitting: viewport, maximumScale: Self.maximumFocusScale)
             beginFocusAnimation(to: target)
         }
@@ -499,10 +457,6 @@ struct CropEditorView: View {
         focusAnimationTask?.cancel()
         let start = presentationTransform
         let startTime = Date()
-        #if DEBUG
-        let semanticRegionAtAnimationStart = CropEditorMath.region(for: frameRect, in: imageDisplayRect)
-        print("[CropEditorView] focus animation BEGIN — semanticRegion=\(semanticRegionAtAnimationStart) start=\(start) target=\(target)")
-        #endif
         focusAnimationTask = Task {
             while !Task.isCancelled {
                 let elapsed = Date().timeIntervalSince(startTime)
@@ -518,14 +472,6 @@ struct CropEditorView: View {
             if !Task.isCancelled {
                 presentationTransform = target
             }
-            #if DEBUG
-            let semanticRegionAtAnimationEnd = CropEditorMath.region(for: frameRect, in: imageDisplayRect)
-            if semanticRegionAtAnimationEnd != semanticRegionAtAnimationStart {
-                print("🚨 SEMANTIC REGION CHANGED DURING FOCUS ANIMATION — the animation is only supposed to touch presentationTransform. start=\(semanticRegionAtAnimationStart) end=\(semanticRegionAtAnimationEnd) wasCancelled=\(Task.isCancelled)")
-            } else {
-                print("[CropEditorView] focus animation END — semanticRegion unchanged (\(semanticRegionAtAnimationEnd)), wasCancelled=\(Task.isCancelled)")
-            }
-            #endif
             focusAnimationTask = nil
         }
     }
