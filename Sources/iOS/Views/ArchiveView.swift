@@ -163,6 +163,11 @@ struct ArchiveView: View {
                 .padding(.bottom, 96)
             }
         }
+        // One Archive should read as an open visual field, not a utility
+        // scroll container — no persistent gutter/indicator on the right
+        // edge. Not replaced with anything; a future transient
+        // during-scroll-only indicator is a separate, later experiment.
+        .scrollIndicators(.hidden)
         .background(ArkyvColor.canvas)
         .safeAreaInset(edge: .top) {
             topBar
@@ -199,24 +204,29 @@ struct ArchiveView: View {
     /// wordmark now lives as a floating mark over the content instead (see
     /// `RootView.floatingWordmark`), not replaced by an empty slot here.
     /// `ArchiveFilterRail` itself is untouched (same scroll/active-filter
-    /// behavior) — the search toggle is layered on top of its trailing
-    /// edge as a fixed, non-scrolling overlay, so the rail's own
-    /// horizontal scroll is unaffected by sharing this row with it.
+    /// behavior). The search toggle now sits in its own right-aligned row
+    /// above the rail, in the safe-area space that was previously just
+    /// empty canvas, rather than overlaid on the rail's trailing edge —
+    /// that overlay used to collide with folder names scrolled under it;
+    /// this gives the rail a clean, uninterrupted row.
     private var topBar: some View {
-        ZStack(alignment: .trailing) {
-            ArchiveFilterRail(filters: filters, active: $activeFilter, label: label(for:))
-
-            Button {
-                withAnimation {
-                    searching.toggle()
-                    if !searching { query = "" }
+        VStack(spacing: 8) {
+            HStack {
+                Spacer()
+                Button {
+                    withAnimation {
+                        searching.toggle()
+                        if !searching { query = "" }
+                    }
+                } label: {
+                    Image(systemName: searching ? "xmark" : "magnifyingglass")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(ArkyvColor.textPrimary)
                 }
-            } label: {
-                Image(systemName: searching ? "xmark" : "magnifyingglass")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(ArkyvColor.textPrimary)
+                .padding(.trailing, 20)
             }
-            .padding(.trailing, 20)
+
+            ArchiveFilterRail(filters: filters, active: $activeFilter, label: label(for:))
         }
         .padding(.top, 12)
         .padding(.bottom, 10)
