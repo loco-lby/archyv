@@ -146,7 +146,11 @@ struct ArchiveView: View {
                         LocalImageView(filename: item.localFilename, fallbackImageData: { item.imageData }, cropRegion: item.cropRegion)
                             .aspectRatio(item.aspectRatio, contentMode: .fit)
                             .frame(maxWidth: .infinity)
-                            .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.button))
+                            // Sharp-tile experiment: 0pt corner radius,
+                            // local to this masonry cell only — deliberately
+                            // NOT a change to ArkyvRadius.button itself,
+                            // which other, unrelated UI still uses.
+                            .clipShape(Rectangle())
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
