@@ -66,7 +66,7 @@ struct RootView: View {
             // screens only, not task/detail screens. Settings has no push
             // destinations yet, so it's always "root" for this check.
             if !noteFocus.isActive && (tab == .settings || archivePath.isEmpty) {
-                floatingDock
+                floatingBottomOverlay
                     .transition(.opacity)
             }
         }
@@ -164,6 +164,67 @@ struct RootView: View {
         }
     }
 
+    /// Try10 refinement: the wordmark and dock cluster align to the
+    /// masonry grid's own column centerlines, not arbitrary screen-relative
+    /// positions or safe-area edges. This mirrors ArchiveView's masonry
+    /// geometry exactly — 2 columns, MasonryGrid's own 8pt inter-column
+    /// `spacing`, ArchiveView's 8pt outer `.padding(.horizontal, 8)` on the
+    /// grid (see `ArchiveView.body`/`MasonryGrid.columnWidth`) — computed
+    /// from this GeometryReader's actual width rather than a hardcoded
+    /// per-device number, so it stays correct across screen sizes.
+    /// `.position(x:y:)` centers each view's own bounding box at the given
+    /// point, so the 3-button `floatingDock` is centered as one cluster on
+    /// the right column's centerline, exactly like a single view would be.
+    ///
+    /// Both float on the same vertical center ("horizontal band") rather
+    /// than a shared bottom edge — bottom-aligning the much shorter
+    /// wordmark against the taller dock made it read as sitting low;
+    /// center-aligning brings it up to match the dock's optical middle.
+    private var floatingBottomOverlay: some View {
+        GeometryReader { geo in
+            let outerPadding: CGFloat = 8
+            let gridSpacing: CGFloat = 8
+            let columnWidth = (geo.size.width - 2 * outerPadding - gridSpacing) / 2
+            let leftColumnCenterX = outerPadding + columnWidth / 2
+            let rightColumnCenterX = geo.size.width - outerPadding - columnWidth / 2
+            // Same 16pt clearance below the dock as before, now expressed
+            // as a center Y within this GeometryReader's own height.
+            let bandCenterY = geo.size.height - 16 - Self.dockDiameter / 2
+
+            ZStack {
+                floatingWordmark
+                    .position(x: leftColumnCenterX, y: bandCenterY)
+                floatingDock
+                    .position(x: rightColumnCenterX, y: bandCenterY)
+            }
+        }
+        .frame(height: Self.dockDiameter + 16)
+    }
+
+    /// Matches `floatingDockButton`'s own fixed circle size below.
+    private static let dockDiameter: CGFloat = 58.24
+
+    /// A quiet brand mark living in the room, not a control — no
+    /// background, pill, material, or outline, and deliberately never
+    /// hit-tested (`.allowsHitTesting(false)`) so it can never steal a tap
+    /// from whatever Archive content it happens to float over. Reuses the
+    /// same template-rendered vector asset as before (Resources/
+    /// Assets.xcassets/CherriesWordmark.imageset). Adaptive `textPrimary`
+    /// here — unlike the fixed brand-cream tried for the old top header
+    /// this replaces — so it keeps reading in both appearances without a
+    /// backdrop of its own. 27.04pt height carried forward from the
+    /// prior header experiment as an optical starting point.
+    private var floatingWordmark: some View {
+        Image("CherriesWordmark")
+            .renderingMode(.template)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(height: 27.04)
+            .foregroundStyle(ArkyvColor.textPrimary)
+            .accessibilityLabel("Cherries")
+            .allowsHitTesting(false)
+    }
+
     /// One Archive Shell 00: three separate floating tools over the
     /// collection, not a conventional enclosing tab bar — no shared
     /// background strip, no divider hairline, no persistent "which tab is
@@ -189,16 +250,16 @@ struct RootView: View {
                     tab = .archive
                 }
             } icon: {
-                CherryMarkView(size: 26.88, color: ArkyvColor.textPrimary)
+                dockIcon("CherriesIconHome", size: 21.504)
             }
             .accessibilityLabel("Archive")
 
-            // Scissors — the existing capture/add entry point
+            // Scissors/Add — the existing capture/add entry point
             // (CaptureCoordinator.startAdd()), unchanged behavior.
             floatingDockButton {
                 capture.startAdd()
             } icon: {
-                CherriesScissorsIcon(size: 26.88, color: ArkyvColor.textPrimary)
+                dockIcon("CherriesIconAdd", size: 21.504)
             }
             .accessibilityLabel("Capture")
 
@@ -206,14 +267,10 @@ struct RootView: View {
             floatingDockButton {
                 tab = .settings
             } icon: {
-                CherriesMenuIcon(size: 26.88, color: ArkyvColor.textPrimary)
+                dockIcon("CherriesIconMenu", size: 21.504)
             }
             .accessibilityLabel("More")
         }
-        // Comfortable home-indicator clearance beyond what the safe area
-        // already reserves — these are meant to float clear of it, not
-        // hug it.
-        .padding(.bottom, 16)
     }
 
     /// A single floating tool: fixed 52×52 optical size (matching the
@@ -224,8 +281,32 @@ struct RootView: View {
         Button(action: action) {
             icon()
                 .frame(width: 58.24, height: 58.24)
-                .background(.ultraThinMaterial, in: Circle())
+                .background {
+                    // `.ultraThinMaterial` alone kept its adaptive
+                    // legibility-over-arbitrary-imagery quality, but read
+                    // too light per review — the black overlay darkens it
+                    // by a controlled, tunable amount (25%) on top of that
+                    // same material, rather than replacing it with a flat
+                    // color and losing the adaptive blur.
+                    Circle().fill(.ultraThinMaterial)
+                    Circle().fill(Color.black.opacity(0.25))
+                }
         }
         .buttonStyle(.plain)
+    }
+
+    /// Template-rendered vector asset (see Resources/Assets.xcassets/
+    /// CherriesIcon*.imageset) — replaces the earlier hand-transcribed
+    /// `CherryMarkView`/`CherriesScissorsIcon`/`CherriesMenuIcon` Shapes
+    /// now that real icon assets exist. Fixed brand cream (#ede9df)
+    /// rather than adaptive `textPrimary` — deliberate, per explicit
+    /// review, matching the header wordmark/search icon.
+    private func dockIcon(_ name: String, size: CGFloat) -> some View {
+        Image(name)
+            .renderingMode(.template)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size, height: size)
+            .foregroundStyle(Color(hex: 0xEDE9DF))
     }
 }

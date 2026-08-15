@@ -165,12 +165,7 @@ struct ArchiveView: View {
         }
         .background(ArkyvColor.canvas)
         .safeAreaInset(edge: .top) {
-            VStack(spacing: 0) {
-                header
-                ArchiveFilterRail(filters: filters, active: $activeFilter, label: label(for:))
-                    .padding(.bottom, 12)
-            }
-            .background(ArkyvColor.canvas)
+            topBar
         }
         .navigationDestination(for: ItemRoute.self) { route in
             if let item = resolveItem(route.itemID) {
@@ -199,12 +194,18 @@ struct ArchiveView: View {
         #endif
     }
 
-    private var header: some View {
-        HStack {
-            Text("cherries")
-                .font(.system(size: 26, weight: .semibold))
-                .foregroundStyle(ArkyvColor.textPrimary)
-            Spacer()
+    /// Try10 One Archive shell: filter rail + search only — the old brand
+    /// header row (wordmark + search) above the rail is gone entirely; the
+    /// wordmark now lives as a floating mark over the content instead (see
+    /// `RootView.floatingWordmark`), not replaced by an empty slot here.
+    /// `ArchiveFilterRail` itself is untouched (same scroll/active-filter
+    /// behavior) — the search toggle is layered on top of its trailing
+    /// edge as a fixed, non-scrolling overlay, so the rail's own
+    /// horizontal scroll is unaffected by sharing this row with it.
+    private var topBar: some View {
+        ZStack(alignment: .trailing) {
+            ArchiveFilterRail(filters: filters, active: $activeFilter, label: label(for:))
+
             Button {
                 withAnimation {
                     searching.toggle()
@@ -215,10 +216,11 @@ struct ArchiveView: View {
                     .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(ArkyvColor.textPrimary)
             }
+            .padding(.trailing, 20)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .background(ArkyvColor.canvas)
     }
 
     private var searchField: some View {
