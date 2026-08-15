@@ -42,13 +42,13 @@ struct SettingsView: View {
                     }
                     Text("Simulator can't create real screenshot assets — this runs your newest photo through the detection → drawer flow.")
                         .font(.arkyvCaption)
-                        .foregroundStyle(ArkyvColor.textDim)
+                        .foregroundStyle(ArkyvColor.subdued)
                 }
                 #endif
             }
             .padding(20)
         }
-        .background(ArkyvColor.background)
+        .background(ArkyvColor.canvas)
         .safeAreaInset(edge: .top) {
             HStack {
                 Text("Settings").font(.arkyvHeading).foregroundStyle(ArkyvColor.textPrimary)
@@ -56,7 +56,7 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
-            .background(ArkyvColor.background)
+            .background(ArkyvColor.canvas)
         }
         .toolbar(.hidden, for: .navigationBar)
     }
@@ -74,7 +74,7 @@ struct SettingsView: View {
                 .foregroundStyle(ArkyvColor.textPrimary)
             Text(title).font(.arkyvLabel).foregroundStyle(ArkyvColor.textPrimary)
             Spacer()
-            Text(detail).font(.arkyvCaption).foregroundStyle(ArkyvColor.textDim)
+            Text(detail).font(.arkyvCaption).foregroundStyle(ArkyvColor.subdued)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

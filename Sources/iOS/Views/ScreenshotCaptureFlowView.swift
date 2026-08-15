@@ -36,6 +36,22 @@ import UIKit
 /// `Repository.fileCapture` with no `folders:` argument, exactly like the
 /// Share Extension's own Unfiled fallback already does.
 struct ScreenshotCaptureFlowView: View {
+    /// Design Foundation 00's intentional darkroom exception: this whole
+    /// screen shares `CropEditorView`'s fixed black/white canvas (image
+    /// editing, not ordinary app chrome), so it must NOT use `ArkyvColor`'s
+    /// adaptive tokens — the adaptive `textPrimary` would resolve to
+    /// near-black in Light mode and become illegible against this
+    /// deliberately-fixed black background. `ArkyvColor.accent` is exempt
+    /// (already a fixed, non-adaptive value) and is used as-is.
+    private enum DarkroomColor {
+        static let canvas = Color.black
+        static let textPrimary = Color.white
+        static let textSecondary = Color.white.opacity(0.6)
+        static let subdued = Color.white.opacity(0.4)
+        static let divider = Color.white.opacity(0.2)
+        static let surface = Color(white: 0.15)
+    }
+
     let draft: CaptureDraft
 
     @Environment(CaptureCoordinator.self) private var capture
@@ -113,8 +129,8 @@ struct ScreenshotCaptureFlowView: View {
 
     private var loadingLayer: some View {
         ZStack {
-            ArkyvColor.background.ignoresSafeArea()
-            ProgressView().tint(ArkyvColor.textSecondary)
+            DarkroomColor.canvas.ignoresSafeArea()
+            ProgressView().tint(DarkroomColor.textSecondary)
         }
     }
 
@@ -257,7 +273,7 @@ struct ScreenshotCaptureFlowView: View {
             if cropUnavailable {
                 Text("Crop unavailable — saving full screenshot")
                     .font(ArkyvFont.mono(.regular, size: 11))
-                    .foregroundStyle(ArkyvColor.textDim)
+                    .foregroundStyle(DarkroomColor.subdued)
             }
             if saveError {
                 Text("Couldn't save — try again")
@@ -292,10 +308,10 @@ struct ScreenshotCaptureFlowView: View {
             }
         }
         .padding(8)
-        .background(ArkyvColor.card, in: RoundedRectangle(cornerRadius: ArkyvRadius.sheet))
+        .background(DarkroomColor.surface, in: RoundedRectangle(cornerRadius: ArkyvRadius.sheet))
         .overlay(
             RoundedRectangle(cornerRadius: ArkyvRadius.sheet)
-                .strokeBorder(ArkyvColor.border, lineWidth: 1)
+                .strokeBorder(DarkroomColor.divider, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.5), radius: 12, y: 12)
     }
@@ -313,7 +329,7 @@ struct ScreenshotCaptureFlowView: View {
                 FolderIconView(icon: folder.icon, size: 13, color: ArkyvColor.accent)
                 Text(folder.name)
                     .font(ArkyvFont.mono(isSuggested ? .bold : .regular, size: 13))
-                    .foregroundStyle(ArkyvColor.textPrimary)
+                    .foregroundStyle(DarkroomColor.textPrimary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if isSelected {
@@ -358,17 +374,17 @@ struct ScreenshotCaptureFlowView: View {
         VStack(spacing: 16) {
             Text("Saved ✓")
                 .font(ArkyvFont.mono(.bold, size: 20))
-                .foregroundStyle(ArkyvColor.textPrimary)
+                .foregroundStyle(DarkroomColor.textPrimary)
             Button {
                 capture.dismiss()
             } label: {
                 Text("View →")
                     .font(ArkyvFont.mono(.regular, size: 13))
-                    .foregroundStyle(ArkyvColor.textSecondary)
+                    .foregroundStyle(DarkroomColor.textSecondary)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                    .background(ArkyvColor.card, in: Capsule())
-                    .overlay(Capsule().strokeBorder(ArkyvColor.border, lineWidth: 1))
+                    .background(DarkroomColor.surface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(DarkroomColor.divider, lineWidth: 1))
             }
         }
     }

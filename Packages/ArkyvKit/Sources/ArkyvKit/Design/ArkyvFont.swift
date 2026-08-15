@@ -1,96 +1,54 @@
 import SwiftUI
-#if canImport(UIKit)
-import UIKit
-#endif
 
-/// Typography tokens. Two families from Figma:
-/// - `Intel One Mono` for display / labels / folder names
-/// - `Instrument Sans` for small UI text (status bar, meta, section headers)
+/// Typography tokens. Design Foundation 00: ordinary Cherries UI now uses
+/// Apple's system font family (SF Pro) rather than the previously bundled
+/// Intel One Mono / Instrument Sans — this file's API surface (the `Mono`
+/// weight cases, the `mono(_:size:)`/`sans(size:weight:)` functions, and
+/// every named semantic token below) is unchanged so call sites needed no
+/// edits; only what each one *resolves to* changed. Hierarchy is preserved
+/// through point size/weight (unchanged from before), not through family.
 ///
-/// Intel One Mono ships Light/Regular/Medium/Bold — the design's "SemiBold"
-/// maps to `.medium` here.
+/// This is deliberately not a Dynamic Type restructuring — every size here
+/// is still a fixed point size, same as before. Making these scale with
+/// the user's text-size setting (via semantic text styles / `@ScaledMetric`)
+/// is a real, separate accessibility milestone, not folded in here.
 public enum ArkyvFont {
-    public enum Mono: String {
-        case regular = "IntelOneMono-Regular"
-        case medium = "IntelOneMono-Medium"
-        case bold = "IntelOneMono-Bold"
+    public enum Mono {
+        case regular, medium, bold
     }
 
-    /// Instrument Sans is bundled as a variable font; the PostScript name
-    /// resolves to the default instance and weights are applied via traits.
-    public static let sansName = "InstrumentSans-Regular"
-
-    /// Monospace display / label font. Falls back to the system monospaced
-    /// font if the bundled font failed to register.
+    /// Was the Intel One Mono display/label font; now plain SF Pro at the
+    /// same weight mapping ("SemiBold" in the original design still maps
+    /// to `.medium`, matching the prior behavior exactly).
     public static func mono(_ weight: Mono, size: CGFloat) -> Font {
-        if fontIsRegistered(weight.rawValue) {
-            return .custom(weight.rawValue, fixedSize: size)
-        }
         let systemWeight: Font.Weight = weight == .bold ? .bold : (weight == .medium ? .medium : .regular)
-        return .system(size: size, weight: systemWeight, design: .monospaced)
+        return .system(size: size, weight: systemWeight)
     }
 
-    /// Small sans UI text. Falls back to the system font.
+    /// Was the Instrument Sans small-UI-text font; now plain SF Pro.
     public static func sans(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        if fontIsRegistered(sansName) {
-            return .custom(sansName, fixedSize: size).weight(weight)
-        }
-        return .system(size: size, weight: weight)
-    }
-
-    // MARK: - Verification
-
-    /// Every `.ttf` in `Resources/Fonts` is declared in each target's
-    /// `UIAppFonts` (see `project.yml`), so iOS registers them automatically
-    /// at process launch — manually calling `CTFontManagerRegisterFontsForURL`
-    /// on top of that double-registers the same files, which is what produced
-    /// the `GSFont: file already registered` console spam. There is nothing
-    /// left for this file to *do* at launch; `UIAppFonts` is the whole
-    /// registration story now.
-    ///
-    /// DEBUG-only: confirms the automatic registration actually worked, by
-    /// checking `UIFont(name:size:)` for each PostScript name this file
-    /// hands out via `mono(_:size:)` / `sans(size:weight:)`. If a bundling
-    /// regression (like the folder-reference bug this replaced) ever strips
-    /// a font back out of the bundle, this prints a clear failure instead of
-    /// letting the graceful system-font fallback hide it silently.
-    #if DEBUG
-    public static func verifyFontsAvailable() {
-        #if canImport(UIKit)
-        let postScriptNames = [Mono.regular.rawValue, Mono.medium.rawValue, Mono.bold.rawValue, sansName]
-        for name in postScriptNames {
-            let loaded = UIFont(name: name, size: 12) != nil
-            print("[ArkyvFont] \(name): \(loaded ? "loaded" : "NOT loaded — falling back to system font")")
-        }
-        #endif
-    }
-    #endif
-
-    private static func fontIsRegistered(_ postScriptName: String) -> Bool {
-        #if canImport(UIKit)
-        return UIFont(name: postScriptName, size: 12) != nil
-        #else
-        return true
-        #endif
+        .system(size: size, weight: weight)
     }
 }
 
-// Convenience semantic styles used across screens.
+// Convenience semantic styles used across screens. Same names, same sizes,
+// same weights as before — only the family changed (see `ArkyvFont` above).
 public extension Font {
-    /// "Save to..." / big sheet title (~30pt bold mono)
+    /// "Save to..." / big sheet title (~30pt bold) — currently unused
+    /// anywhere in the app; kept for parity with the pre-existing token set.
     static let arkyvSheetTitle = ArkyvFont.mono(.bold, size: 30)
-    /// Folder button / folder name label (15pt bold mono)
+    /// Folder button / folder name label (15pt bold)
     static let arkyvLabel = ArkyvFont.mono(.bold, size: 15)
-    /// Folder title on folder-view header (28pt bold mono)
+    /// Folder title on folder-view header (28pt bold)
     static let arkyvHeading = ArkyvFont.mono(.bold, size: 28)
-    /// Reference title (22pt bold mono)
+    /// Reference title (22pt bold)
     static let arkyvTitle = ArkyvFont.mono(.bold, size: 22)
-    /// Body / notes text (14pt mono regular)
+    /// Body / notes text (14pt regular)
     static let arkyvBody = ArkyvFont.mono(.regular, size: 14)
-    /// Status bar clock / small semibold sans (15pt)
+    /// Status bar clock / small semibold text (15pt)
     static let arkyvStatus = ArkyvFont.sans(size: 15, weight: .semibold)
-    /// Metadata caption (13pt sans)
+    /// Metadata caption (13pt)
     static let arkyvCaption = ArkyvFont.sans(size: 13)
-    /// Section header ALL CAPS (12pt bold sans)
+    /// Section header ALL CAPS (12pt bold)
     static let arkyvSection = ArkyvFont.sans(size: 12, weight: .bold)
 }

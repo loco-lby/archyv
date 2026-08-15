@@ -159,14 +159,14 @@ struct ArchiveView: View {
                 .padding(.bottom, 96)
             }
         }
-        .background(ArkyvColor.background)
+        .background(ArkyvColor.canvas)
         .safeAreaInset(edge: .top) {
             VStack(spacing: 0) {
                 header
                 ArchiveFilterRail(filters: filters, active: $activeFilter, label: label(for:))
                     .padding(.bottom, 12)
             }
-            .background(ArkyvColor.background)
+            .background(ArkyvColor.canvas)
         }
         .navigationDestination(for: ItemRoute.self) { route in
             if let item = resolveItem(route.itemID) {
@@ -198,7 +198,7 @@ struct ArchiveView: View {
     private var header: some View {
         HStack {
             Text("cherries")
-                .font(.system(size: 26, weight: .semibold, design: .serif))
+                .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(ArkyvColor.textPrimary)
             Spacer()
             Button {
@@ -219,7 +219,7 @@ struct ArchiveView: View {
 
     private var searchField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(ArkyvColor.textDim)
+            Image(systemName: "magnifyingglass").foregroundStyle(ArkyvColor.subdued)
             TextField("Search \(label(for: activeFilter))", text: $query)
                 .font(.arkyvBody)
                 .foregroundStyle(ArkyvColor.textPrimary)
@@ -236,14 +236,14 @@ struct ArchiveView: View {
         VStack(spacing: 12) {
             Image(systemName: emptyStateIcon)
                 .font(.system(size: 28))
-                .foregroundStyle(ArkyvColor.textDim)
+                .foregroundStyle(ArkyvColor.subdued)
             Text(emptyStateTitle)
                 .font(.arkyvLabel)
                 .foregroundStyle(ArkyvColor.textSecondary)
             if let subtitle = emptyStateSubtitle {
                 Text(subtitle)
                     .font(.arkyvCaption)
-                    .foregroundStyle(ArkyvColor.textDim)
+                    .foregroundStyle(ArkyvColor.subdued)
                     .multilineTextAlignment(.center)
             }
             if !searching, case .folder = activeFilter {
@@ -286,13 +286,13 @@ struct ArchiveView: View {
         VStack(spacing: 12) {
             Image(systemName: "questionmark.square.dashed")
                 .font(.system(size: 28))
-                .foregroundStyle(ArkyvColor.textDim)
+                .foregroundStyle(ArkyvColor.subdued)
             Text("This item no longer exists")
                 .font(.arkyvLabel)
                 .foregroundStyle(ArkyvColor.textSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 80)
-        .background(ArkyvColor.background)
+        .background(ArkyvColor.canvas)
     }
 }

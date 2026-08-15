@@ -36,8 +36,8 @@ public enum ArkyvAsset {
 public extension View {
     /// Standard sharp-cornered outlined surface used by folder buttons & chips.
     func arkyvOutlinedSurface(
-        fill: Color = ArkyvColor.card,
-        stroke: Color = ArkyvColor.border,
+        fill: Color = ArkyvColor.surface,
+        stroke: Color = ArkyvColor.divider,
         lineWidth: CGFloat = 1,
         radius: CGFloat = ArkyvRadius.button
     ) -> some View {

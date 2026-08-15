@@ -6,19 +6,7 @@ import ArkyvKit
 /// minimal compiling shell so the target builds alongside iOS.
 @main
 struct ArkyvMacApp: App {
-    // NOTE: unlike the iOS targets, project.yml declares no macOS-side font
-    // auto-registration (the `ATSApplicationFontsPath` Info.plist key) — this
-    // stub relied entirely on the manual CoreText call that iOS just dropped
-    // in favor of `UIAppFonts`. Until `ATSApplicationFontsPath` is added here,
-    // custom fonts will consistently fall back to system fonts on macOS
-    // (gracefully — `ArkyvFont.mono`/`.sans` already handle that) rather than
-    // intermittently, as before. Low priority given this target is still a
-    // Phase 3 stub, but flagging it rather than letting it regress silently.
-    #if DEBUG
-    init() { ArkyvFont.verifyFontsAvailable() }
-    #else
     init() {}
-    #endif
 
     var body: some Scene {
         MenuBarExtra("arkyv", systemImage: "square.grid.2x2") {
@@ -34,7 +22,7 @@ struct ArkyvMacApp: App {
             }
             .padding(16)
             .frame(width: 280)
-            .background(ArkyvColor.background)
+            .background(ArkyvColor.canvas)
         }
         .menuBarExtraStyle(.window)
     }

@@ -10,11 +10,6 @@ struct ArkyvApp: App {
     @State private var noteFocusSignal = NoteFocusSignal()
 
     init() {
-        // Fonts register automatically via UIAppFonts — this just confirms
-        // it worked, in Debug builds only.
-        #if DEBUG
-        ArkyvFont.verifyFontsAvailable()
-        #endif
         let container = ArkyvStore.makeModelContainer()
         self.modelContainer = container
         _capture = State(initialValue: CaptureCoordinator(container: container))
@@ -41,7 +36,6 @@ struct ArkyvApp: App {
                 .environment(capture)
                 .environment(noteFocusSignal)
                 .tint(ArkyvColor.textPrimary)
-                .preferredColorScheme(.dark)
         }
         .modelContainer(modelContainer)
     }

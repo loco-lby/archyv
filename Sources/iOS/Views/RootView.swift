@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 import ArkyvKit
 
-/// App shell: Archive / Settings sections with the minimal bottom nav, the
+/// App shell: Archive / Settings sections with the floating root dock, the
 /// capture drawer, and the saved-confirmation toast.
 struct RootView: View {
     @Environment(CaptureCoordinator.self) private var capture
@@ -30,7 +30,7 @@ struct RootView: View {
     var body: some View {
         @Bindable var capture = capture
         ZStack(alignment: .bottom) {
-            ArkyvColor.background.ignoresSafeArea()
+            ArkyvColor.canvas.ignoresSafeArea()
 
             Group {
                 switch tab {
@@ -66,12 +66,12 @@ struct RootView: View {
             // screens only, not task/detail screens. Settings has no push
             // destinations yet, so it's always "root" for this check.
             if !noteFocus.isActive && (tab == .settings || archivePath.isEmpty) {
-                bottomNav
+                floatingDock
                     .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.2), value: noteFocus.isActive)
-        .background(ArkyvColor.background)
+        .background(ArkyvColor.canvas)
         .sheet(item: $capture.drawer) { drawer in
             // v0.02: the screenshot flow should read as "no unnecessary app
             // chrome" — no grabber, no rounded sheet corners pretending
@@ -81,7 +81,7 @@ struct RootView: View {
             CaptureSheetView(drawer: drawer)
                 .presentationDetents([.large])
                 .presentationDragIndicator(drawer.isAdd ? .visible : .hidden)
-                .presentationBackground(ArkyvColor.background)
+                .presentationBackground(ArkyvColor.canvas)
                 .presentationCornerRadius(drawer.isAdd ? ArkyvRadius.screen : 0)
         }
         .overlay(alignment: .bottom) {
@@ -164,88 +164,68 @@ struct RootView: View {
         }
     }
 
-    private var bottomNav: some View {
-        VStack(spacing: 0) {
-            Rectangle().fill(ArkyvColor.border).frame(height: 1)
-            HStack {
-                // Cherry / Home — returns to the root Archive surface.
-                // Tapping while already there resets BOTH the nav path
-                // (old behavior) AND the active filter back to All — the
-                // dock's Home button means "take me to the one Archive,"
-                // not just "pop to root." Obsoletes the old grid-icon
-                // "Archive" tab identity per the v0.2 visual direction.
-                Button {
-                    if tab == .archive {
-                        log("Cherry reselected — resetting archivePath and activeFilter to All (path count was \(archivePath.count))")
-                        archivePath = NavigationPath()
-                        activeFilter = .all
-                    } else {
-                        tab = .archive
-                    }
-                } label: {
-                    VStack(spacing: 6) {
-                        CherryMarkView(size: 22, color: tab == .archive ? ArkyvColor.textPrimary : ArkyvColor.iconDefault)
-                        Text("Home")
-                            .font(ArkyvFont.sans(size: 11, weight: .medium))
-                    }
-                    .foregroundStyle(tab == .archive ? ArkyvColor.textPrimary : ArkyvColor.iconDefault)
+    /// One Archive Shell 00: three separate floating tools over the
+    /// collection, not a conventional enclosing tab bar — no shared
+    /// background strip, no divider hairline, no persistent "which tab is
+    /// active" highlighting (Scissors is a momentary action, not a
+    /// destination, so a uniform treatment across all three reads more
+    /// like "tools" than "tabs"). Each sits in its own translucent
+    /// `.ultraThinMaterial` circle so it stays legible floating over
+    /// whatever imagery happens to be underneath it, regardless of system
+    /// appearance — a fixed-color background couldn't guarantee that the
+    /// same way a system material can.
+    private var floatingDock: some View {
+        HStack(spacing: 12) {
+            // Archive/Home — returns to the root Archive surface. Tapping
+            // while already there resets both the nav path and the active
+            // filter back to All, matching the dock's "take me to the one
+            // Archive" meaning rather than just "pop to root."
+            floatingDockButton {
+                if tab == .archive {
+                    log("Home reselected — resetting archivePath and activeFilter to All (path count was \(archivePath.count))")
+                    archivePath = NavigationPath()
+                    activeFilter = .all
+                } else {
+                    tab = .archive
                 }
-                .frame(width: 56)
-                Spacer()
-                // Scissors — triggers the same existing capture/add flow as
-                // before (CaptureCoordinator.startAdd()); only the visual
-                // control changed, not the behavior. The future native
-                // Photos-picker Scissors flow is a later milestone.
-                Button {
-                    capture.startAdd()
-                } label: {
-                    Image(systemName: "scissors")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(ArkyvColor.textPrimary)
-                        .frame(width: 52, height: 52)
-                        .background(ArkyvColor.surface, in: RoundedRectangle(cornerRadius: ArkyvRadius.button))
-                }
-                .offset(y: -6)
-                Spacer()
-                // More — same Settings destination as before, relabeled.
-                navItem(.settings, systemImage: "line.3.horizontal", label: "More")
+            } icon: {
+                CherryMarkView(size: 26.88, color: ArkyvColor.textPrimary)
             }
-            .padding(.horizontal, 40)
-            .frame(height: 44)
-            // Design System: nav bar background = `surface` (#1A1A1A). That's
-            // still `ArkyvColor.card`'s value until the token migration lands
-            // (next step) — using it here as a temporary correct-value stand-in.
-            .background(ArkyvColor.card)
+            .accessibilityLabel("Archive")
+
+            // Scissors — the existing capture/add entry point
+            // (CaptureCoordinator.startAdd()), unchanged behavior.
+            floatingDockButton {
+                capture.startAdd()
+            } icon: {
+                CherriesScissorsIcon(size: 26.88, color: ArkyvColor.textPrimary)
+            }
+            .accessibilityLabel("Capture")
+
+            // More — the existing Settings destination.
+            floatingDockButton {
+                tab = .settings
+            } icon: {
+                CherriesMenuIcon(size: 26.88, color: ArkyvColor.textPrimary)
+            }
+            .accessibilityLabel("More")
         }
+        // Comfortable home-indicator clearance beyond what the safe area
+        // already reserves — these are meant to float clear of it, not
+        // hug it.
+        .padding(.bottom, 16)
     }
 
-    /// - Parameters:
-    ///   - systemImage: default (inactive) glyph.
-    ///   - activeSystemImage: filled variant shown when this tab is selected.
-    ///     Defaults to `systemImage` for icons with no distinct filled form
-    ///     (e.g. `line.3.horizontal`, which reads as "filled" already).
-    ///   - onReselect: fires instead of `tab = target` when this tab is
-    ///     tapped while it's already the active one (e.g. pop to root).
-    ///     Tabs with nothing to reset can omit it and reselecting is a no-op,
-    ///     same as today.
-    private func navItem(_ target: Tab, systemImage: String, activeSystemImage: String? = nil, label: String, onReselect: (() -> Void)? = nil) -> some View {
-        let isActive = tab == target
-        return Button {
-            if isActive, let onReselect {
-                onReselect()
-            } else {
-                tab = target
-            }
-        } label: {
-            VStack(spacing: 6) {
-                // Navigation bar icons: 24×24pt, ~2px stroke.
-                Image(systemName: isActive ? (activeSystemImage ?? systemImage) : systemImage)
-                    .font(.system(size: 24, weight: .medium))
-                Text(label)
-                    .font(ArkyvFont.sans(size: 11, weight: .medium))
-            }
-            .foregroundStyle(isActive ? ArkyvColor.textPrimary : ArkyvColor.iconDefault)
+    /// A single floating tool: fixed 52×52 optical size (matching the
+    /// minimum comfortable hit target), consistent spacing handled by the
+    /// caller's `HStack`, never a differently-sized/shaped control among
+    /// the three.
+    private func floatingDockButton<Icon: View>(action: @escaping () -> Void, @ViewBuilder icon: () -> Icon) -> some View {
+        Button(action: action) {
+            icon()
+                .frame(width: 58.24, height: 58.24)
+                .background(.ultraThinMaterial, in: Circle())
         }
-        .frame(width: 56)
+        .buttonStyle(.plain)
     }
 }

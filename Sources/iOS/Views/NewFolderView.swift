@@ -32,9 +32,9 @@ struct NewFolderView: View {
                             icon = candidate
                         } label: {
                             FolderIconView(icon: candidate, size: 20,
-                                           color: candidate == icon ? ArkyvColor.background : ArkyvColor.textPrimary)
+                                           color: candidate == icon ? ArkyvColor.canvas : ArkyvColor.textPrimary)
                                 .frame(width: 44, height: 44)
-                                .background(candidate == icon ? ArkyvColor.textPrimary : ArkyvColor.card,
+                                .background(candidate == icon ? ArkyvColor.textPrimary : ArkyvColor.surface,
                                             in: RoundedRectangle(cornerRadius: ArkyvRadius.button))
                         }
                     }
@@ -42,7 +42,7 @@ struct NewFolderView: View {
                 Spacer()
             }
             .padding(20)
-            .background(ArkyvColor.background)
+            .background(ArkyvColor.canvas)
             .navigationTitle("New Folder")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -62,6 +62,5 @@ struct NewFolderView: View {
             }
             .onAppear { nameFocused = true }
         }
-        .preferredColorScheme(.dark)
     }
 }

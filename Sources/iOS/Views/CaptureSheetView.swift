@@ -71,7 +71,6 @@ struct CaptureSheetView: View {
                 addModeBody
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var addModeBody: some View {
@@ -95,7 +94,7 @@ struct CaptureSheetView: View {
             if let filename = screenshotFilename {
                 LocalImageView(filename: filename, contentMode: .fill)
             } else {
-                ArkyvColor.background
+                ArkyvColor.canvas
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -120,7 +119,7 @@ struct CaptureSheetView: View {
         .padding(.top, 24)
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
-        .background(ArkyvColor.sheetScrim)
+        .background(ArkyvColor.overlay)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: ArkyvRadius.sheet, topTrailingRadius: ArkyvRadius.sheet))
         .overlay(alignment: .topTrailing) {
             dismissButton
@@ -138,7 +137,7 @@ struct CaptureSheetView: View {
             // quiet against the sheet.
             Image(systemName: "xmark")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(ArkyvColor.iconDefault)
+                .foregroundStyle(ArkyvColor.subdued)
                 .frame(width: 32, height: 32)
                 .contentShape(Circle())
         }
@@ -233,8 +232,8 @@ struct CaptureSheetView: View {
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .arkyvOutlinedSurface(
-                fill: isHighlighted ? ArkyvColor.surface : ArkyvColor.card,
-                stroke: isHighlighted ? ArkyvColor.textPrimary : ArkyvColor.border,
+                fill: isHighlighted ? ArkyvColor.surface : ArkyvColor.surface,
+                stroke: isHighlighted ? ArkyvColor.textPrimary : ArkyvColor.divider,
                 lineWidth: isHighlighted ? 1.5 : 1
             )
             .scaleEffect(isConfirming ? 0.97 : 1)
@@ -253,7 +252,7 @@ struct CaptureSheetView: View {
 
     private var quickNoteField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "text.cursor").foregroundStyle(ArkyvColor.textDim).font(.system(size: 13))
+            Image(systemName: "text.cursor").foregroundStyle(ArkyvColor.subdued).font(.system(size: 13))
             TextField(
                 "Add a note (optional)...",
                 text: $note,
@@ -265,7 +264,7 @@ struct CaptureSheetView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .arkyvOutlinedSurface(fill: ArkyvColor.card, stroke: ArkyvColor.border)
+        .arkyvOutlinedSurface(fill: ArkyvColor.surface, stroke: ArkyvColor.divider)
     }
 
     /// Locks in a folder tap: haptic + checkmark fire immediately (via the

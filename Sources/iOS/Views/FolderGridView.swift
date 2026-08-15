@@ -68,7 +68,7 @@ struct FolderGridView: View {
                 .padding(.bottom, 24)
             }
         }
-        .background(ArkyvColor.background)
+        .background(ArkyvColor.canvas)
         .safeAreaInset(edge: .top) { header }
         .navigationDestination(for: ItemRoute.self) { route in
             if let item = resolveItem(route.itemID) {
@@ -99,14 +99,14 @@ struct FolderGridView: View {
         VStack(spacing: 12) {
             Image(systemName: "questionmark.square.dashed")
                 .font(.system(size: 28))
-                .foregroundStyle(ArkyvColor.textDim)
+                .foregroundStyle(ArkyvColor.subdued)
             Text("This item no longer exists")
                 .font(.arkyvLabel)
                 .foregroundStyle(ArkyvColor.textSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 80)
-        .background(ArkyvColor.background)
+        .background(ArkyvColor.canvas)
     }
 
     private func log(_ message: @autoclosure () -> String) {
@@ -163,12 +163,12 @@ struct FolderGridView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(ArkyvColor.background)
+        .background(ArkyvColor.canvas)
     }
 
     private var searchField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(ArkyvColor.textDim)
+            Image(systemName: "magnifyingglass").foregroundStyle(ArkyvColor.subdued)
             TextField("Search this folder", text: $query)
                 .font(.arkyvBody)
                 .foregroundStyle(ArkyvColor.textPrimary)
@@ -182,14 +182,14 @@ struct FolderGridView: View {
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-            ArkyvMarkView(height: 40, color: ArkyvColor.textDim)
+            ArkyvMarkView(height: 40, color: ArkyvColor.subdued)
             Text(searching ? "No matches" : "Nothing here yet")
                 .font(.arkyvLabel)
                 .foregroundStyle(ArkyvColor.textSecondary)
             if !searching {
                 Text("Screenshot something, or tap + to add from your library.")
                     .font(.arkyvCaption)
-                    .foregroundStyle(ArkyvColor.textDim)
+                    .foregroundStyle(ArkyvColor.subdued)
                     .multilineTextAlignment(.center)
             }
         }

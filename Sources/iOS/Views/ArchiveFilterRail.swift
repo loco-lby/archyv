@@ -27,6 +27,7 @@ struct ArchiveFilterRail: View {
                     } label: {
                         Text(label(filter))
                             .font(ArkyvFont.mono(active == filter ? .medium : .regular, size: 15))
+                            .tracking(1)
                             .foregroundStyle(active == filter ? ArkyvColor.textPrimary : ArkyvColor.textSecondary)
                     }
                     .buttonStyle(.plain)

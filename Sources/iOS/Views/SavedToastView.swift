@@ -18,7 +18,7 @@ struct SavedToastView: View {
         .background(ArkyvColor.surface, in: RoundedRectangle(cornerRadius: ArkyvRadius.button))
         .overlay(
             RoundedRectangle(cornerRadius: ArkyvRadius.button)
-                .strokeBorder(ArkyvColor.border, lineWidth: 1)
+                .strokeBorder(ArkyvColor.divider, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
     }

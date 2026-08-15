@@ -89,13 +89,13 @@ struct LocalImageView: View {
 
     private var placeholder: some View {
         ZStack {
-            ArkyvColor.card
+            ArkyvColor.surface
             if didFail || filename == nil {
                 Image(systemName: "photo")
                     .font(.system(size: 28))
-                    .foregroundStyle(ArkyvColor.textDim)
+                    .foregroundStyle(ArkyvColor.subdued)
             } else {
-                ProgressView().tint(ArkyvColor.textDim)
+                ProgressView().tint(ArkyvColor.subdued)
             }
         }
     }
@@ -156,7 +156,7 @@ struct TagPill: View {
             .foregroundStyle(ArkyvColor.textSecondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .arkyvOutlinedSurface(fill: ArkyvColor.surface, stroke: ArkyvColor.border, radius: ArkyvRadius.pill)
+            .arkyvOutlinedSurface(fill: ArkyvColor.surface, stroke: ArkyvColor.divider, radius: ArkyvRadius.pill)
     }
 }
 

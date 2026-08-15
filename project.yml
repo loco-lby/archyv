@@ -48,8 +48,6 @@ targets:
         # compatibility box (black bars top & bottom).
         UILaunchScreen:
           UIColorName: LaunchBackground
-        UIUserInterfaceStyle: Dark
-        UIStatusBarStyle: UIStatusBarStyleLightContent
         # D6: lets CloudKit's silent-push subscription wake the app to
         # import remote changes while backgrounded. No other background
         # mode, entitlement, or notification code added — see D6 scope.

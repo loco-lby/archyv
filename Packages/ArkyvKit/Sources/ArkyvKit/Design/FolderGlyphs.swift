@@ -18,7 +18,7 @@ public struct FolderGlyphView: View {
     var size: CGFloat
     var color: Color
 
-    public init(glyph: FolderGlyph, size: CGFloat = 18, color: Color = ArkyvColor.iconDefault) {
+    public init(glyph: FolderGlyph, size: CGFloat = 18, color: Color = ArkyvColor.subdued) {
         self.glyph = glyph
         self.size = size
         self.color = color

@@ -20,11 +20,6 @@ final class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // Fonts register automatically via UIAppFonts — this just confirms
-        // it worked in this process too, in Debug builds only.
-        #if DEBUG
-        ArkyvFont.verifyFontsAvailable()
-        #endif
         view.backgroundColor = .clear
 
         let repo = Repository(context: container.mainContext)
@@ -140,7 +135,6 @@ private struct ShareDrawerView: View {
         ShareDrawerContent(load: load, onDone: onDone, onCancel: onCancel)
             .modelContainer(container)
             .environment(\.modelContext, container.mainContext)
-            .preferredColorScheme(.dark)
     }
 }
 
@@ -210,7 +204,7 @@ private struct ShareDrawerContent: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ArkyvColor.background.ignoresSafeArea())
+        .background(ArkyvColor.canvas.ignoresSafeArea())
         .ignoresSafeArea(edges: .bottom)
         .animation(.easeOut(duration: 0.18), value: showingPicker)
         .task {
@@ -219,13 +213,16 @@ private struct ShareDrawerContent: View {
     }
 
     // MARK: X / ✓ — same shared Cherries controls the app's capture flow
-    // uses, same positioning.
-
+    // uses, same positioning. Unlike CropEditorView/ScreenshotCaptureFlowView
+    // this drawer is NOT a darkroom exception — its canvas is adaptive, so
+    // (unlike those two) the marks must use the adaptive `textPrimary`
+    // color explicitly rather than the controls' fixed-white default,
+    // which would be illegible in Light mode.
     private var actionBar: some View {
         HStack {
-            CherriesCancelControl(action: onCancel)
+            CherriesCancelControl(action: onCancel, color: ArkyvColor.textPrimary)
             Spacer()
-            CherriesConfirmControl(action: confirmSave, isEnabled: isReady && !isSaving)
+            CherriesConfirmControl(action: confirmSave, isEnabled: isReady && !isSaving, color: ArkyvColor.textPrimary)
         }
         .padding(.horizontal, 32)
         .padding(.top, 20)
@@ -244,13 +241,13 @@ private struct ShareDrawerContent: View {
                 Text(selectedFolder.map { "\($0.name) ˅" } ?? "Unfiled ˅")
                     .font(ArkyvFont.mono(.medium, size: 16))
                     .italic(selectedFolder == nil)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(ArkyvColor.textPrimary)
             }
             .disabled(showingPicker)
             if !isReady {
                 Text("Preparing…")
                     .font(ArkyvFont.mono(.regular, size: 11))
-                    .foregroundStyle(ArkyvColor.textDim)
+                    .foregroundStyle(ArkyvColor.subdued)
             }
             if saveError {
                 Text("Couldn't save — try again")
@@ -279,7 +276,7 @@ private struct ShareDrawerContent: View {
             if folders.isEmpty {
                 Text("No folders yet")
                     .font(ArkyvFont.mono(.regular, size: 13))
-                    .foregroundStyle(ArkyvColor.textDim)
+                    .foregroundStyle(ArkyvColor.subdued)
                     .padding(.vertical, 10)
             } else {
                 ForEach(folders) { folder in
@@ -288,10 +285,10 @@ private struct ShareDrawerContent: View {
             }
         }
         .padding(8)
-        .background(ArkyvColor.card, in: RoundedRectangle(cornerRadius: ArkyvRadius.sheet))
+        .background(ArkyvColor.surface, in: RoundedRectangle(cornerRadius: ArkyvRadius.sheet))
         .overlay(
             RoundedRectangle(cornerRadius: ArkyvRadius.sheet)
-                .strokeBorder(ArkyvColor.border, lineWidth: 1)
+                .strokeBorder(ArkyvColor.divider, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.5), radius: 12, y: 12)
     }
@@ -341,7 +338,7 @@ private struct ShareDrawerContent: View {
 
     private var noteField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "text.cursor").foregroundStyle(ArkyvColor.textDim).font(.system(size: 13))
+            Image(systemName: "text.cursor").foregroundStyle(ArkyvColor.subdued).font(.system(size: 13))
             TextField("Add note (optional)...", text: $note, axis: .vertical)
                 .font(.arkyvBody)
                 .foregroundStyle(ArkyvColor.textPrimary)
@@ -349,7 +346,7 @@ private struct ShareDrawerContent: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .arkyvOutlinedSurface(fill: ArkyvColor.card, stroke: ArkyvColor.border)
+        .arkyvOutlinedSurface(fill: ArkyvColor.surface, stroke: ArkyvColor.divider)
     }
 
     // MARK: Save
@@ -392,7 +389,7 @@ private struct MediaThumbnail: View {
             if let image {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
-                ArkyvColor.card
+                ArkyvColor.surface
             }
         }
         .task(id: filename) {

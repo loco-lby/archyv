@@ -108,14 +108,14 @@ struct ItemDetailView: View {
                             Spacer()
                             Text("Saved \(item.createdAt.formatted(date: .abbreviated, time: .omitted))")
                                 .font(.arkyvCaption)
-                                .foregroundStyle(ArkyvColor.textDim)
+                                .foregroundStyle(ArkyvColor.subdued)
                         }
 
                         if !item.tags.isEmpty {
                             FlowTags(tags: item.tags)
                         }
 
-                        Rectangle().fill(ArkyvColor.border).frame(height: 1)
+                        Rectangle().fill(ArkyvColor.divider).frame(height: 1)
 
                         notesSection
 
@@ -159,7 +159,7 @@ struct ItemDetailView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(ArkyvColor.background)
+            .background(ArkyvColor.canvas)
             .safeAreaInset(edge: .top) { header }
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showMovePicker) {
@@ -281,7 +281,7 @@ struct ItemDetailView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(ArkyvColor.background)
+        .background(ArkyvColor.canvas)
     }
 
     private var shareText: String {
@@ -307,7 +307,7 @@ struct ItemDetailView: View {
                 text: $noteDraft,
                 prompt: Text("Add a note...")
                     .font(.arkyvBody)
-                    .foregroundStyle(ArkyvColor.textDim),
+                    .foregroundStyle(ArkyvColor.subdued),
                 axis: .vertical
             )
             .font(.arkyvBody)
@@ -320,7 +320,7 @@ struct ItemDetailView: View {
             .accessibilityLabel("Note")
             .accessibilityHint("Edits the note for this item. Saves automatically as you type.")
             .arkyvOutlinedSurface(
-                stroke: noteFocused ? ArkyvColor.accent : ArkyvColor.border,
+                stroke: noteFocused ? ArkyvColor.accent : ArkyvColor.divider,
                 radius: ArkyvRadius.card
             )
             .contentShape(Rectangle())
@@ -363,7 +363,7 @@ struct ItemDetailView: View {
         .frame(maxWidth: .infinity)
         .background(ArkyvColor.surface)
         .overlay(alignment: .top) {
-            Rectangle().fill(ArkyvColor.border).frame(height: 1)
+            Rectangle().fill(ArkyvColor.divider).frame(height: 1)
         }
     }
 
@@ -374,12 +374,12 @@ struct ItemDetailView: View {
         case .saving:
             Text("Saving…")
                 .font(.arkyvCaption)
-                .foregroundStyle(ArkyvColor.textDim)
+                .foregroundStyle(ArkyvColor.subdued)
                 .transition(.opacity)
         case .saved:
             Text("Saved")
                 .font(.arkyvCaption)
-                .foregroundStyle(ArkyvColor.textDim)
+                .foregroundStyle(ArkyvColor.subdued)
                 .transition(.opacity)
         }
     }
@@ -556,10 +556,9 @@ struct MoveToFolderView: View {
                 }
                 .padding(20)
             }
-            .background(ArkyvColor.background)
+            .background(ArkyvColor.canvas)
             .navigationTitle("Move to...")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .preferredColorScheme(.dark)
     }
 }
