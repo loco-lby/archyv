@@ -50,6 +50,19 @@ struct ItemDetailView: View {
     /// context. A fresh `@State` per navigation push, so it never leaks
     /// between different items.
     @State private var showingFullContext = false
+    /// Pinch-to-zoom viewing state for the image above, backed by
+    /// `ZoomableImageContainer` (a native `UIScrollView`, for
+    /// anchor-correct pinch-toward-your-fingers zooming — see its own doc
+    /// comment) — viewing behavior only, never touches
+    /// `item.cropRegion`/`imageData`/anything stored. `imageIsZoomed`
+    /// mirrors the scroll view's own zoomed/not-zoomed state so the page's
+    /// outer `ScrollView` can suspend itself while zoomed (see
+    /// `.scrollDisabled` below). `imageZoomResetTick` is bumped whenever
+    /// `showingFullContext` changes so switching between the saved crop
+    /// and the original doesn't carry a stale zoom/pan into a
+    /// differently-sized image.
+    @State private var imageIsZoomed = false
+    @State private var imageZoomResetTick = 0
 
     private enum NoteSaveState { case idle, saving, saved }
 
@@ -72,12 +85,21 @@ struct ItemDetailView: View {
                         // Archive: cropRegion: .fullImage takes its own
                         // unchanged code path, so a never-cropped item
                         // renders identically regardless of this toggle.
-                        LocalImageView(
-                            filename: item.localFilename,
-                            fallbackImageData: { item.imageData },
-                            contentMode: .fit,
-                            cropRegion: showingFullContext ? .fullImage : item.cropRegion
-                        )
+                        ZoomableImageContainer(
+                            isZoomedIn: $imageIsZoomed,
+                            resetSignal: imageZoomResetTick,
+                            onSingleTap: {
+                                guard !item.cropRegion.isFullImage else { return }
+                                withAnimation(.easeInOut(duration: 0.2)) { showingFullContext.toggle() }
+                            }
+                        ) {
+                            LocalImageView(
+                                filename: item.localFilename,
+                                fallbackImageData: { item.imageData },
+                                contentMode: .fit,
+                                cropRegion: showingFullContext ? .fullImage : item.cropRegion
+                            )
+                        }
                         .aspectRatio(showingFullContext ? originalAspectRatio : item.aspectRatio, contentMode: .fit)
                         .frame(maxWidth: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
@@ -88,10 +110,8 @@ struct ItemDetailView: View {
                                 contextToggleButton
                             }
                         }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard !item.cropRegion.isFullImage else { return }
-                            withAnimation(.easeInOut(duration: 0.2)) { showingFullContext.toggle() }
+                        .onChange(of: showingFullContext) { _, _ in
+                            imageZoomResetTick += 1
                         }
                     }
 
@@ -159,6 +179,11 @@ struct ItemDetailView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
+            // Suspends the page's own scroll while the image above is
+            // zoomed in, so panning the image doesn't fight the page
+            // scrolling underneath it — re-enables the instant zoom
+            // returns to 1x (see `imageIsZoomed`'s doc comment).
+            .scrollDisabled(imageIsZoomed)
             .background(ArkyvColor.canvas)
             .safeAreaInset(edge: .top) { header }
             .toolbar(.hidden, for: .navigationBar)

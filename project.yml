@@ -8,7 +8,7 @@ options:
 
 settings:
   base:
-    DEVELOPMENT_TEAM: 4Y8P7TF3A5
+    DEVELOPMENT_TEAM: H945J47QKQ
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1"
     CURRENT_PROJECT_VERSION: "1"
@@ -67,6 +67,7 @@ targets:
           - IntelOneMono-Medium.ttf
           - IntelOneMono-Bold.ttf
           - InstrumentSans.ttf
+          - Lora-VariableFont_wght.ttf
 
   # ─────────────────────── iOS Share Extension ───────────────────────
   ArkyvShare:
@@ -92,6 +93,7 @@ targets:
           - IntelOneMono-Medium.ttf
           - IntelOneMono-Bold.ttf
           - InstrumentSans.ttf
+          - Lora-VariableFont_wght.ttf
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: ShareViewController

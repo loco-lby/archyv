@@ -282,14 +282,21 @@ struct RootView: View {
             icon()
                 .frame(width: 58.24, height: 58.24)
                 .background {
-                    // `.ultraThinMaterial` alone kept its adaptive
-                    // legibility-over-arbitrary-imagery quality, but read
-                    // too light per review — the black overlay darkens it
-                    // by a controlled, tunable amount (25%) on top of that
-                    // same material, rather than replacing it with a flat
-                    // color and losing the adaptive blur.
+                    // A generic `Color.black` overlay at 25% still read as
+                    // an imitation of standard Apple frosted material —
+                    // too light and too glossy for Cherries' restrained
+                    // monochrome language. Now filled with the SAME
+                    // `ArkyvColor.canvas` token the Archive background
+                    // itself uses (not a fixed black), at high opacity, so
+                    // the dock reads as receding toward that background
+                    // rather than floating a distinct gray plate on top of
+                    // it. `.ultraThinMaterial` stays underneath at just
+                    // enough strength to keep the adaptive
+                    // legibility-over-arbitrary-imagery quality (so a
+                    // bright masonry tile behind the dock doesn't wash it
+                    // out) without dominating the look.
                     Circle().fill(.ultraThinMaterial)
-                    Circle().fill(Color.black.opacity(0.25))
+                    Circle().fill(ArkyvColor.canvas.opacity(0.85))
                 }
         }
         .buttonStyle(.plain)
