@@ -24,10 +24,12 @@ Packages/ArkyvKit/              Shared Swift package — models, design tokens, 
     Design/     ArkyvColor, ArkyvFont, ArkyvMetrics   (Figma tokens, defined once)
     Model/      ItemKind, FolderIcon
     Store/      StoredModels (SwiftData), ArkyvStore, MediaStore, AppGroup,
-                ImageDecodeCache/ImageDecoding
+                ImageDecodeCache/ImageDecoding, IntegrityCheck
     Capture/    CaptureDraft
+  Sources/ArkyvBench/            `swift run` synthetic-archive benchmark harness
+                                  (Scale Foundation 01 — see its own doc comment)
 Sources/iOS/                    iPhone app
-  App/          ArkyvApp, entitlements, Info.plist
+  App/          ArkyvApp, entitlements, Info.plist, ImageCacheStressTest (DEBUG)
   Capture/      ScreenshotDetector (PHPhotoLibrary), CaptureCoordinator
   Views/        Archive (root, née Home), FolderGrid (legacy, unused), ItemDetail,
                 CaptureSheet, NewFolder, Settings…
@@ -285,6 +287,88 @@ doc.
   debug menu) when investigating a data-integrity question; don't wire it
   into app launch without first checking its I/O cost against a
   realistically large archive.
+
+## Scale / Performance Contract (Foundation 01)
+
+Synthetic-archive findings at 100 / 1,000 / 5,000 / 10,000 / 20,000 items —
+methodology and full numbers below; durable takeaways only here.
+
+- **Benchmark harness:** `Packages/ArkyvKit/Sources/ArkyvBench` — a plain
+  `swift run` executable (deliberately not another XCTest target; see its
+  own doc comment for why), always against an isolated in-memory
+  `ModelContainer`, never the real store. Run it with
+  `cd Packages/ArkyvKit && swift run -c release ArkyvBench` (use the Xcode
+  toolchain directly, not `/usr/bin/swift` — see the Build section below).
+  `IntegrityCheck` only runs in a `-c debug` invocation, matching its own
+  `#if DEBUG` gating.
+- **Known-safe range:** every measured operation stays well under 50ms up
+  to 5,000 items. Comfortable range for today's architecture without any
+  further work.
+- **Known bottleneck — full-archive re-fetch on any mutation:**
+  `ArchiveView`'s `@Query` has no predicate (soft-delete/kind filtering
+  happens in-memory — a deliberate, already-documented workaround for a
+  SwiftData/Swift type-checker hang when a predicate is combined with a
+  `sort:` argument in the same query). SwiftData re-runs that unfiltered
+  fetch whenever *any* `StoredItem` changes anywhere, not just the item
+  actually touched. At 10,000 items this fetch+filter costs ~350-400ms;
+  at 20,000, ~800ms — meaning something as small as toggling one favorite
+  could cost most of a second of Archive re-fetch at that scale. The
+  Unfiled filter (a per-item membership scan) and `Repository.search`
+  scale the same way and land in the same range. Not fixed this pass:
+  the correct fix is either revisiting the predicate/type-checker
+  limitation or an incremental-loading architecture, both explicitly
+  outside a "safe narrow optimization." Flagging this as the primary
+  finding for a future dedicated pass, not attempting it opportunistically
+  here.
+- **Not a bottleneck, deliberately left alone:** `resolveItem`'s linear
+  ID lookup (ArchiveView's own item-tap → Item Detail resolution) is
+  O(N) but only 5-7ms even at 20,000 items — imperceptible, once per tap.
+  Optimizing it (e.g. a dictionary index) would be solving a problem that
+  doesn't exist at any tested scale.
+- **Migrations stay O(1) once flagged done**, as designed:
+  `MembershipMigration`/`IconMigration`'s warm (already-run) path is a
+  single `UserDefaults` read regardless of archive size (<0.1ms at every
+  tested size); only the one-time cold path scales with item count.
+- **`ImageDecodeCache` at scale:** a scripted on-device stress run
+  (synthetic in-memory JPEGs, no real user data — `ImageCacheStressTest`,
+  `#if DEBUG`, inert unless launched with `--arkyv-bench-image-cache`)
+  decoded/cached 3,000 distinct masonry-thumbnail-sized images in strict
+  sequence (real device, physical run). Resident memory stayed flat —
+  ~87MB — for the *entire* run, never trending toward the 320MB
+  `totalCostLimit`, confirming Performance Foundation 01's cost math
+  holds at real scale rather than just for a short scroll. A revisit
+  check on the *oldest* 400 of the 3,000 (i.e. ~3,000 items back) found
+  0 hits — expected, not a regression: Performance Foundation 01 already
+  established the cache's effective warm depth at roughly ~90 items
+  (320MB ÷ ~3.5MB/thumbnail), physically verified with 29/29 hits on a
+  realistic ~90-item scroll-back. Checking 3,000-deep here was testing
+  *whether memory stays bounded far past that depth* (it does), not
+  re-testing warm-depth itself. **Verdict: 320MB reads as comfortably
+  sufficient** for realistic scrolling (which rarely revisits content
+  more than a screen or two of history back) and safely bounded even
+  under a sustained, atypical decode load; no change made to the
+  shipping budget. Two real lessons from building this, not cache
+  findings: running a long synchronous loop inside `ArkyvApp.init()`
+  trips iOS's launch watchdog well under any real memory pressure, and
+  `Thread.sleep` inside a `Task` can stall Swift concurrency's
+  cooperative thread pool — both fixed in the harness itself (moved to
+  a post-launch `.task`, switched to `Task.sleep`), noted here since
+  they're easy mistakes to repeat elsewhere.
+- **Search readiness:** `Repository.search` and `ArchiveView`'s own
+  inline search-as-you-type filter independently duplicate the same
+  in-memory substring scan over title/note/OCR-text/sourceURL/tags — a
+  future Search feature should converge these into one path rather than
+  keep both. Folder names and dates aren't currently searchable at all.
+  `ocrText` exists as a schema field but nothing populates it yet (Vision
+  OCR is unbuilt — see Status). None of this is schema-blocked for a
+  10k-item archive in the way full-archive re-fetch is; the real
+  constraint is fixing the re-fetch bottleneck above, since Search would
+  inherit it directly.
+- **Per-cell hot-path rule for future work:** never add a full-archive
+  scan (membership check, tag lookup, search match, anything O(N)) inside
+  a masonry cell's own view body or `LocalImageView`'s decode path — those
+  run once per visible cell, not once per user action, and would compound
+  the cost above rather than just paying it once per mutation.
 
 ## Build
 
