@@ -35,6 +35,23 @@ public struct MediaStore: Sendable {
         try? Data(contentsOf: url(for: filename))
     }
 
+    /// Copies an already-encoded file straight into `MediaStore` — never
+    /// materializes its bytes as an in-memory `Data` buffer at all.
+    /// Share/Capture Reliability Foundation 01: the preferred write path
+    /// whenever the source is already file-backed and already in a
+    /// format `MediaStore` can store as-is (see `ShareViewController`'s
+    /// already-JPEG fast path) — for a large photo, this is the
+    /// difference between a filesystem copy and materializing a full
+    /// decoded bitmap (which `save(image:)` below requires) just to
+    /// re-encode the same bytes back into the same format they already
+    /// were.
+    @discardableResult
+    public func save(copyingFileAt sourceURL: URL, id: UUID = UUID(), ext: String = "jpg") throws -> String {
+        let filename = "\(id.uuidString).\(ext)"
+        try FileManager.default.copyItem(at: sourceURL, to: url(for: filename))
+        return filename
+    }
+
     /// D4: reads `filename` from disk, materializing it first from
     /// `fallbackData` if the file doesn't exist locally yet — the
     /// situation a CloudKit-restored `StoredItem` is in on a fresh

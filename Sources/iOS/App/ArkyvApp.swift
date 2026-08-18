@@ -53,6 +53,14 @@ struct ArkyvApp: App {
                             await ImageCacheStressTest.run()
                         }
                     }
+                    // Share/Capture Reliability Foundation 01 — same
+                    // post-launch, off-main-thread pattern and the same
+                    // reasoning as the hook above.
+                    if CommandLine.arguments.contains("--arkyv-bench-ingestion") {
+                        Task.detached(priority: .userInitiated) {
+                            await IngestionStressTest.run()
+                        }
+                    }
                     #endif
                 }
         }

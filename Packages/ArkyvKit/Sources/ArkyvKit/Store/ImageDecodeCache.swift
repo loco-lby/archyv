@@ -54,6 +54,35 @@ public enum ImageDecoding {
         }
         return UIImage(cgImage: cgImage)
     }
+
+    /// Reads an image's pixel dimensions from its header/metadata only —
+    /// no pixel decoding at all, cheap regardless of source resolution.
+    /// Share/Capture Reliability Foundation 01: the whole reason this
+    /// exists is that a caller (e.g. `ShareViewController`'s already-JPEG
+    /// fast path) that only needs `CaptureDraft.pixelSize` — not a
+    /// decoded bitmap — shouldn't have to pay for one just to learn a
+    /// width and height.
+    public static func pixelSize(ofData data: Data) -> CGSize? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return pixelSize(of: source)
+    }
+
+    /// Same as `pixelSize(ofData:)`, reading straight from a file URL —
+    /// avoids materializing the file's bytes into a `Data` buffer at all
+    /// when the caller only needs dimensions, not content.
+    public static func pixelSize(ofFileAt url: URL) -> CGSize? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return pixelSize(of: source)
+    }
+
+    private static func pixelSize(of source: CGImageSource) -> CGSize? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat else {
+            return nil
+        }
+        return CGSize(width: width, height: height)
+    }
 }
 
 /// Bounded in-memory cache of already-decoded `UIImage`s, keyed by source

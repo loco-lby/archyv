@@ -92,7 +92,18 @@ final class ShareViewController: UIViewController {
         return CaptureDraft(kind: .note, sourceDevice: .iOS)
     }
 
+    /// Share/Capture Reliability Foundation 01: prefers a decode-free
+    /// fast path (`jpegFastPathDraft`) when the shared attachment is
+    /// already a JPEG, and only falls back to the original
+    /// decode-then-re-encode path for anything else (HEIC, PNG, an
+    /// already-decoded `UIImage` handed back directly, or if the fast
+    /// path couldn't get usable bytes for any reason). See
+    /// `jpegFastPathDraft`'s own doc comment for why this matters —
+    /// this function's *behavior* (what ends up filed) is unchanged;
+    /// only how it gets there for the common JPEG case is narrower.
     private func imageDraft(from provider: NSItemProvider) async -> CaptureDraft? {
+        if let draft = await jpegFastPathDraft(from: provider) { return draft }
+
         let loaded = try? await provider.loadItem(forTypeIdentifier: UTType.image.identifier)
         var image: UIImage?
         switch loaded {
@@ -110,10 +121,62 @@ final class ShareViewController: UIViewController {
         )
     }
 
+    /// A large modern photo (24-48MP is common) decoded to a full bitmap
+    /// just to be immediately re-encoded back to JPEG costs real peak
+    /// memory in a Share Extension's much tighter memory ceiling than
+    /// the main app has — and, since `UIImage.jpegData` re-compresses,
+    /// it also throws away the original bytes/metadata for no reason
+    /// when the source was already a JPEG. When the provider can hand
+    /// back JPEG bytes directly, this copies/writes them completely
+    /// unmodified (original fidelity, including EXIF orientation, exactly
+    /// preserved — more faithfully than the decode/re-encode path even
+    /// does today) and reads only the pixel dimensions from the file's
+    /// header via `ImageDecoding.pixelSize` — no bitmap ever
+    /// materializes. Returns `nil` (never throws) on anything short of
+    /// full success, so `imageDraft(from:)` can fall back to the
+    /// original path with no special-casing.
+    private func jpegFastPathDraft(from provider: NSItemProvider) async -> CaptureDraft? {
+        guard provider.hasItemConformingToTypeIdentifier(UTType.jpeg.identifier),
+              let loaded = try? await provider.loadItem(forTypeIdentifier: UTType.jpeg.identifier) else {
+            return nil
+        }
+
+        let filename: String?
+        let pixelSize: CGSize?
+        switch loaded {
+        case let url as URL:
+            filename = try? MediaStore.shared.save(copyingFileAt: url)
+            pixelSize = ImageDecoding.pixelSize(ofFileAt: url)
+        case let data as Data:
+            filename = try? MediaStore.shared.save(data: data)
+            pixelSize = ImageDecoding.pixelSize(ofData: data)
+        default:
+            filename = nil
+            pixelSize = nil
+        }
+
+        guard let filename, let pixelSize else { return nil }
+        return CaptureDraft(kind: .screenshot, localFilename: filename, pixelSize: pixelSize, sourceDevice: .iOS)
+    }
+
+    /// Share/Capture Reliability Foundation 01: `didComplete` guards
+    /// `completeRequest` to exactly one call for this extension's
+    /// lifetime, no matter which of `finish()`/`cancel()` fires or how
+    /// many times — e.g. a stray tap landing in the brief window between
+    /// a successful save calling `finish()` and the system actually
+    /// tearing the extension down. `NSExtensionContext.completeRequest`
+    /// tolerating repeat calls isn't documented API contract, so this
+    /// doesn't rely on that; it's a plain, cheap, always-correct guard.
+    private var didComplete = false
+
     private func finish() {
+        guard !didComplete else { return }
+        didComplete = true
         extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
     }
     private func cancel() {
+        guard !didComplete else { return }
+        didComplete = true
         // Was cancelRequest(withError:) — that API is meant for reporting
         // a genuine failure back to the host, not routine user
         // cancellation, and didn't reliably dismiss the extension.
@@ -380,9 +443,26 @@ private struct ShareDrawerContent: View {
 
 /// Minimal MediaStore-backed thumbnail for the Share Extension (the app's
 /// `LocalImageView` lives in the iOS app target, not this one).
+///
+/// Share/Capture Reliability Foundation 01: decodes via
+/// `ImageDecoding.decode(_:maxPixelSize:)` at a small target rather than
+/// a bare `UIImage(data:)` full decode — this preview only ever renders
+/// at up to 360pt tall (see its `.frame(maxHeight: 360)` call site), so
+/// decoding a 24-48MP original in full just to shrink it on-screen was
+/// exactly the same wasted-decode-for-a-small-render cost Performance
+/// Foundation 01 already fixed for the main app's masonry grid — this
+/// extension's own preview had never picked that up since it predates
+/// `ImageDecodeCache`/`ImageDecoding` and lives in a separate target.
+/// Not cached (`ImageDecodeCache.shared` would work fine here too, but
+/// this view is shown at most once per share session, so there's
+/// nothing to reuse a cache entry for).
 private struct MediaThumbnail: View {
     let filename: String
     @State private var image: UIImage?
+
+    /// Generous for a 360pt-tall preview even at 3x, without paying for
+    /// anywhere near the original's full resolution.
+    private static let maxPixelSize: CGFloat = 800
 
     var body: some View {
         Group {
@@ -393,8 +473,13 @@ private struct MediaThumbnail: View {
             }
         }
         .task(id: filename) {
-            let data = await Task.detached { MediaStore.shared.data(for: filename) }.value
-            if let data { image = UIImage(data: data) }
+            let targetPixelSize = Self.maxPixelSize
+            let decoded = await Task.detached {
+                MediaStore.shared.data(for: filename).flatMap {
+                    ImageDecoding.decode($0, maxPixelSize: targetPixelSize)
+                }
+            }.value
+            if let decoded { image = decoded }
         }
     }
 }
