@@ -29,7 +29,8 @@ Packages/ArkyvKit/              Shared Swift package — models, design tokens, 
   Sources/ArkyvBench/            `swift run` synthetic-archive benchmark harness
                                   (Scale Foundation 01 — see its own doc comment)
 Sources/iOS/                    iPhone app
-  App/          ArkyvApp, entitlements, Info.plist, ImageCacheStressTest (DEBUG)
+  App/          ArkyvApp, entitlements, Info.plist, ImageCacheStressTest (DEBUG),
+                IngestionStressTest (DEBUG)
   Capture/      ScreenshotDetector (PHPhotoLibrary), CaptureCoordinator
   Views/        Archive (root, née Home), FolderGrid (legacy, unused), ItemDetail,
                 CaptureSheet, NewFolder, Settings…
@@ -454,6 +455,113 @@ this pass — this is what's true about the *existing* one.
   identified (historical-item backfill window, above) is bounded,
   self-correcting, and already observable via `IntegrityCheck` — not an
   architectural gap requiring product/CloudKit redesign.
+
+## Ingestion Contract (Share/Capture Reliability Foundation 01)
+
+From a full audit of every capture surface's provider→decode→
+MediaStore→`Repository.fileCapture`→SwiftData-save→completion lifecycle,
+with the Share Extension (the tightest memory budget of any Cherries
+process) as the main focus.
+
+- **Original bytes ownership:** every capture surface writes to
+  `MediaStore` (or now, for the Share Extension's JPEG fast path, copies
+  directly into it) *before* `CaptureDraft`/`Repository.fileCapture` ever
+  runs — `fileCapture` only ever reads an already-staged file, never
+  creates one. Unchanged by this pass; already true and already audited
+  in Data Integrity Foundation 01.
+- **Found: the pre-existing path silently re-compresses every shared
+  image, regardless of source format.** `MediaStore.save(image:)` always
+  calls `UIImage.jpegData(compressionQuality: 0.9)` — a JPEG shared from
+  Safari got decoded to a full bitmap and re-encoded back into a *new*
+  JPEG, discarding the original bytes and likely some metadata, for no
+  functional reason. Not previously documented anywhere. Fixed for the
+  common case (see below); still true for HEIC/PNG/other non-JPEG
+  sources, which still go through decode-then-re-encode — changing that
+  would mean deciding whether Cherries stores originals in their native
+  format at all, a real product/architecture question, not a narrow fix,
+  so it's flagged here rather than attempted.
+- **Fixed: `ShareViewController.jpegFastPathDraft`** — when the shared
+  attachment is already a JPEG, its bytes are copied straight into
+  `MediaStore` (`MediaStore.save(copyingFileAt:)`, new, zero in-memory
+  buffering when the provider hands back a file URL) and only the pixel
+  *dimensions* are read from the file header (`ImageDecoding.pixelSize`,
+  new — no bitmap ever decoded). Falls back to the original decode/
+  re-encode path unchanged for anything else. This is strictly better on
+  every axis for the common case: exact original bytes preserved
+  (including EXIF orientation — more faithfully than the old path,
+  which normalizes it during re-encode), no full-resolution bitmap ever
+  materializes, less CPU. A one-shot on-device comparison (12/24/48MP
+  synthetic JPEGs) confirmed the new path's resident-memory delta stays
+  ~0MB at every size the old path measurably moves the needle at — see
+  the note on measurement precision below.
+- **Fixed: the Share Extension's own preview thumbnail decoded at full
+  resolution.** `MediaThumbnail` (`ShareViewController.swift`) predates
+  `ImageDecodeCache`/`ImageDecoding` and lives in a separate target, so
+  it never picked up Performance Foundation 01's downsampling — it was
+  doing a bare `UIImage(data:)` full decode to render a ≤360pt preview.
+  Now uses `ImageDecoding.decode(_:maxPixelSize:)` like everything else.
+- **Fixed: `completeRequest` could theoretically fire twice.**
+  `ShareViewController.finish()`/`cancel()` now share a `didComplete`
+  guard. `NSExtensionContext.completeRequest` tolerating repeat calls
+  isn't documented API contract Cherries should rely on; this makes it
+  unconditionally true regardless. Narrow, always-correct, no behavior
+  change for the (overwhelmingly common) single-call case.
+- **Verified, not a gap: provider double-callback protection already
+  exists, structurally.** Every `provider.loadItem(forTypeIdentifier:)`
+  call here uses Swift's automatic completion-handler-to-`async`
+  bridging (`try? await provider.loadItem(...)`), which traps
+  ("SWIFT TASK CONTINUATION MISUSE") if the underlying completion
+  handler is invoked more than once — a documented Swift Concurrency
+  guarantee, not something this codebase implements itself.
+- **Verified: the single-image contract holds.** `NSExtensionActivationRule`
+  declares `ImageWithMaxCount: 1` — the system itself won't even offer
+  Cherries in the share sheet for a multi-image selection, before any
+  Cherries code runs. `extractDraft()` structurally only ever returns
+  the *first* successfully-loaded image provider. No mismatch found
+  between the declared contract and the implementation.
+- **Found, not fixed (a discovered behavior worth knowing, not a bug):**
+  when a single share payload includes *both* an image and a URL
+  attachment (common when sharing an image from a web page), Cherries
+  keeps only the image — the URL branch in `extractDraft()` only runs if
+  no image provider succeeded, so `sourceURL` never gets populated in
+  that case. Deterministic and consistent, just possibly surprising.
+  Explicitly not changed — "new link-capture behavior" is out of scope
+  this pass.
+- **Failure/cancellation paths already correct, reused, not
+  reinvented:** `ShareDrawerContent.confirmSave()`'s `catch` already
+  leaves the drawer open with `saveError = true` and never calls
+  `completeRequest` on failure (no accidental completion-as-success,
+  retry stays possible) — unchanged, already correct before this pass.
+  A cancelled/abandoned share still leaves its staged `MediaStore` file
+  orphaned — the same known, accepted gap Data Integrity Foundation 01
+  already documented for every capture surface, not something new to
+  this one.
+- **Action Button companion audit:** `ScreenshotDetector`'s `isChecking`
+  reentrancy guard already prevents overlapping detection passes;
+  `MediaStore`'s UUID-based filenames can't collide; `CaptureCoordinator
+  .file`'s Data-Integrity-Foundation-01 cleanup-on-failure still holds
+  unchanged. One narrow, discovered edge case, not fixed: if a *second*
+  screenshot is detected (app backgrounded and reforegrounded) while an
+  earlier one's drawer is still open, `CaptureCoordinator.present(_:)`
+  silently replaces the currently-shown draft rather than queuing or
+  ignoring the new one — deciding which of those three is correct
+  product behavior is out of scope for a narrow technical pass.
+  `fileCapture`'s known lack of an idempotency key (Data Integrity
+  Foundation 01) applies here too, unchanged — no schema work done.
+- **Measurement note:** the on-device peak-memory comparison
+  (`IngestionStressTest`, `#if DEBUG`, `--arkyv-bench-ingestion`) uses
+  the same coarse `mach_task_basic_info` resident-size sampling
+  `ImageCacheStressTest` used in Scale Foundation 01. It reliably shows
+  the new path at ~0MB and the old path measurably above that at every
+  tested size, but the old path's absolute deltas (2-6.5MB even at
+  ~48MP) are smaller than a naive "width×height×4 bytes" bitmap
+  estimate would predict — likely either a more memory-efficient
+  ImageIO-internal re-encode pipeline than that model assumes, or this
+  sampling approach undercounting the true instantaneous peak. The
+  *comparison* is trustworthy; the old path's absolute number shouldn't
+  be read as a precise peak without real Instruments profiling. The
+  fidelity win (exact original bytes, unmodified) doesn't depend on
+  this measurement at all.
 
 ## Build
 
