@@ -6,7 +6,6 @@ import ArkyvKit
 /// capture drawer, and the saved-confirmation toast.
 struct RootView: View {
     @Environment(CaptureCoordinator.self) private var capture
-    @Environment(NoteFocusSignal.self) private var noteFocus
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @State private var tab: Tab = .archive
@@ -53,24 +52,15 @@ struct RootView: View {
 
             // A plain `if`, not `.hidden()`/`.opacity(0)` — those still
             // occupy layout space and (for `.hidden()`) still exist in the
-            // tree, and this exact view is the thing that was rising above
-            // the keyboard: it lives in this ZStack, a sibling of the
-            // NavigationStack that (several levels deep) hosts the note
-            // composer, so it inherits the `.keyboard` safe-area inset same
-            // as anything else here would. Removing it from the tree
-            // entirely — not just visually — is what actually keeps it out
-            // of layout and hit-testing while a note has focus.
-            //
-            // Also hidden once Item Detail is pushed (`archivePath` is
+            // tree. Hidden once Item Detail is pushed (`archivePath` is
             // non-empty) — the floating dock belongs to root Archive
             // screens only, not task/detail screens. Settings has no push
             // destinations yet, so it's always "root" for this check.
-            if !noteFocus.isActive && (tab == .settings || archivePath.isEmpty) {
+            if tab == .settings || archivePath.isEmpty {
                 floatingBottomOverlay
                     .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.2), value: noteFocus.isActive)
         .background(ArkyvColor.canvas)
         .sheet(item: $capture.drawer) { drawer in
             // v0.02: the screenshot flow should read as "no unnecessary app
