@@ -238,6 +238,118 @@ func runSuite(itemCount: Int) {
     print("")
 }
 
+// MARK: - Media Storage Architecture 01: externalStorage materialization cost
+//
+// Isolated, in-memory-only container (same as runSuite above — never a real
+// device/CloudKit store). Answers one narrow, concrete question raised by
+// the Media Storage Architecture 01 spike: how expensive is reading
+// StoredItem.imageData (a SwiftData `.externalStorage` attribute) compared
+// to reading the equivalent bytes from a plain file on disk (what
+// MediaStore.data(for:) already does today)? This is the exact cost
+// Option 2 (imageData as sole local authority, MediaStore as a purgeable
+// cache) would pay on every cache miss.
+//
+// Realistic per-item sizes, matching Storage Foundation 01's own blended
+// estimate (~800KB average across a screenshot-heavy archive, with real
+// camera photos running several MB) — deterministic, no randomness.
+private let mediaSizeSamplesKB: [Int] = [150, 400, 800, 1_200, 2_500, 4_800]
+
+@MainActor
+func makeSyntheticMediaArchive(itemCount: Int, context: ModelContext) -> [UUID] {
+    var ids: [UUID] = []
+    for i in 0..<itemCount {
+        let sizeBytes = mediaSizeSamplesKB[i % mediaSizeSamplesKB.count] * 1024
+        // Deterministic, non-uniform payload (not all-zero) — closer to
+        // real compressed-image entropy than a single repeated byte,
+        // without needing an actual decodable JPEG for a byte-materialization
+        // cost measurement (decode cost is already covered separately by
+        // Performance/Scale Foundation 01's ImageDecodeCache benchmarks).
+        var bytes = Data(count: sizeBytes)
+        bytes.withUnsafeMutableBytes { buffer in
+            for offset in stride(from: 0, to: buffer.count, by: 4099) {
+                buffer[offset] = UInt8((offset ^ i) & 0xFF)
+            }
+        }
+        let item = StoredItem(kind: .screenshot, localFilename: "media-arch-\(i).jpg", imageData: bytes)
+        context.insert(item)
+        ids.append(item.id)
+    }
+    return ids
+}
+
+@MainActor
+func runMediaStorageArchitectureBenchmark(itemCount: Int) {
+    print("=== Media Storage Architecture 01 — \(itemCount) items ===")
+
+    let container = ArkyvStore.makeModelContainer(inMemory: true)
+    let ids = time("populate + save (\(itemCount) items with real imageData payloads)") {
+        let ids = makeSyntheticMediaArchive(itemCount: itemCount, context: container.mainContext)
+        try? container.mainContext.save()
+        return ids
+    }
+
+    // Mirror the equivalent bytes out to real temp files — the plain-file
+    // baseline MediaStore.data(for:) reads from today.
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("arkyvbench-media-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let freshContext = ModelContext(container)
+    let freshItems = (try? freshContext.fetch(FetchDescriptor<StoredItem>())) ?? []
+    for item in freshItems {
+        if let data = item.imageData {
+            try? data.write(to: tempDir.appendingPathComponent("\(item.id).jpg"))
+        }
+    }
+
+    // COLD externalStorage read — a fresh context per item, mirroring a
+    // real cold-cache scenario where nothing about this item is already
+    // resident in memory.
+    let memBeforeExternal = residentMemoryMB()
+    time("read imageData for all \(itemCount) items (cold, fresh contexts, externalStorage materialization)") {
+        for id in ids {
+            let perItemContext = ModelContext(container)
+            let descriptor = FetchDescriptor<StoredItem>(predicate: #Predicate { $0.id == id })
+            if let item = try? perItemContext.fetch(descriptor).first {
+                _ = item.imageData?.count // force materialization
+            }
+        }
+    }
+    let memAfterExternal = residentMemoryMB()
+
+    // Plain-file baseline — what MediaStore.data(for:) already does today.
+    let memBeforeFile = residentMemoryMB()
+    time("read the same \(itemCount) items' bytes from plain files (MediaStore.data(for:) baseline)") {
+        for id in ids {
+            _ = try? Data(contentsOf: tempDir.appendingPathComponent("\(id).jpg"))
+        }
+    }
+    let memAfterFile = residentMemoryMB()
+
+    // Option 2's actual cache-miss round trip: materialize from
+    // externalStorage, then write it to a working file (exactly what
+    // MediaStore.data(for:restoringFrom:) already does for D4 recovery
+    // today) — the real, total cost a cache miss would pay under Option 2,
+    // not just the read half.
+    let cacheMissDir = FileManager.default.temporaryDirectory.appendingPathComponent("arkyvbench-cachemiss-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: cacheMissDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: cacheMissDir) }
+    time("full cache-miss round trip (\(itemCount)x): read imageData + atomic-write working file (MediaStore.data(for:restoringFrom:) shape)") {
+        for id in ids {
+            let perItemContext = ModelContext(container)
+            let descriptor = FetchDescriptor<StoredItem>(predicate: #Predicate { $0.id == id })
+            guard let item = try? perItemContext.fetch(descriptor).first, let data = item.imageData else { continue }
+            try? data.write(to: cacheMissDir.appendingPathComponent("\(id).jpg"), options: .atomic)
+        }
+    }
+
+    if memBeforeExternal >= 0 {
+        print(String(format: "  memory: externalStorage pass +%.1f MB, plain-file pass +%.1f MB",
+                     memAfterExternal - memBeforeExternal, memAfterFile - memBeforeFile))
+    }
+    print("")
+}
+
 // MARK: - Entry point
 
 let configuration = ProcessInfo.processInfo.environment["ARKYV_BENCH_CONFIG"] ?? "debug"
@@ -248,4 +360,11 @@ let sizes = [100, 1_000, 5_000, 10_000, 20_000]
 for size in sizes {
     await runSuite(itemCount: size)
 }
+
+print("--- Media Storage Architecture 01 ---")
+print("")
+for size in [100, 500, 2_000] {
+    await runMediaStorageArchitectureBenchmark(itemCount: size)
+}
+
 print("Done.")
