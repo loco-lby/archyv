@@ -82,6 +82,18 @@ final class CaptureCoordinator {
             try repo.fileCapture(draft, into: folder)
             savedToast = SavedToast(folderName: folder.name, icon: folder.icon)
         } catch {
+            // DATA INTEGRITY: unlike ScreenshotCaptureFlowView/
+            // ShareViewController, this path dismisses the drawer
+            // unconditionally on failure rather than staying open for a
+            // retry — the draft (and whatever `MediaStore` file it
+            // already staged, for image kinds) is genuinely abandoned
+            // here, not just paused. Clean up that staged file now,
+            // while we still have complete certainty it belongs to
+            // exactly this abandoned attempt, rather than leaving it an
+            // orphan with no `StoredItem` ever pointing at it.
+            if let filename = draft.localFilename {
+                MediaStore.shared.delete(filename: filename)
+            }
             savedToast = SavedToast(folderName: "Error saving", icon: .symbol("exclamationmark.triangle"))
         }
         drawer = nil

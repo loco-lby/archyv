@@ -9,7 +9,11 @@ import UIKit
 public struct MediaStore: Sendable {
     public static let shared = MediaStore()
 
-    private var root: URL { AppGroup.containerURL.appendingPathComponent("Media", isDirectory: true) }
+    /// The directory every filename from `url(for:)` lives in — exposed
+    /// (read-only) for `IntegrityCheck`'s orphan scan, which needs to
+    /// enumerate what's actually on disk rather than look up one known
+    /// filename at a time.
+    public var root: URL { AppGroup.containerURL.appendingPathComponent("Media", isDirectory: true) }
 
     public init() {
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

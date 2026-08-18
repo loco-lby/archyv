@@ -1047,4 +1047,146 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(deadwestRows.count, 1, "the original row should be reactivated, not duplicated")
         XCTAssertEqual(deadwestRows.first?.isSoftDeleted, false)
     }
+
+    // MARK: - Data Integrity Foundation 01
+
+    @MainActor
+    func testFileCaptureRollsBackOnSaveFailureRatherThanPoisoningTheContext() throws {
+        // Two independent in-memory containers — filing into a folder
+        // that belongs to a DIFFERENT container's context is a genuine
+        // SwiftData save() failure ("illegal attempt to establish a
+        // relationship between objects in different contexts/stores"),
+        // not a mock. This is the most realistic available way to force
+        // a real save failure without adding any test-only seam to
+        // Repository itself.
+        let repoA = try makeRepo()
+        let repoB = try makeRepo()
+        let foreignFolder = try repoB.createFolder(name: "Elsewhere", icon: .symbol("star"))
+
+        XCTAssertThrowsError(try repoA.fileCapture(.note("first attempt"), folders: [foreignFolder]))
+
+        // Without rolling back on failure, the failed attempt's pending
+        // StoredItem/StoredFolderMembership would still be sitting on
+        // repoA's context — poisoning the NEXT, completely unrelated
+        // save on the same context, exactly what a real UI context is:
+        // one long-lived context reused across many operations.
+        let deadwest = try repoA.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let secondItem = try repoA.fileCapture(.note("second attempt"), folders: [deadwest])
+
+        let allNotes = try repoA.context.fetch(FetchDescriptor<StoredItem>()).filter { $0.noteBody != nil }
+        XCTAssertEqual(allNotes.map(\.id), [secondItem.id], "the failed first attempt must never have been persisted")
+    }
+
+    @MainActor
+    func testRepeatedFileCaptureForTheSameDraftCreatesTwoDistinctItems() throws {
+        // KNOWN, DEFERRED GAP (see the Data Integrity Contract in
+        // README.md): `fileCapture` has no idempotency key tying a
+        // `CaptureDraft` to the `StoredItem` it produces, so calling it
+        // twice for the *same* draft (e.g. a caller retrying after a
+        // save it couldn't confirm succeeded) creates two independent
+        // items, not one. A real fix would mean persisting `draft.id`
+        // (or an equivalent key) on `StoredItem` — a schema change
+        // explicitly out of scope for this pass. This test documents
+        // the current, accepted behavior so a future fix has a clear
+        // "before" to compare against, and so this doesn't silently
+        // change un-noticed.
+        let repo = try makeRepo()
+        let draft = CaptureDraft.note("retried capture")
+
+        let first = try repo.fileCapture(draft)
+        let second = try repo.fileCapture(draft)
+
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(try repo.context.fetch(FetchDescriptor<StoredItem>()).count, 2)
+    }
+
+    @MainActor
+    func testSoftDeletingItemDeactivatesItsOwnMemberships() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.softDelete(item)
+
+        let itemRows = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>())
+            .filter { $0.item?.id == item.id }
+        XCTAssertFalse(itemRows.isEmpty)
+        XCTAssertTrue(itemRows.allSatisfy(\.isSoftDeleted), "soft-deleting an item must deactivate its own membership rows too, symmetric with softDelete(_ folder:)")
+    }
+
+    @MainActor
+    func testSetMembershipsPersistsALegacyFolderCorrectionEvenWhenMembershipsAlreadyMatch() throws {
+        // Reproduces the exact shape Item Detail's Folder room uses for
+        // its "Unfiled" confirm path — `item.folder` mutated directly,
+        // then `setMemberships` called with a desired set that (in this
+        // test) already matches the active memberships. Before this
+        // fix, `setMemberships` would see no membership-row changes
+        // needed, take its early `guard changed else { return }` exit,
+        // and never call save() at all — silently stranding the
+        // `item.folder` mutation as a pending, unpersisted change.
+        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let repo = Repository(context: container.mainContext)
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        item.folder = nil // simulates a pre-existing legacy/membership disagreement
+
+        try repo.setMemberships(item, to: [deadwest]) // desired membership set is already correct
+
+        XCTAssertEqual(item.folder?.id, deadwest.id)
+
+        // A second, independent context against the SAME container/store
+        // — proves the correction was actually persisted, not merely
+        // mutated on the object local to the context that made the call.
+        let freshContext = ModelContext(container)
+        let freshItem = try freshContext.fetch(FetchDescriptor<StoredItem>()).first { $0.id == item.id }
+        XCTAssertEqual(freshItem?.folder?.id, deadwest.id, "the legacy folder correction must reach save(), not just the in-memory object")
+    }
+
+    // MARK: - IntegrityCheck (DEBUG-only, read-only diagnostic)
+
+    @MainActor
+    func testIntegrityCheckReportsCleanForAHealthyStore() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        _ = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        let report = IntegrityCheck.run(context: repo.context)
+
+        XCTAssertTrue(report.isClean)
+        XCTAssertEqual(report.itemsWithMissingMedia, [])
+        XCTAssertEqual(report.folderMembershipDisagreements, [])
+        XCTAssertEqual(report.duplicateActiveMemberships, [])
+    }
+
+    @MainActor
+    func testIntegrityCheckDetectsFolderMembershipDisagreement() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        // Bypasses the Repository's own write boundary — simulates data
+        // that predates the `setMemberships` fix, or was mutated by
+        // something other than the Repository. `IntegrityCheck` must
+        // still be able to surface this even though current Repository
+        // writes can no longer produce it.
+        item.folder = nil
+
+        let report = IntegrityCheck.run(context: repo.context)
+
+        XCTAssertEqual(report.folderMembershipDisagreements, [item.id])
+        XCTAssertFalse(report.isClean)
+    }
+
+    @MainActor
+    func testIntegrityCheckDetectsMissingMedia() throws {
+        let repo = try makeRepo()
+        let draft = CaptureDraft(kind: .screenshot, localFilename: "does-not-exist-\(UUID().uuidString).jpg")
+        let item = try repo.fileCapture(draft)
+
+        let report = IntegrityCheck.run(context: repo.context)
+
+        XCTAssertEqual(report.itemsWithMissingMedia, [item.id])
+        XCTAssertFalse(report.isClean)
+    }
 }

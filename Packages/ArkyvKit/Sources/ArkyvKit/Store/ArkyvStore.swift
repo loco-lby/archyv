@@ -50,6 +50,26 @@ public struct Repository {
     public var context: ModelContext
     public init(context: ModelContext) { self.context = context }
 
+    /// Every mutating method below ends with this instead of a bare
+    /// `context.save()`. DATA INTEGRITY: a `ModelContext` does not roll
+    /// back its own pending changes when `save()` throws — the just-
+    /// `insert()`ed/mutated objects stay pending on the context. Without
+    /// this, a caller that catches the error and retries (every capture
+    /// surface does — see `ScreenshotCaptureFlowView`/`ShareViewController`)
+    /// risks a *second* save succeeding later and flushing the first,
+    /// stale attempt's pending objects right alongside it — e.g. two
+    /// `StoredItem`s for one retried capture. Rolling back on failure
+    /// makes every method here atomic: either its edits are persisted, or
+    /// none of them are, with nothing left pending in between.
+    private func save() throws {
+        do {
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
     // MARK: Folders
 
     public func folders(includingDeleted: Bool = false) throws -> [StoredFolder] {
@@ -65,14 +85,14 @@ public struct Repository {
         let nextOrder = (try folders().map(\.sortOrder).max() ?? -1) + 1
         let folder = StoredFolder(userID: userID, name: name, icon: icon, sortOrder: nextOrder)
         context.insert(folder)
-        try context.save()
+        try save()
         return folder
     }
 
     public func rename(_ folder: StoredFolder, to name: String) throws {
         folder.name = name
         touch(folder)
-        try context.save()
+        try save()
     }
 
     /// Soft-deletes `folder`. As of v0.2 this NEVER touches `StoredItem` —
@@ -95,7 +115,7 @@ public struct Repository {
             membership.deletedAt = .now
             membership.dirty = true
         }
-        try context.save()
+        try save()
     }
 
     // MARK: Items
@@ -171,7 +191,7 @@ public struct Repository {
             touch(folder)
         }
 
-        try context.save()
+        try save()
         return item
     }
 
@@ -192,13 +212,16 @@ public struct Repository {
     /// FIX: `items(in:)` became membership-backed in Milestone B, but this
     /// method originally only reassigned the legacy `item.folder` field —
     /// so a moved item could still show up in its *old* folder (via its
-    /// stale membership row) and not its new one. This now also reconciles
-    /// membership via `setMemberships`, so after this call the active
-    /// membership set is exactly `{ folder }`, matching what "Move to..."
-    /// visibly does. `item.folder = folder` remains as transitional legacy
-    /// compatibility (same debt already documented on `fileCapture`) — the
-    /// future membership popover replaces this single-destination UX
-    /// entirely and will call `setMemberships` directly.
+    /// stale membership row) and not its new one. This now delegates
+    /// entirely to `setMemberships`, which reconciles *both* the
+    /// membership set *and* legacy `item.folder` (see its own doc
+    /// comment) in the one `save()` — after this call the active
+    /// membership set is exactly `{ folder }` and `item.folder == folder`,
+    /// matching what "Move to..." visibly does. `item.folder` remains as
+    /// transitional legacy compatibility (same debt already documented on
+    /// `fileCapture`) — the future membership popover replaces this
+    /// single-destination UX entirely and will call `setMemberships`
+    /// directly.
     ///
     /// No-ops (ignores) if `item` or `folder` is deleted, consistent with
     /// `addMembership`/`removeMembership`. Idempotent: moving to the
@@ -207,14 +230,13 @@ public struct Repository {
     /// matches.
     public func move(_ item: StoredItem, to folder: StoredFolder) throws {
         guard !item.isSoftDeleted, !folder.isSoftDeleted else { return }
-        item.folder = folder
         try setMemberships(item, to: [folder])
     }
 
     public func toggleFavorite(_ item: StoredItem) throws {
         item.isFavorite.toggle()
         touch(item)
-        try context.save()
+        try save()
     }
 
     /// Updates an item's note body. Whitespace-only text normalizes to
@@ -231,7 +253,7 @@ public struct Repository {
         guard normalized != item.noteBody else { return }
         item.noteBody = normalized
         touch(item)
-        try context.save()
+        try save()
     }
 
     /// Updates an item's source link. Same whitespace-only-normalizes-to-nil
@@ -244,7 +266,7 @@ public struct Repository {
         guard normalized != item.sourceURL else { return }
         item.sourceURL = normalized
         touch(item)
-        try context.save()
+        try save()
     }
 
     /// Replaces an item's tag list wholesale — callers (add/remove/dedupe)
@@ -256,7 +278,7 @@ public struct Repository {
         guard tags != item.tags else { return }
         item.tags = tags
         touch(item)
-        try context.save()
+        try save()
     }
 
     /// Updates an existing item's crop non-destructively — only the
@@ -269,14 +291,25 @@ public struct Repository {
         guard region != item.cropRegion else { return }
         item.cropRegion = region
         touch(item)
-        try context.save()
+        try save()
     }
 
+    /// DATA INTEGRITY: also deactivates `item`'s own membership rows —
+    /// mirrors `softDelete(_ folder:)`'s existing symmetric cleanup of
+    /// *its* memberships. Every current read path (`items(in:)`, etc.)
+    /// already re-filters by the item's own `isSoftDeleted`, so a stale
+    /// active membership pointing at a deleted item was never visibly
+    /// wrong — this closes the gap defensively rather than because
+    /// anything currently renders incorrectly without it.
     public func softDelete(_ item: StoredItem) throws {
         item.deletedAt = .now
         touch(item)
         if let folder = item.folder { touch(folder) }
-        try context.save()
+        for membership in item.memberships ?? [] where !membership.isSoftDeleted {
+            membership.deletedAt = .now
+            membership.dirty = true
+        }
+        try save()
     }
 
     /// Full-text-ish local search across title, notes, OCR text, tags, source.
@@ -333,7 +366,7 @@ public struct Repository {
         context.insert(StoredFolderMembership(item: item, folder: folder))
         touch(item)
         touch(folder)
-        try context.save()
+        try save()
     }
 
     /// Removes `item` from `folder` if an active membership exists.
@@ -350,7 +383,7 @@ public struct Repository {
         }
         touch(item)
         touch(folder)
-        try context.save()
+        try save()
     }
 
     /// Reconciles `item`'s membership set to exactly `folders` — adds
@@ -358,8 +391,22 @@ public struct Repository {
     /// deactivates whatever's no longer desired, and otherwise leaves
     /// everything alone. Passing an empty array removes every membership,
     /// leaving the item alive and Unfiled. Calling this again with an
-    /// equivalent desired set is a no-op: no new rows, and nothing (item,
-    /// folder, or any membership) gets touched or saved.
+    /// equivalent desired set is a true no-op: no new rows, and nothing
+    /// (item, folder, or any membership) gets touched or saved.
+    ///
+    /// DATA INTEGRITY: this is also the one place that reconciles legacy
+    /// `item.folder` to `folders.first` (`nil` when `folders` is empty) —
+    /// the same "first folder wins" convention `fileCapture` already
+    /// documents. This is the single authoritative write boundary for
+    /// folder/membership consistency: a caller that mutates `item.folder`
+    /// directly and then calls this method (as Item Detail's Folder room
+    /// does for "Unfiled") used to risk that mutation never reaching
+    /// `save()` at all — if the membership rows alone didn't need any
+    /// change, the old early-return skipped `save()` entirely, silently
+    /// leaving `item.folder`'s pending edit stranded on the context.
+    /// Folding the legacy-folder check into `changed` closes that gap
+    /// structurally rather than relying on every caller to get the
+    /// two-step sequence right.
     ///
     /// Fetches every `StoredFolderMembership` row for `item` directly from
     /// the store in one pass — unfiltered by soft-delete state, so
@@ -416,11 +463,17 @@ public struct Repository {
             changed = true
         }
 
+        let desiredLegacyFolder = validDesired.first
+        if item.folder?.id != desiredLegacyFolder?.id {
+            item.folder = desiredLegacyFolder
+            changed = true
+        }
+
         guard changed else { return }
 
         touchedFolders.values.forEach { touch($0) }
         touch(item)
-        try context.save()
+        try save()
     }
 
     // MARK: Suggestion (rule-based for MVP; AI later)
