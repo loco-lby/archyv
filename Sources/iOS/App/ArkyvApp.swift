@@ -61,6 +61,12 @@ struct ArkyvApp: App {
                             await IngestionStressTest.run()
                         }
                     }
+                    // Media Cache Foundation 01 — same pattern again.
+                    if CommandLine.arguments.contains("--arkyv-bench-media-cache") {
+                        Task.detached(priority: .userInitiated) {
+                            await MediaCacheStressTest.run()
+                        }
+                    }
                     #endif
                 }
         }
