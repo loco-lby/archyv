@@ -23,14 +23,15 @@ Packages/ArkyvKit/              Shared Swift package — models, design tokens, 
   Sources/ArkyvKit/
     Design/     ArkyvColor, ArkyvFont, ArkyvMetrics   (Figma tokens, defined once)
     Model/      ItemKind, FolderIcon
-    Store/      StoredModels (SwiftData), ArkyvStore, MediaStore, AppGroup,
-                ImageDecodeCache/ImageDecoding, IntegrityCheck, CherryManifest (DEBUG)
+    Store/      StoredModels (SwiftData), ArkyvStore, MediaStore, MediaCacheCoordinator,
+                AppGroup, ImageDecodeCache/ImageDecoding, IntegrityCheck, CherryManifest (DEBUG)
     Capture/    CaptureDraft
   Sources/ArkyvBench/            `swift run` synthetic-archive benchmark harness
                                   (Scale Foundation 01 — see its own doc comment)
 Sources/iOS/                    iPhone app
   App/          ArkyvApp, entitlements, Info.plist, ImageCacheStressTest (DEBUG),
-                IngestionStressTest (DEBUG)
+                IngestionStressTest (DEBUG), MediaCacheStressTest (DEBUG),
+                OptionTwoValidationLog (DEBUG)
   Capture/      ScreenshotDetector (PHPhotoLibrary), CaptureCoordinator
   Views/        Archive (root, née Home), FolderGrid (legacy, unused), ItemDetail,
                 CaptureSheet, NewFolder, Settings…
@@ -815,6 +816,61 @@ cancelled/failed one — never an ambiguous half-Cherry.
   (Performance Foundation 01); nothing here ever discards a persisted
   original or mutates logical state in response to memory pressure — no
   new benchmarking needed, per this pass's own scope.
+
+## Media Architecture Contract (Cutover 01)
+
+Following the Media Storage Architecture / Media Cache Foundation / Option
+2 Validation Gate milestone sequence (all empirically validated, including
+a real two-device CloudKit sync test), Cherries' media architecture is:
+
+- **Authoritative durable local + remote media:** `StoredItem.imageData`
+  (`@Attribute(.externalStorage)`). Populated synchronously inside
+  `Repository.fileCapture`; durable the instant that `save()` returns
+  (SQLite's ACID commit), independent of CloudKit upload timing or network
+  state. Its CloudKit-managed local representation (`_EXTERNAL_DATA`)
+  remains backup-eligible — it's the actual durable copy.
+- **Remote durable media:** the private CloudKit database, via the CKAsset
+  SwiftData's CloudKit integration mirrors from `imageData` — entirely
+  framework-managed, no custom sync code.
+- **Derived local working cache:** `MediaStore`. Bounded (1GB default,
+  `MediaStore.cacheCapacityBytes`), reconstructable byte-for-byte from
+  `imageData` on any cache miss (`MediaStore.data(for:reconstructingFrom:)`,
+  coalesced across concurrent requests by `MediaCacheCoordinator` — a real,
+  demonstrated duplication this actor exists to prevent, not a
+  hypothetical), and excluded from device backup
+  (`MediaStore.excludeFromBackup()`, reaffirmed on every `init()` rather
+  than assumed to survive directory recreation).
+- **The authority transition:** every capture surface still writes to
+  `MediaStore` *first* (before a `StoredItem` exists — nothing about
+  capture ordering changed). The instant `Repository.fileCapture`'s
+  `save()` succeeds, `imageData` is authoritative and `MediaStore`'s file
+  becomes redundant cache. Pre-save cancel/orphan cleanup
+  (`ScreenshotCaptureFlowView`, `ShareViewController`, `CaptureSheetView`)
+  is unaffected — that window predates `imageData` entirely.
+- **One Archive thumbnails decode directly from `imageData` on a cold
+  cache miss** — no `MediaStore` file is written merely to render a small
+  tile. Only full-resolution consumers (Item Detail, Crop Editor) warm the
+  cache, since a real file benefits repeat full-resolution access.
+- **A missing `MediaStore` file is the routine, expected cold-cache-miss
+  state, not corruption** — `IntegrityCheck.isClean` now depends only on
+  `itemsWithNoKnownRecovery` (imageData also absent — genuine MEDIA LOSS),
+  not on `itemsWithMissingMedia` (which includes every ordinary CACHE
+  MISS/recoverable state).
+- **A failed cache write never blocks viewing a Cherry** — if `imageData`
+  is readable but the cache write fails (e.g. low disk), the caller still
+  gets the bytes; only the on-disk cache copy is missing.
+- **Safety ramp, deliberate:** `MediaStore.evictionEnabled` is currently
+  `false`. Reconstruction, the declared authority model, and backup
+  exclusion all ship now; actual deletion of existing/cache files is held
+  back one release so the new cold-cache-miss path accumulates real
+  production runtime before the one irreversible-in-practice action
+  (deleting a local original) starts running automatically. See that
+  constant's doc comment for the full reasoning — flip it in a dedicated,
+  explicitly approved follow-up milestone.
+- **No mass migration.** Existing users already have byte-identical
+  `MediaStore` + `imageData` copies (confirmed since D3A) — cutover
+  required no rewrite of existing data, only a declaration of which copy
+  is authoritative going forward.
 
 ## Build
 
