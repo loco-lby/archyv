@@ -134,21 +134,27 @@ public final class StoredItem {
     /// transport field.
     public var localFilename: String?
 
-    /// CLOUDKIT READINESS (D1): the CloudKit sync transport for this
-    /// item's image bytes, once CloudKit is actually enabled (a later
-    /// milestone). `.externalStorage` tells SwiftData to keep large binary
-    /// data out of the main SQLite row (the same mechanism CloudKit sync
-    /// uses to map a field to a `CKAsset`) — this is a general SwiftData
-    /// large-blob optimization, not itself CloudKit-specific, so it's safe
-    /// to add with CloudKit fully off.
+    /// The CloudKit sync transport for this item's image bytes.
+    /// `.externalStorage` tells SwiftData to keep large binary data out of
+    /// the main SQLite row — the same mechanism SwiftData's CloudKit
+    /// integration uses to map a field to a `CKAsset`, so this field is
+    /// what actually carries original media bytes to iCloud and back.
+    /// `localFilename` → `MediaStore` remains the primary *local* read
+    /// path (unchanged, still the fast path every render uses); this
+    /// field exists specifically so a device that never wrote that local
+    /// file (a reinstall, or a brand-new device signed into the same
+    /// account) has something to recover from — see `MediaStore.data
+    /// (for:restoringFrom:)`'s doc comment for the self-healing read that
+    /// consumes it, and the Recovery/Portability Contract below.
     ///
-    /// NOT wired into any read or write path yet: `fileCapture` does not
-    /// populate it, and nothing reads it — it is `nil` for every item,
-    /// existing and newly captured, until the backfill migration (a later
-    /// milestone) populates it and CloudKit sync is switched on. The
-    /// existing `localFilename` → `MediaStore` local cache remains the
-    /// only active image storage/read path for the whole of this
-    /// milestone; nothing about it changes.
+    /// UPDATE (was "D1 — not wired into any read/write path yet"; that's
+    /// no longer true and this comment was stale): `Repository.fileCapture`
+    /// populates it for every new capture, `ImageBackfill` populates it in
+    /// small batches for historical items that predate that, and
+    /// `LocalImageView`/`ItemDetailView.presentCropEditor` both read it as
+    /// a fallback when the local `MediaStore` file is missing. CloudKit
+    /// sync itself is on (see `ArkyvStore.makeModelContainer`'s
+    /// `cloudKitDatabase: .private(...)`), not a future milestone.
     @Attribute(.externalStorage) public var imageData: Data?
 
     public var ocrText: String?

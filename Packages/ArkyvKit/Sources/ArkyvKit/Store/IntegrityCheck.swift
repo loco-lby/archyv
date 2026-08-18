@@ -21,8 +21,27 @@ public enum IntegrityCheck {
         public var membershipCount = 0
         /// Live (non-deleted) items with a `localFilename` that has no
         /// corresponding file in `MediaStore` — content the app would
-        /// currently render as a broken/placeholder image.
+        /// currently render as a broken/placeholder image *right now*,
+        /// on this device. Split further below by whether `imageData`
+        /// (the CloudKit sync transport) offers a recovery path: this
+        /// count alone doesn't distinguish "will self-heal on next
+        /// access" from "no known way back."
         public var itemsWithMissingMedia: [UUID] = []
+        /// Subset of `itemsWithMissingMedia` that has `imageData`
+        /// populated — Recovery/Portability Foundation 01's category B
+        /// ("temporarily unavailable"): `MediaStore.data(for:
+        /// restoringFrom:)` (the same self-healing read `LocalImageView`
+        /// already uses) can materialize the file from this the next
+        /// time the item is opened. Nothing to do here; informational.
+        public var itemsWithRecoverableMedia: [UUID] = []
+        /// Subset of `itemsWithMissingMedia` with `imageData` also `nil`
+        /// — category C ("no locally-known recovery path"). Not
+        /// necessarily "permanently" lost: `imageData` may simply not
+        /// have synced down from CloudKit yet, or (for an item that
+        /// predates D3A) `ImageBackfill` may not have reached it yet —
+        /// this scan has no way to distinguish those from genuine loss,
+        /// which is exactly why it only ever reports, never deletes.
+        public var itemsWithNoKnownRecovery: [UUID] = []
         /// Files physically present in `MediaStore`'s directory that no
         /// live *or* soft-deleted `StoredItem.localFilename` references —
         /// candidates for the "abandoned capture" cleanup discussed in the
@@ -61,10 +80,17 @@ public enum IntegrityCheck {
         let liveItems = items.filter { !$0.isSoftDeleted }
 
         // Missing media: a live item claims a local file that isn't there.
+        // Further split by whether `imageData` offers a recovery path —
+        // see the Report fields' own doc comments for what B vs. C means.
         for item in liveItems {
             guard let filename = item.localFilename else { continue }
             if !FileManager.default.fileExists(atPath: MediaStore.shared.url(for: filename).path) {
                 report.itemsWithMissingMedia.append(item.id)
+                if item.imageData != nil {
+                    report.itemsWithRecoverableMedia.append(item.id)
+                } else {
+                    report.itemsWithNoKnownRecovery.append(item.id)
+                }
             }
         }
 
@@ -102,7 +128,8 @@ public enum IntegrityCheck {
 
     private static func log(_ report: Report) {
         print("[IntegrityCheck] items=\(report.itemCount) folders=\(report.folderCount) memberships=\(report.membershipCount) — " +
-            "missingMedia=\(report.itemsWithMissingMedia.count) orphanedMedia=\(report.orphanedMediaFilenames.count) " +
+            "missingMedia=\(report.itemsWithMissingMedia.count) (recoverable=\(report.itemsWithRecoverableMedia.count) " +
+            "noKnownRecovery=\(report.itemsWithNoKnownRecovery.count)) orphanedMedia=\(report.orphanedMediaFilenames.count) " +
             "folderDisagreements=\(report.folderMembershipDisagreements.count) duplicateMemberships=\(report.duplicateActiveMemberships.count) " +
             "— \(report.isClean ? "CLEAN" : "see counts above")")
     }

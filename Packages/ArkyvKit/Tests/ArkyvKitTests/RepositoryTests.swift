@@ -1188,5 +1188,70 @@ final class RepositoryTests: XCTestCase {
 
         XCTAssertEqual(report.itemsWithMissingMedia, [item.id])
         XCTAssertFalse(report.isClean)
+        // The draft's localFilename never pointed at a real file, so
+        // fileCapture's own `MediaStore.shared.data(for:)` read for
+        // `imageData` also came back nil — no recovery path exists for
+        // this item, on this device or (per what's actually stored) any
+        // other. Category C, not B — see the Report fields' doc comments.
+        XCTAssertEqual(report.itemsWithRecoverableMedia, [])
+        XCTAssertEqual(report.itemsWithNoKnownRecovery, [item.id])
+    }
+
+    // MARK: - Recovery/Portability Foundation 01
+
+    @MainActor
+    func testIntegrityCheckDistinguishesRecoverableFromUnrecoverableMissingMedia() throws {
+        // Simulates exactly the scenario `MediaStore.data(for:
+        // restoringFrom:)` exists to handle: a reinstall/new-device
+        // StoredItem whose `imageData` synced down via CloudKit but whose
+        // local MediaStore file was never written on this device.
+        let repo = try makeRepo()
+        let filename = "reinstalled-\(UUID().uuidString).jpg"
+        let item = StoredItem(kind: .screenshot, localFilename: filename, imageData: Data("fake-jpeg-bytes".utf8))
+        repo.context.insert(item)
+        try repo.context.save()
+
+        let report = IntegrityCheck.run(context: repo.context)
+
+        XCTAssertEqual(report.itemsWithMissingMedia, [item.id])
+        XCTAssertEqual(report.itemsWithRecoverableMedia, [item.id], "imageData is populated — MediaStore.data(for:restoringFrom:) can self-heal this on next access")
+        XCTAssertEqual(report.itemsWithNoKnownRecovery, [])
+    }
+
+    @MainActor
+    func testCherryManifestExportRoundTripsThroughJSONWithoutLoss() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let cool = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
+        let item = try repo.fileCapture(
+            CaptureDraft(
+                kind: .screenshot,
+                localFilename: "manifest-test.jpg",
+                pixelSize: CGSize(width: 1170, height: 2532),
+                noteBody: "A note with \"quotes\" and emoji 🍒",
+                title: "A title",
+                sourceURL: "https://example.com",
+                tags: ["food", "travel"]
+            ),
+            folders: [deadwest, cool]
+        )
+        item.cropRegion = CropRegion(x: 0.1, y: 0.2, width: 0.3, height: 0.4)
+        try repo.context.save()
+        try repo.softDelete(try repo.createFolder(name: "Old Folder", icon: .symbol("star")))
+
+        let exported = try CherryManifest.export(context: repo.context)
+        let json = try CherryManifest.encodeJSON(exported)
+        let decoded = try CherryManifest.decodeJSON(json)
+
+        XCTAssertEqual(decoded, exported, "JSON round-trip must be lossless — this is the whole point of the manifest shape")
+
+        let manifestItem = try XCTUnwrap(decoded.items.first { $0.id == item.id })
+        XCTAssertEqual(manifestItem.tags, ["food", "travel"])
+        XCTAssertEqual(Set(manifestItem.folderIDs), Set([deadwest.id, cool.id]))
+        XCTAssertEqual(manifestItem.cropWidth, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(manifestItem.noteBody, "A note with \"quotes\" and emoji 🍒")
+
+        let softDeletedFolder = try XCTUnwrap(decoded.folders.first { $0.name == "Old Folder" })
+        XCTAssertNotNil(softDeletedFolder.deletedAt, "tombstones must round-trip too — a real export format shouldn't silently drop them")
     }
 }
