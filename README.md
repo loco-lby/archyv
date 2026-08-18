@@ -690,6 +690,132 @@ a storage problem may block a *new* save, but must never corrupt an
   documented framework behavior for the rest, rather than building
   infrastructure to re-prove what the platform already guarantees.
 
+## Lifecycle / Transaction Contract (Fault Injection Foundation 01)
+
+From deliberately interrupting Cherries at ugly moments — cancellation,
+backgrounding, termination, duplicate callbacks, injected save failures —
+across every atomic user operation (capture, crop, the four Item Detail
+siderooms, favorite, folder create/move/delete). Core rule: every
+operation leaves either a valid persisted Cherry or a cleanly
+cancelled/failed one — never an ambiguous half-Cherry.
+
+- **HIGH, found and fixed: Item Detail's four siderooms (Notes/Source/
+  Tags/Folder) dismissed as if saved even when the save failed.** Each
+  room's `onConfirm` closure ran `try? repo.updateX(...)` and then
+  unconditionally cleared `activeRoom`, closing the room regardless of
+  whether the write actually succeeded — a genuine save failure (e.g. a
+  poisoned context) rolled the field back to its prior value exactly as
+  designed, but the UI had already dismissed as if the edit stuck,
+  silently discarding what the user typed with no error shown. Fixed to
+  mirror `CropEditorView`'s existing, already-correct pattern: the room
+  only dismisses on a successful save; on failure it stays open with the
+  user's draft intact, so a retry is always possible and nothing is
+  silently lost. The Folder room's "Unfiled" path mutates `item.folder`
+  directly before calling `setMemberships` — proven (see
+  `LifecycleFaultInjectionTests`) that `setMemberships`'s rollback
+  reverts that outer mutation too, since `ModelContext.rollback()` acts
+  on every pending change on the shared context, not just the ones the
+  failing method itself made. No manual revert needed.
+- **Found and fixed (narrow, storage-hygiene only): three cancel paths
+  left an orphaned `MediaStore` file that a well-defined "yes, this is
+  abandoned" moment could reclaim immediately instead of waiting for
+  `IntegrityCheck` to notice it later.** `ScreenshotCaptureFlowView`'s
+  two cancel controls and the Share Extension's Cancel now delete the
+  draft's staged file at the exact point cancellation is confirmed.
+  `CaptureSheetView`'s add-mode dismiss button does the same for a
+  staged-but-unconfirmed photo — but *only* when `confirmingFolderID ==
+  nil`: `confirm(_:)` schedules its actual save after a 180ms delay that
+  dismissing does **not** cancel, so cleaning up unconditionally could
+  delete the exact file a still-in-flight save is about to read into a
+  StoredItem, turning a valid Cherry into one with no recoverable media
+  at all. The Share Extension's version needed the equivalent guard —
+  `didSave`, set only after `fileCapture` returns successfully — since
+  its Cancel control has no built-in disabled state during a save.
+- **Verified, not changed: capture crash safety across the whole
+  lifecycle.** Media-write-succeeds-then-death leaves an orphan file but
+  never a fake `StoredItem` (fileCapture is the only place one gets
+  created, and it always runs synchronously and atomically). StoredItem-
+  save-succeeds-then-death is safe by construction: `Repository.save()`
+  is a synchronous, ACID-committed SQLite write, durable the instant it
+  returns — a Cherry that saved but whose confirmation UI never ran
+  still exists exactly once on relaunch. `ScreenshotDetector`'s
+  reentrancy guard (`isChecking`) and every confirm button's own
+  `guard !didSave`/`!isSaving` are structurally sufficient — SwiftUI
+  delivers taps serially on the main actor, so two overlapping
+  synchronous confirms were never actually possible; the guards are
+  correct belt-and-suspenders, not load-bearing against real
+  concurrency. Share Extension `completeRequest` stays exactly-once via
+  the existing `didComplete` guard (Share/Capture Reliability
+  Foundation 01) — unchanged, reconfirmed.
+- **Verified: entering background never promotes an unconfirmed draft to
+  a persisted edit.** Nothing hooks `scenePhase` to any `Repository`
+  write for a sideroom/crop/capture draft — those are plain `@State`,
+  which SwiftUI keeps alive across backgrounding and only loses on an
+  actual process death, matching the explicit product semantic
+  ("losing an unconfirmed draft to termination is acceptable; do not add
+  draft persistence to survive it"). `ImageBackfill`/`SeedGate`'s
+  background-activation Tasks are separately safe by the same
+  resumable-batch design already documented — an interrupted batch
+  simply gets picked up again next foreground activation.
+- **Known, accepted, unchanged: a second screenshot detected while a
+  capture drawer is already open silently replaces it** — confirmed this
+  also fires via the plain background→foreground reactivation path
+  (`RootView`'s `scenePhase` hook re-runs `checkForScreenshots()` on
+  every return to `.active`), not only live in-app detection. Same
+  already-deferred product decision from Share/Capture Reliability
+  Foundation 01 (`CaptureCoordinator.present(_:)` overwrites `drawer`
+  rather than queuing) — not touched here.
+- **Known, accepted, unchanged: `fileCapture` has no idempotency key.**
+  Characterized precisely rather than re-litigated: since `fileCapture`
+  itself never retries automatically (a Swift call either returns,
+  meaning success, or throws, meaning failure — there is no ambiguous
+  in-process middle state), the realistic trigger for a duplicate Cherry
+  is a *human* repeating the physical share/capture action after not
+  seeing a confirmation UI they were durably owed (see the StoredItem-
+  save-succeeds-then-death case above) — not a code-level retry bug.
+  Still schema-adjacent and out of scope; see `testRepeatedFileCapture
+  ForTheSameDraftCreatesTwoDistinctItems`.
+- **Known, accepted, unchanged: Folder creation is not fully
+  transactional the way the rest of the Folder room is.** `+ New Folder`
+  persists a real `StoredFolder` immediately on its own sheet's Create
+  tap — only the *assignment* to the current item stays staged behind
+  the room's own ✓. Pre-existing, already documented at the call site;
+  restated here because Section 6 of this pass asked for an honest
+  characterization rather than a claim of full transactionality.
+- **Verified: crop interruption safety end-to-end.** Entering the editor
+  never mutates the persisted crop (only reads it, to seed local
+  `@State`); every pan/pinch/resize stays local until Done; Cancel or
+  termination before Done leaves the prior crop untouched (no Repository
+  call is even attempted); a failed re-crop save leaves the previous
+  valid crop exactly intact (rollback — see
+  `testUpdateCropRegionRollsBackOnInjectedSaveFailureLeavingPreviousCropIntact`)
+  and the editor stays open rather than silently discarding the attempt;
+  a confirmed crop survives a fresh `ModelContext` read (relaunch
+  simulation). No crop math touched.
+- **Rollback contract stress-tested across every representative mutation
+  kind**, not just `fileCapture`/`setMemberships` (Data Integrity
+  Foundation 01's original coverage): note, source, tags, favorite,
+  move, crop region, and soft-delete each verified to (1) genuinely
+  throw under a real injected failure, (2) leave the in-memory field
+  exactly at its last-saved value afterward — never a half-applied
+  mutation — and (3) succeed cleanly on an immediate retry on the same
+  context. No new fault-injection production code was added — every
+  test reuses Data Integrity Foundation 01's existing genuine-failure
+  technique (a pending relationship to an object from a different
+  container's context, which makes SwiftData's own `save()` genuinely
+  reject the whole pending transaction), just aimed at more mutation
+  types.
+- **`IntegrityCheck` integrated into the fault-injection harness rather
+  than duplicated**, per this pass's own instruction: one test performs
+  a genuinely-failed, rolled-back mutation and then runs the existing
+  DEBUG scan against the same context, confirming a rolled-back failure
+  leaves nothing behind for it to flag.
+- **Memory pressure:** `ImageDecodeCache` is `NSCache`-backed and evicts
+  under system pressure by Foundation's own documented contract
+  (Performance Foundation 01); nothing here ever discards a persisted
+  original or mutates logical state in response to memory pressure — no
+  new benchmarking needed, per this pass's own scope.
+
 ## Build
 
 Requires Xcode 16+ and [XcodeGen](https://github.com/yonsson/XcodeGen) (`brew install xcodegen`).
