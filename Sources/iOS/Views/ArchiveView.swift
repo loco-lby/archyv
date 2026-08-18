@@ -143,7 +143,24 @@ struct ArchiveView: View {
                         // title, date, or favorite badge. Content is the
                         // color and texture of this surface; anything more
                         // belongs in Item Detail.
-                        LocalImageView(filename: item.localFilename, fallbackImageData: { item.imageData }, cropRegion: item.cropRegion)
+                        // Performance Foundation 01: masonry tiles decode
+                        // a small thumbnail (native ImageIO downsampling,
+                        // cached) rather than a full-resolution bitmap for
+                        // a ~200pt-wide cell — see `LocalImageView`'s own
+                        // doc comment. `originalPixelSize` is free,
+                        // already-stored metadata; passing it lets the
+                        // thumbnail target the column's actual (width-
+                        // constrained) edge rather than under-resolving
+                        // tall portrait screenshots. Purely a decode-
+                        // resolution change — same crop, same content,
+                        // same everything else.
+                        LocalImageView(
+                            filename: item.localFilename,
+                            fallbackImageData: { item.imageData },
+                            cropRegion: item.cropRegion,
+                            decodeTarget: .thumbnail(shortEdgeTarget: LocalImageView.masonryThumbnailShortEdge),
+                            originalPixelSize: CGSize(width: item.aspectWidth, height: item.aspectHeight)
+                        )
                             .aspectRatio(item.aspectRatio, contentMode: .fit)
                             .frame(maxWidth: .infinity)
                             // Sharp-tile experiment: 0pt corner radius,

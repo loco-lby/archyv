@@ -198,6 +198,50 @@ final class CropRegionTests: XCTestCase {
         )
     }
 
+    // MARK: - Resolution independence (Performance Foundation 01)
+
+    // `renderTransform` only ever consumes `imageSize` relative to its own
+    // normalized `rect` — never an absolute pixel count — so a caller that
+    // hands it a downsampled decode's `.size` instead of the original's
+    // must render the *exact* same visible crop, as long as the
+    // downsampled image's aspect ratio still matches the original's. This
+    // is the property that makes it safe for `LocalImageView` to decode a
+    // masonry thumbnail at a fraction of the original's resolution without
+    // any change to `CropRegion` itself — see `ImageDecoding`.
+    func testRenderTransformIsScaleInvariantAcrossDecodedResolutions() {
+        let region = CropRegion(x: 0.2, y: 0.3, width: 0.4, height: 0.5)
+        let containerSize = CGSize(width: 300, height: 450)
+        let fullSize = CGSize(width: 3000, height: 4000)
+
+        let fullTransform = region.renderTransform(imageSize: fullSize, containerSize: containerSize)
+        for downsampleFactor: CGFloat in [0.5, 0.25, 0.1, 0.01] {
+            let downsampledSize = CGSize(width: fullSize.width * downsampleFactor, height: fullSize.height * downsampleFactor)
+            let downsampledTransform = region.renderTransform(imageSize: downsampledSize, containerSize: containerSize)
+            // `scale` differs (it's relative to whichever imageSize was
+            // handed in) but the *effective* rendered geometry —
+            // `imageSize * scale` and the resulting offset — must be
+            // identical regardless of which resolution was decoded.
+            XCTAssertEqual(downsampledTransform.scale * downsampledSize.width, fullTransform.scale * fullSize.width, accuracy: 0.01)
+            XCTAssertEqual(downsampledTransform.scale * downsampledSize.height, fullTransform.scale * fullSize.height, accuracy: 0.01)
+            XCTAssertEqual(downsampledTransform.offset.width, fullTransform.offset.width, accuracy: 0.01)
+            XCTAssertEqual(downsampledTransform.offset.height, fullTransform.offset.height, accuracy: 0.01)
+        }
+    }
+
+    func testVisibleSourceFractionIsIdenticalAcrossDecodedResolutions() {
+        let region = CropRegion(x: 0.1, y: 0.35, width: 0.6, height: 0.2)
+        let containerSize = CGSize(width: 320, height: 200)
+        let expected = visibleSourceFraction(region: region, imageSize: CGSize(width: 4032, height: 3024), containerSize: containerSize)
+
+        for thumbnailSize in [CGSize(width: 1008, height: 756), CGSize(width: 640, height: 480), CGSize(width: 64, height: 48)] {
+            let visible = visibleSourceFraction(region: region, imageSize: thumbnailSize, containerSize: containerSize)
+            XCTAssertEqual(visible.minX, expected.minX, accuracy: 0.001)
+            XCTAssertEqual(visible.minY, expected.minY, accuracy: 0.001)
+            XCTAssertEqual(visible.width, expected.width, accuracy: 0.001)
+            XCTAssertEqual(visible.height, expected.height, accuracy: 0.001)
+        }
+    }
+
     func testRenderTransformDegenerateSizesReturnIdentityRatherThanCrashing() {
         let zeroImage = CropRegion.fullImage.renderTransform(imageSize: .zero, containerSize: CGSize(width: 300, height: 300))
         XCTAssertEqual(zeroImage.scale, 1)

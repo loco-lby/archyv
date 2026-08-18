@@ -6,6 +6,26 @@ import ArkyvKit
 
 /// Loads a capture image from the local MediaStore by filename, off the main
 /// thread, with a graceful placeholder while missing/loading.
+///
+/// **Performance Foundation 01:** decoding now goes through
+/// `ImageDecodeCache`/`ImageDecoding` (both in `ArkyvKit`) rather than a
+/// bare `UIImage(data:)` on every load. Two things changed underneath,
+/// neither of which changes what's ever rendered:
+///  1. A decoded `UIImage` is cached (keyed by filename + `decodeTarget`),
+///     so a cell that deinits/reinits during ordinary masonry scrolling —
+///     the common case, since `LazyVGrid`-backed grids routinely recycle
+///     off-screen cells — reuses the already-decoded image instead of
+///     re-reading the file and re-decoding it.
+///  2. `decodeTarget` defaults to `.full`, byte-for-byte the same
+///     `UIImage(data:)` decode every call site used before this existed.
+///     Callers that know they're rendering a small, fixed-size cell (right
+///     now: One Archive's masonry grid) can opt into `.thumbnail`, which
+///     decodes directly to a small pixel budget via native ImageIO
+///     downsampling instead of materializing a full-resolution bitmap for
+///     a cell a fraction of its size. This is purely about how many pixels
+///     get decoded — `CropRegion.renderTransform` is resolution-
+///     independent by construction (see its own doc comment), so the
+///     visible crop is identical either way.
 struct LocalImageView: View {
     let filename: String?
     /// D4: CloudKit-restore fallback source, called only when the normal
@@ -30,6 +50,35 @@ struct LocalImageView: View {
     /// as it always has, byte-for-byte the same code path as before this
     /// property existed.
     var cropRegion: CropRegion = .fullImage
+    /// `.full` (default) preserves every existing call site's exact
+    /// decode behavior. `.thumbnail(shortEdgeTarget:)` decodes to a small
+    /// pixel budget instead — see `LocalImageView.masonryThumbnailShortEdge`
+    /// and `originalPixelSize` below.
+    var decodeTarget: DecodeTarget = .full
+    /// The *original*, uncropped image's own pixel dimensions — free,
+    /// already-stored metadata (`StoredItem.aspectWidth`/`.aspectHeight`)
+    /// callers can pass along so `.thumbnail` targets the edge that
+    /// actually matters for a given layout. ImageIO's own thumbnail sizing
+    /// constrains the image's *longer* edge; a 2-column masonry grid is
+    /// instead constrained by *width*, which is the shorter edge for most
+    /// (portrait) screenshots — without this, a tall portrait image would
+    /// decode with a shorter width than the column actually renders at,
+    /// i.e. visibly under-resolved. `nil` (the default) falls back to
+    /// treating `shortEdgeTarget` as a direct long-edge cap.
+    var originalPixelSize: CGSize? = nil
+
+    enum DecodeTarget: Equatable {
+        case full
+        case thumbnail(shortEdgeTarget: CGFloat)
+    }
+
+    /// Short-edge pixel target for masonry-grid-style thumbnails — sized
+    /// generously above the actual on-screen column width (One Archive's
+    /// 2-column masonry: ~180–210pt columns, up to 3x Retina scale ≈
+    /// 540–630px) so tiles never visibly under-resolve, while still
+    /// decoding a small fraction of a typical multi-megapixel
+    /// screenshot's pixels.
+    static let masonryThumbnailShortEdge: CGFloat = 640
 
     @State private var image: UIImage?
     /// The filename `image` actually reflects — lets a stale in-flight load
@@ -105,10 +154,30 @@ struct LocalImageView: View {
         guard filename != loadedFilename else { return }
         didFail = false
 
-        // Phase 1: the normal, fast path — off the main thread, unchanged
-        // from before D4. No StoredItem/SwiftData access here at all.
+        let cacheKey = ImageDecodeCache.key(filename: filename, maxPixelSize: Self.maxPixelSize(for: decodeTarget, originalPixelSize: originalPixelSize))
+
+        // A cache hit resolves synchronously, no `Task.detached` hop at
+        // all — the common case once a masonry grid has scrolled through
+        // its content once, and exactly the "don't redo work that's
+        // already been done" this cache exists for.
+        if let cached = ImageDecodeCache.shared.image(forKey: cacheKey) {
+            image = cached
+            loadedFilename = filename
+            LocalImageView.logCacheHit(filename: filename)
+            return
+        }
+
+        // Phase 1: the normal, fast path — off the main thread. Disk read
+        // AND decode both happen inside this detached task now (decode
+        // previously ran back on the main actor in `handle(_:for:)` — a
+        // synchronous `UIImage(data:)` of a multi-megapixel screenshot on
+        // the main thread, for every grid cell, is exactly the kind of
+        // main-thread cost this pass exists to remove). No StoredItem/
+        // SwiftData access here at all.
+        let target = decodeTarget
+        let originalPixelSize = originalPixelSize
         let primary = await Task.detached(priority: .userInitiated) {
-            MediaStore.shared.data(for: filename)
+            Self.decodeAndCache(MediaStore.shared.data(for: filename), cacheKey: cacheKey, target: target, originalPixelSize: originalPixelSize, filename: filename)
         }.value
         if handle(primary, for: filename) { return }
 
@@ -124,7 +193,8 @@ struct LocalImageView: View {
             return
         }
         let materialized = await Task.detached(priority: .userInitiated) {
-            MediaStore.shared.data(for: filename, restoringFrom: restored)
+            let data = MediaStore.shared.data(for: filename, restoringFrom: restored)
+            return Self.decodeAndCache(data, cacheKey: cacheKey, target: target, originalPixelSize: originalPixelSize, filename: filename)
         }.value
         if !handle(materialized, for: filename), filename == self.filename {
             didFail = true
@@ -138,14 +208,97 @@ struct LocalImageView: View {
     /// (or give up)" — callers are responsible for setting `didFail` in
     /// that case, since a stale, still-`false` result must NOT set it.
     @discardableResult
-    private func handle(_ data: Data?, for filename: String) -> Bool {
+    private func handle(_ ui: UIImage?, for filename: String) -> Bool {
         guard filename == self.filename else { return true }
-        guard let data, let ui = UIImage(data: data) else { return false }
+        guard let ui else { return false }
         image = ui
         loadedFilename = filename
         return true
     }
+
+    /// Decodes (off the main actor — always called from inside a detached
+    /// `Task`) and, on success, stores the result in `ImageDecodeCache`.
+    /// A decode failure returns `nil`, same as missing data — the
+    /// caller's existing stale-request/fallback logic doesn't need to
+    /// know the difference.
+    private static func decodeAndCache(_ data: Data?, cacheKey: String, target: DecodeTarget, originalPixelSize: CGSize?, filename: String) -> UIImage? {
+        guard let data else { return nil }
+        let maxPixelSize = Self.maxPixelSize(for: target, originalPixelSize: originalPixelSize)
+        guard let ui = ImageDecoding.decode(data, maxPixelSize: maxPixelSize) else { return nil }
+        ImageDecodeCache.shared.store(ui, forKey: cacheKey)
+        logDecode(filename: filename, downsampled: maxPixelSize != nil)
+        return ui
+    }
+
+    private static func maxPixelSize(for target: DecodeTarget, originalPixelSize: CGSize?) -> CGFloat? {
+        switch target {
+        case .full:
+            return nil
+        case .thumbnail(let shortEdgeTarget):
+            guard let originalPixelSize, originalPixelSize.width > 0, originalPixelSize.height > 0 else {
+                return shortEdgeTarget
+            }
+            let short = min(originalPixelSize.width, originalPixelSize.height)
+            let long = max(originalPixelSize.width, originalPixelSize.height)
+            return shortEdgeTarget * (long / short)
+        }
+    }
+
+    #if DEBUG
+    /// DEBUG-only, deliberately silent on cache hits (the frequent,
+    /// expected case once a grid has scrolled through its content once) —
+    /// logs only "real work happened" events, so the *absence* of new
+    /// lines while rescrolling already-seen content is itself the
+    /// evidence caching is working. See the Performance Foundation 01
+    /// report for how this was used to verify it.
+    private static let diagnostics = ImageLoadDiagnostics()
+
+    private static func logCacheHit(filename: String) {
+        diagnostics.recordCacheHit()
+    }
+
+    private static func logDecode(filename: String, downsampled: Bool) {
+        let snapshot = diagnostics.recordDecode(downsampled: downsampled)
+        print("[LocalImageView] decoded \(downsampled ? "thumbnail" : "full") for \(filename) — \(snapshot)")
+    }
+    #else
+    private static func logCacheHit(filename: String) {}
+    private static func logDecode(filename: String, downsampled: Bool) {}
+    #endif
 }
+
+#if DEBUG
+/// Plain counters proving repeated Archive scrolling stops re-decoding the
+/// same image. `NSLock`-guarded since `LocalImageView.load()` calls in
+/// from both the main actor (cache hits) and detached background tasks
+/// (decodes) concurrently.
+final class ImageLoadDiagnostics: @unchecked Sendable {
+    private let lock = NSLock()
+    private var diskDecodes = 0
+    private var fullDecodes = 0
+    private var downsampledDecodes = 0
+    private var cacheHits = 0
+
+    @discardableResult
+    func recordCacheHit() -> String {
+        lock.lock()
+        cacheHits += 1
+        let snapshot = "disk-decodes=\(diskDecodes) (full=\(fullDecodes) thumbnail=\(downsampledDecodes)) cache-hits=\(cacheHits)"
+        lock.unlock()
+        return snapshot
+    }
+
+    @discardableResult
+    func recordDecode(downsampled: Bool) -> String {
+        lock.lock()
+        diskDecodes += 1
+        if downsampled { downsampledDecodes += 1 } else { fullDecodes += 1 }
+        let snapshot = "disk-decodes=\(diskDecodes) (full=\(fullDecodes) thumbnail=\(downsampledDecodes)) cache-hits=\(cacheHits)"
+        lock.unlock()
+        return snapshot
+    }
+}
+#endif
 
 /// The `#tag` pill from the reference-detail design. `onRemove` defaults to
 /// `nil` (read-only, every existing call site's behavior); Item Detail's

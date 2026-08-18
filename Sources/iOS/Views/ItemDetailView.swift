@@ -421,12 +421,27 @@ struct ItemDetailView: View {
     /// `CropEditorView` with it and the item's current persisted
     /// `cropRegion`, as one atomic payload (see `CropEditingSession`'s
     /// doc comment for why that matters).
+    ///
+    /// Crop Editor always needs the *original*-resolution decode (users
+    /// crop pixel-precisely, and `image.size` here becomes the semantic
+    /// coordinate space `CropRegion` is defined against) — this never
+    /// requests a downsampled variant. It does check
+    /// `ImageDecodeCache` first, though: the same full-resolution decode
+    /// may already be sitting there from this same view's own full-screen
+    /// rendering above (`LocalImageView` defaults to `.full`), in which
+    /// case this reuses it instead of decoding the file a second time.
     private func presentCropEditor() {
         guard let filename = item.localFilename else {
             log("crop editor — no localFilename, nothing to show")
             return
         }
         log("crop editor — tap received")
+        let cacheKey = ImageDecodeCache.key(filename: filename, maxPixelSize: nil)
+        if let cached = ImageDecodeCache.shared.image(forKey: cacheKey) {
+            log("crop editor — reusing cached full-resolution decode (\(Int(cached.size.width))x\(Int(cached.size.height)))")
+            cropEditingSession = CropEditingSession(image: cached, region: item.cropRegion)
+            return
+        }
         let fallback = item.imageData
         Task {
             let data = await Task.detached(priority: .userInitiated) {
@@ -436,6 +451,7 @@ struct ItemDetailView: View {
                 log("crop editor — failed to load image data")
                 return
             }
+            ImageDecodeCache.shared.store(image, forKey: cacheKey)
             log("crop editor — image loaded (\(Int(image.size.width))x\(Int(image.size.height))), presenting")
             cropEditingSession = CropEditingSession(image: image, region: item.cropRegion)
         }
