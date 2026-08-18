@@ -71,8 +71,90 @@ enum MediaCacheStressTest {
         // separate, still-never-touched item.
         await verifyByteIdentity(id: ids[41], container: container, cache: cache)
 
+        // D/E — Option 2 Validation Gate 01, Sections 2 and 3.
+        await runReinstallSimulation()
+        await runOfflineLocalAuthorityCheck()
+
         print("[MediaCacheStressTest] done. Exiting.")
         exit(0)
+    }
+
+    // MARK: - D. Reinstall / fresh-local-store simulation (Validation Gate 01 §2)
+
+    /// A brand-new, separate isolated container + a cache root that has
+    /// NEVER had anything written to it — the exact shape a reinstalled
+    /// app or a new device has: SwiftData/CloudKit delivered the item's
+    /// row and its `imageData`, but nothing has ever touched `MediaStore`
+    /// on this "device." Confirms the full pipeline (fetch → cache miss →
+    /// reconstruct → decode) succeeds from that state, and that the
+    /// reconstructed file is byte-identical to `imageData` — i.e. no
+    /// permanent MediaStore original from a "previous installation" is
+    /// required for a correct render.
+    private static func runReinstallSimulation() async {
+        print("[MediaCacheStressTest] D. Reinstall simulation: fresh container + fresh cache root, zero prior MediaStore-equivalent state...")
+        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let ids = await populate(container: container, itemCount: 3)
+        let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent("media-cache-reinstall-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+        // Confirm the "device" genuinely starts with nothing.
+        let startedEmpty = !FileManager.default.fileExists(atPath: cacheRoot.path)
+        let cache = MediaCachePrototype(root: cacheRoot, capacityBytes: 500_000_000)
+
+        var allOK = true
+        for id in ids {
+            let outcome: (decoded: Bool, byteIdentical: Bool) = await Task.detached(priority: .userInitiated) {
+                let context = ModelContext(container)
+                let descriptor = FetchDescriptor<StoredItem>(predicate: #Predicate { $0.id == id })
+                guard let item = try? context.fetch(descriptor).first, let imageData = item.imageData,
+                      let filename = item.localFilename else { return (false, false) }
+                guard let materialized = cache.data(for: filename, reconstructingFrom: imageData) else { return (false, false) }
+                let decoded = ImageDecoding.decode(materialized, maxPixelSize: nil) != nil
+                return (decoded, materialized == imageData)
+            }.value
+            allOK = allOK && outcome.decoded && outcome.byteIdentical
+        }
+        print("[MediaCacheStressTest] D. started with empty cache root: \(startedEmpty), all \(ids.count) items reconstructed+decoded+byte-identical: \(allOK ? "CONFIRMED" : "FAILED")")
+    }
+
+    // MARK: - E. Offline local-authority check (Validation Gate 01 §3)
+
+    /// `ArkyvStore.makeModelContainer(inMemory: true)` sets
+    /// `cloudKitDatabase: .none` explicitly (see ArkyvStore.swift) — this
+    /// container has literally zero network/CloudKit code path available
+    /// to it, which is the strongest "offline" guarantee achievable in an
+    /// automated test (stronger than toggling airplane mode, which
+    /// wouldn't stop an already-in-flight sync on a real device anyway).
+    /// Proves `imageData` alone — with no cache file ever having existed
+    /// — is sufficient to reconstruct the original, with no CloudKit
+    /// upload/sync of any kind involved at any point.
+    private static func runOfflineLocalAuthorityCheck() async {
+        print("[MediaCacheStressTest] E. Offline local-authority check: zero-CloudKit container, delete-then-reconstruct...")
+        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let ids = await populate(container: container, itemCount: 1)
+        let id = ids[0]
+        let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent("media-cache-offline-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+        let cache = MediaCachePrototype(root: cacheRoot, capacityBytes: 500_000_000)
+
+        let result: (firstReadOK: Bool, secondReadAfterDeleteOK: Bool, byteIdentical: Bool) = await Task.detached(priority: .userInitiated) {
+            let context = ModelContext(container)
+            let descriptor = FetchDescriptor<StoredItem>(predicate: #Predicate { $0.id == id })
+            guard let item = try? context.fetch(descriptor).first, let imageData = item.imageData, let filename = item.localFilename else {
+                return (false, false, false)
+            }
+            // Step 1: imageData is readable and yields a working cache file.
+            guard let first = cache.data(for: filename, reconstructingFrom: imageData) else { return (false, false, false) }
+            // Step 2: delete ONLY the derived cache representation — never
+            // touches imageData/the model at all.
+            try? FileManager.default.removeItem(at: cache.url(for: filename))
+            // Step 3: the original is still available, reconstructed
+            // again from imageData alone — the whole point of "imageData
+            // is genuinely sufficient as local durable authority, even
+            // before/without any CloudKit involvement."
+            guard let second = cache.data(for: filename, reconstructingFrom: imageData) else { return (true, false, false) }
+            return (true, true, first == second && second == imageData)
+        }.value
+        print("[MediaCacheStressTest] E. imageData readable: \(result.firstReadOK), survives cache-file deletion + reconstructs: \(result.secondReadAfterDeleteOK), byte-identical throughout: \(result.byteIdentical)")
     }
 
     // MARK: - Setup

@@ -174,6 +174,51 @@ final class MediaCachePrototypeTests: XCTestCase {
         XCTAssertEqual(fileValues.isExcludedFromBackup, true, "a file added AFTER the directory was excluded must still report as effectively excluded — no per-file reaffirmation needed")
     }
 
+    /// Option 2 Validation Gate 01 §7. Result was the OPPOSITE of the
+    /// initial hypothesis: on this host (macOS/APFS, via the SPM test
+    /// runner), a delete-then-recreate-at-the-same-path DOES still read
+    /// back as excluded, without calling `excludeFromBackup()` again —
+    /// apparently backup-exclusion status here is tracked per-path by
+    /// something more persistent than a plain per-inode xattr (plausibly
+    /// a `backupd`/Spotlight-adjacent path-keyed cache, not re-derived
+    /// from a fresh xattr read on every query). This is a real, positive
+    /// signal, but NOT one to build a production guarantee on:
+    /// (1) it was only observed on the macOS host running this test
+    /// suite, never independently re-verified against the real iOS
+    /// device filesystem/backup daemon, which could behave differently;
+    /// (2) relying on an undocumented persistence quirk instead of an
+    /// explicit, idempotent, zero-cost call is worse engineering
+    /// regardless of which way this result goes. Production
+    /// recommendation stands unconditionally either way: call
+    /// `excludeFromBackup()` on every directory (re)creation, never rely
+    /// on it having "stuck" from before.
+    func testRecreatingTheCacheDirectoryAtTheSamePath() throws {
+        let root = makeScratchRoot()
+        let firstCache = MediaCachePrototype(root: root, capacityBytes: 10_000_000)
+        firstCache.excludeFromBackup()
+        let excludedBeforeDelete = try root.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
+        XCTAssertEqual(excludedBeforeDelete, true)
+
+        try FileManager.default.removeItem(at: root)
+
+        // Recreate at the SAME path, via a new instance, WITHOUT calling
+        // excludeFromBackup() again.
+        let secondCache = MediaCachePrototype(root: root, capacityBytes: 10_000_000)
+        defer { try? FileManager.default.removeItem(at: secondCache.root) }
+        let excludedAfterNaiveRecreate = try root.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
+        // Documenting the actual observed result rather than an assumed
+        // one — see the doc comment above for why this is NOT treated as
+        // a safe production guarantee regardless of which way it reads.
+        print("[MediaCachePrototypeTests] backup-exclusion after delete+recreate at the same path, without reaffirming: \(String(describing: excludedAfterNaiveRecreate))")
+
+        // Reaffirming unconditionally is always correct and always ends
+        // in the same, unambiguous state — this is the actual guarantee
+        // production code should rely on, not the delete/recreate result.
+        secondCache.excludeFromBackup()
+        let excludedAfterReaffirm = try root.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
+        XCTAssertEqual(excludedAfterReaffirm, true)
+    }
+
     // MARK: - Concurrency (Section 10)
 
     /// Demonstrates the problem `MediaCacheCoordinator` exists to solve —
