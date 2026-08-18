@@ -23,7 +23,8 @@ Packages/ArkyvKit/              Shared Swift package — models, design tokens, 
   Sources/ArkyvKit/
     Design/     ArkyvColor, ArkyvFont, ArkyvMetrics   (Figma tokens, defined once)
     Model/      ItemKind, FolderIcon
-    Store/      StoredModels (SwiftData), ArkyvStore, MediaStore, AppGroup
+    Store/      StoredModels (SwiftData), ArkyvStore, MediaStore, AppGroup,
+                ImageDecodeCache/ImageDecoding
     Capture/    CaptureDraft
 Sources/iOS/                    iPhone app
   App/          ArkyvApp, entitlements, Info.plist
@@ -116,6 +117,27 @@ reasoning behind it, for future work to build on rather than re-litigate:
   extended real-world use rather than speculative visual tweaking. Manual
   drag/reordering of Archive items is an intentional product idea worth
   revisiting later, but is not currently implemented.
+- **Known follow-up — bottom-of-Archive content can end underneath the
+  floating dock:** normal iOS rubber-band bounce occurs at the true end of
+  the `ScrollView` content before the final item(s) can clear the dock
+  visually, despite `ArchiveView`'s masonry grid already carrying a
+  deliberate 96pt bottom padding specifically for this (see its own
+  comment). A read-only inspection (Performance Foundation 01 session)
+  found the dock's own footprint (`RootView.floatingBottomOverlay`) needs
+  ~74.24pt of clearance (58.24pt circle + 16pt gap) from its container's
+  own bottom edge — on paper, 96pt should cover that with room to spare,
+  which doesn't match what's observed on-device. Leading hypothesis, not
+  yet confirmed: `RootView`'s outer `ZStack` has an `.ignoresSafeArea()`
+  sibling, which can pull the whole `ZStack`'s layout bounds (and thus the
+  dock's `.bottom`-aligned position) to the literal screen edge, while
+  `ArchiveView`'s `ScrollView` — which never opts out of safe-area — likely
+  still insets its own content independently, so the two clearance numbers
+  may not share a reference frame. Needs live verification (Xcode view
+  debugger or on-device geometry logging) before touching anything.
+  Expected fix shape once confirmed: keep the dock as a floating overlay,
+  only increase `ArchiveView`'s bottom padding by the right amount — no
+  `GeometryReader`/preference-key scroll measurement, no masonry/scrolling
+  architecture change.
 
 ## Item Detail v0.1
 
@@ -157,10 +179,52 @@ physically-approved checkpoint. The product/design reasoning behind it:
   entire pass and shouldn't be rewritten casually alongside product UI work.
 - **What's next:** Source/Tags/Folder/Notes rooms can keep growing
   individually without that complexity leaking back into the main Item
-  Detail surface. Known follow-ups, not part of this checkpoint: Share
-  currently shares text rather than the saved image; `NoteFocusSignal` (now
-  unused, since no field lives inline on Item Detail anymore) is flagged for
-  future removal alongside broader RootView/App cleanup.
+  Detail surface. Known follow-up, not part of this checkpoint: Share
+  currently shares text rather than the saved image. (`NoteFocusSignal`,
+  the mechanism that used to hide `RootView`'s dock while the old inline
+  Notes field had focus, was removed entirely in the Performance
+  Foundation 01 pass below — confirmed dead once nothing in the sideroom
+  model ever set it.)
+
+## Image loading (Performance Foundation 01)
+
+`LocalImageView` (the one shared image view behind One Archive's masonry,
+Item Detail, and the capture sheet) decodes through `ImageDecodeCache` /
+`ImageDecoding` (`Packages/ArkyvKit/Sources/ArkyvKit/Store/
+ImageDecodeCache.swift`) rather than a bare `UIImage(data:)`:
+
+- **Cache:** an `NSCache`-backed, filename-plus-pixel-budget-keyed cache of
+  already-decoded `UIImage`s — thread-safe, auto-evicting under memory
+  pressure, sized (`totalCostLimit`/`countLimit`) against real masonry-
+  thumbnail byte costs, physically re-verified after an initial too-small
+  budget was caught evicting within a single ordinary scroll session. Never
+  needs invalidating: `MediaStore` filenames are write-once, and crop is a
+  display-time transform that never touches cached pixels.
+- **Downsampling:** `LocalImageView.decodeTarget` defaults to `.full` (every
+  call site's original behavior, unchanged) — callers that know they're a
+  small fixed-size cell (One Archive's masonry grid) opt into
+  `.thumbnail(shortEdgeTarget:)`, which decodes directly to a small pixel
+  budget via native ImageIO thumbnailing instead of materializing a full-
+  resolution bitmap first. `originalPixelSize` (free, already-stored
+  `StoredItem.aspectWidth`/`.aspectHeight`) lets the thumbnail target
+  whichever edge the layout is actually constrained by, since ImageIO's own
+  `maxPixelSize` only constrains the *longer* edge.
+- **Why this is safe for `CropRegion`:** `CropRegion.renderTransform` only
+  ever consumes a decoded image's own `.size` relative to its normalized
+  crop rect — never an absolute pixel count — so it's resolution-independent
+  by construction (see its own doc comment and
+  `CropRegionTests.testRenderTransformIsScaleInvariantAcrossDecodedResolutions`
+  / `testVisibleSourceFractionIsIdenticalAcrossDecodedResolutions`). A
+  downsampled decode renders the *exact* same visible crop as a full one,
+  as long as its aspect ratio matches the original's — which
+  `ImageDecoding.decode` guarantees by construction, never distorting.
+  Crop Editor and Item Detail's full-context/zoom rendering always request
+  `.full` and are never downsampled.
+- **New call site expectations:** don't reintroduce a bare
+  `UIImage(data:)` decode for anything rendered through `LocalImageView`
+  (or sharing its filename space) — route through `ImageDecoding`/
+  `ImageDecodeCache` instead, and only request `.thumbnail` for genuinely
+  small, fixed-size renders.
 
 ## Build
 
@@ -182,6 +246,21 @@ Then select the **Arkyv** scheme and run on an iPhone / simulator.
 ```bash
 cd Packages/ArkyvKit && swift build      # compiles the shared logic
 ```
+
+> **Note:** plain `swift build`/`swift test` (resolving to `/usr/bin/swift`,
+> the CommandLineTools toolchain) fails on this machine with `external macro
+> implementation type 'SwiftDataMacros...' could not be found` — a
+> toolchain mismatch, not a real compile error. Fix: invoke Xcode's own
+> toolchain explicitly —
+> `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+> /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift
+> test`. Even with the right toolchain, `RepositoryTests` (SwiftData-backed)
+> currently crashes (signal 5) immediately on its first test when run this
+> way — `CropRegionTests`/`CropEditorMathTests` (pure Foundation/
+> CoreGraphics, no SwiftData) are unaffected and a reliable way to validate
+> non-persistence logic from the CLI. `RepositoryTests` needs an actual iOS
+> test target/scheme to run properly; none is currently wired into
+> `project.yml`.
 
 ### ⚠️ iOS simulator on this Mac
 
