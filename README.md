@@ -563,6 +563,133 @@ process) as the main focus.
   fidelity win (exact original bytes, unmodified) doesn't depend on
   this measurement at all.
 
+## Storage Contract (Disk Pressure Foundation 01)
+
+From a full audit of local storage ownership, growth, and every
+file-writing boundary's behavior under low-disk conditions. Core rule:
+a storage problem may block a *new* save, but must never corrupt an
+*existing* Cherry or claim success for one that didn't actually happen.
+
+- **CRITICAL, found and fixed: a disk-full Share Extension capture could
+  silently "succeed" as an empty note while the actual photo was lost.**
+  `ShareViewController.extractDraft()`'s image→URL→text fallback chain
+  didn't distinguish "no image was shared" from "an image was shared but
+  every attempt to save it failed" — the latter fell straight through
+  to a contentless `CaptureDraft(kind: .note)`, which the drawer then
+  presented as a completely normal, ready-to-save draft (enabled ✓, no
+  error, no preview because there was nothing to preview). A user
+  tapping ✓ in that state filed a real, successful, entirely empty
+  `StoredItem` while their photo silently never existed anywhere. Fixed:
+  an image-processing failure now returns `nil` instead of falling
+  through, and the drawer shows an explicit "Couldn't load — nothing to
+  save" state (✓ stays disabled) rather than presenting a false-ready
+  draft. Scoped to the image path specifically — it's the only one of
+  the three fallback branches that writes substantial bytes to disk.
+- **Found and fixed: `MediaStore.save(copyingFileAt:)` (new in Share/
+  Capture Reliability Foundation 01) wasn't atomic.** Unlike
+  `save(data:)`, which gets atomicity for free from `Data.write(options:
+  .atomic)`, a bare `FileManager.copyItem(at:to:)` writes directly to
+  the destination path — a disk-full error or process kill mid-copy
+  could have left a truncated file sitting at the exact filename a
+  `StoredItem` was about to reference as its original. Fixed: copies to
+  a `.staging-<uuid>` sibling in the same directory first, then does a
+  single atomic move into place (same volume, so it's a real rename,
+  not a second copy) — cleaning up the staging file on either outcome.
+- **Verified, not changed: every other media write path was already
+  atomic.** `save(data:)` and the D4 self-healing restore write
+  (`data(for:restoringFrom:)`) both already use `Data.write(options:
+  .atomic)` — Foundation's documented contract (write to an auxiliary
+  file, then rename) means a failure here can *never* leave a partial
+  file at the final path. `save(image:)` delegates to `save(data:)`, so
+  it inherits the same guarantee.
+- **Verified: `Repository.fileCapture` is structurally unreachable
+  before media exists.** Every capture surface writes to `MediaStore`
+  first and only calls `fileCapture` with an already-staged filename
+  (Recovery/Portability Foundation 01) — a media-write failure means
+  `fileCapture` (and therefore any `StoredItem`) simply never gets
+  created for that capture, on every surface except the one bug above,
+  which is now fixed the same way.
+- **Verified: existing data survives a failed SwiftData save.** Two
+  independent layers protect it — SQLite's own ACID/journaled commit
+  (a framework guarantee, not something Cherries implements) means a
+  failed write leaves the database file in its previous consistent
+  state, never partially written; `Repository.save()`'s rollback-on-
+  failure (Data Integrity Foundation 01) means the in-memory context
+  doesn't retain stale pending objects afterward either. No new code
+  needed here — this is exactly the "don't manufacture handling
+  Foundation/SQLite already provides" case.
+- **Cloud restore under low disk stays safely retryable, not
+  corrupting.** `data(for:restoringFrom:)`'s write is atomic (above), so
+  a disk-full failure during the D4 self-healing restore can't leave a
+  corrupt local file — the function still returns the fetched
+  `imageData` bytes for *this* render (a reasonable "show it now even
+  though local persistence didn't stick" choice, not a bug), and the
+  next access simply retries the same restore, since `MediaStore` still
+  reports the file as absent. The synced `imageData` itself is
+  untouched by any of this — it only gets consumed, never mutated, by a
+  failed restore attempt.
+- **Local persistent footprint (Category A) is the only one that
+  scales with archive size — and it's roughly *doubled* by design.**
+  Every media item exists on disk twice: once in `MediaStore`
+  (`localFilename`, the fast local read path) and once again as
+  `StoredItem.imageData` (`.externalStorage`, the CloudKit sync
+  transport — confirmed local, on-disk, not purely cloud-side; see
+  Recovery/Portability Foundation 01). Rough, explicitly-approximate
+  ranges (real screenshots compress well as JPEG @0.9 quality — often
+  150KB-1MB; real camera photos compress far less — often 2-6MB;
+  assume ~800KB/item blended average across a realistic screenshot-
+  heavy archive):
+
+  | Cherries | Category A (media, ×2) | Category B (metadata) | Category C (cache/temp) |
+  |---|---|---|---|
+  | 100 | ~160MB | ~0.2MB | ~0 (in-memory only) |
+  | 1,000 | ~1.6GB | ~2MB | ~0 |
+  | 5,000 | ~8GB | ~10MB | ~0 |
+  | 10,000 | ~16GB | ~20MB | ~0 |
+
+  Category B (title/tags/note/URL/timestamps — small strings/scalars
+  outside the externalStorage blob) is negligible at every tested size.
+  Category C: `ImageDecodeCache` is `NSCache`-backed, RAM-only, zero
+  disk footprint (Performance Foundation 01); transient staging files
+  from the atomic-write fix above are cleaned up within the same
+  function call, never accumulate. A photo-heavy (vs. screenshot-heavy)
+  archive could run several times higher than this table — these are
+  genuinely rough planning ranges, not measured facts.
+- **Orphan/leak assessment: no new leak source found, existing ones
+  already tracked.** The only accumulation sources are the already-
+  documented ones (Data Integrity Foundation 01, Share/Capture
+  Reliability Foundation 01): media staged for a cancelled/abandoned
+  capture. `IntegrityCheck.orphanedMediaFilenames` already detects
+  these. **What proof a future conservative GC pass would need before
+  ever deleting a file:** (1) no live *or* soft-deleted `StoredItem
+  .localFilename` references it (already checked); (2) it's
+  meaningfully older than any plausible in-flight capture/share session
+  — a conservative age threshold (e.g. 24-48h), not just "orphaned right
+  now," to never race a draft the user hasn't finished with yet. Not
+  implemented — detection only, per this pass's explicit scope; "when
+  uncertain, preserve user media."
+- **`MediaStore.totalBytesOnDisk()`** (new, Phase 9): a plain
+  `FileManager` enumeration summing `.totalFileAllocatedSizeKey` (real
+  disk blocks used) across `MediaStore`'s directory, skipping hidden/
+  staging files. O(file count) — cheap at realistic archive sizes, but
+  not free; diagnostic/test use only, on-demand, never wired into
+  launch. No user-visible surface — a future "Your archive uses 8.4GB"
+  feature could read from this, but that UI is undesigned and out of
+  scope here.
+- **Not simulated directly, and why:** a genuinely truncated mid-write
+  file (vs. the "never created at all" failures this pass's tests
+  exercise) would need either an actual full disk or a custom
+  `FileManager`-replacing seam — the former is explicitly forbidden
+  ("never fill the real device disk"), the latter would mean refactoring
+  `MediaStore` for test-double injection, explicitly discouraged
+  ("do not refactor the storage architecture for test purity"). Given
+  `Data.write(options: .atomic)` and the new copy-then-atomic-move
+  pattern are both *Foundation's own* documented guarantees, not
+  Cherries-authored logic, this pass verified the failure-injectable
+  parts (missing source, no staging-file leakage) and relied on
+  documented framework behavior for the rest, rather than building
+  infrastructure to re-prove what the platform already guarantees.
+
 ## Build
 
 Requires Xcode 16+ and [XcodeGen](https://github.com/yonsson/XcodeGen) (`brew install xcodegen`).
