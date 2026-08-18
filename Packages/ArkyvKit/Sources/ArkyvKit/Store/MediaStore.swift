@@ -45,10 +45,31 @@ public struct MediaStore: Sendable {
     /// decoded bitmap (which `save(image:)` below requires) just to
     /// re-encode the same bytes back into the same format they already
     /// were.
+    ///
+    /// Storage/Disk Pressure Foundation 01: copies to a temporary sibling
+    /// in this same directory first, then atomically moves it into
+    /// place — unlike `save(data:)` above (which gets atomicity for free
+    /// from `Data.write(options: .atomic)`), a bare
+    /// `FileManager.copyItem(at:to:)` writes directly to the destination
+    /// path with no such guarantee. A process kill or disk-full error
+    /// partway through that direct copy could otherwise leave a
+    /// truncated file sitting at the exact filename a `StoredItem` is
+    /// about to reference as its original — this closes that gap. The
+    /// temporary file and the destination are on the same volume (same
+    /// directory), so the final move is a single atomic rename, not a
+    /// slow second copy.
     @discardableResult
     public func save(copyingFileAt sourceURL: URL, id: UUID = UUID(), ext: String = "jpg") throws -> String {
         let filename = "\(id.uuidString).\(ext)"
-        try FileManager.default.copyItem(at: sourceURL, to: url(for: filename))
+        let destination = url(for: filename)
+        let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: sourceURL, to: staging)
+        do {
+            try FileManager.default.moveItem(at: staging, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
         return filename
     }
 
@@ -74,6 +95,31 @@ public struct MediaStore: Sendable {
 
     public func delete(filename: String) {
         try? FileManager.default.removeItem(at: url(for: filename))
+    }
+
+    /// Storage/Disk Pressure Foundation 01 (Phase 9): approximate total
+    /// bytes currently on disk in this directory — a plain `FileManager`
+    /// enumeration summing each file's allocated size via
+    /// `.totalFileAllocatedSizeKey` (actual disk blocks used, not the
+    /// logical byte count, so this reflects real footprint). Diagnostic/
+    /// test use only — nothing in the app surfaces this to a user. O(file
+    /// count): cheap relative to a typical archive's file count, but not
+    /// free, so callers should compute on demand, never at launch.
+    public func totalBytesOnDisk() -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]),
+                  values.isRegularFile == true else { continue }
+            total += Int64(values.totalFileAllocatedSize ?? 0)
+        }
+        return total
     }
 
     #if canImport(UIKit)

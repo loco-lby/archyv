@@ -71,14 +71,40 @@ final class ShareViewController: UIViewController {
     }
 
     /// Pulls the first useful attachment into a draft (image → URL → text).
-    private func extractDraft() async -> CaptureDraft {
+    ///
+    /// Storage/Disk Pressure Foundation 01: `nil` return means "an image
+    /// WAS shared, but every attempt to turn it into a draft failed" —
+    /// most plausibly a disk-full `MediaStore` write. This is
+    /// deliberately NOT treated the same as "no image was shared at
+    /// all": before this fix, an image-save failure fell straight
+    /// through to the URL/text branches below and, finding nothing
+    /// there either, ultimately returned a contentless
+    /// `CaptureDraft(kind: .note)` — which `ShareDrawerContent` then
+    /// presented as a perfectly normal, *ready-to-save* draft (no
+    /// preview, but `isReady` was still `true`). A user tapping ✓ in
+    /// that state would successfully file an empty note while their
+    /// actual photo silently vanished — exactly the "silently claim
+    /// success for an incomplete save" failure mode this milestone
+    /// exists to close. Scoped to the image path specifically: it's the
+    /// only one of the three that writes substantial bytes to disk, so
+    /// it's the only one with this failure shape. See
+    /// `ShareDrawerContent`'s `loadFailed` for the corresponding UI
+    /// state (disabled ✓, an explicit "couldn't load" message instead
+    /// of a silently-ready empty draft).
+    private func extractDraft() async -> CaptureDraft? {
         guard let item = extensionContext?.inputItems.first as? NSExtensionItem,
               let providers = item.attachments else {
             return CaptureDraft(kind: .note, sourceDevice: .iOS)
         }
-        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-            if let draft = await imageDraft(from: provider) { return draft }
+
+        let imageProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
+        if !imageProviders.isEmpty {
+            for provider in imageProviders {
+                if let draft = await imageDraft(from: provider) { return draft }
+            }
+            return nil
         }
+
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
             if let url = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
                 return CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS)
@@ -233,6 +259,17 @@ private struct ShareDrawerContent: View {
     @State private var selectedFolder: StoredFolder?
     @State private var isSaving = false
     @State private var saveError = false
+    /// Storage/Disk Pressure Foundation 01: `true` once `load()` has
+    /// resolved to `nil` — see `ShareViewController.extractDraft()`'s
+    /// doc comment for exactly what that means (an image was shared but
+    /// couldn't be processed/saved, most plausibly disk-full). Distinct
+    /// from "still loading" (`draft == nil && !loadFailed`, shows
+    /// "Preparing…") so this state gets its own explicit message rather
+    /// than silently presenting as a normal, saveable, content-free
+    /// draft — `isReady` already correctly keeps ✓ disabled either way
+    /// (`draft` stays `nil`), so this only changes what the user is
+    /// told, not what they're permitted to do.
+    @State private var loadFailed = false
 
     /// The attachment genuinely can take a perceptible moment to load
     /// (Photos library fetch, a large remote image) — unlike the Action
@@ -271,7 +308,9 @@ private struct ShareDrawerContent: View {
         .ignoresSafeArea(edges: .bottom)
         .animation(.easeOut(duration: 0.18), value: showingPicker)
         .task {
-            draft = await load()
+            let result = await load()
+            draft = result
+            loadFailed = (result == nil)
         }
     }
 
@@ -307,7 +346,11 @@ private struct ShareDrawerContent: View {
                     .foregroundStyle(ArkyvColor.textPrimary)
             }
             .disabled(showingPicker)
-            if !isReady {
+            if loadFailed {
+                Text("Couldn't load — nothing to save")
+                    .font(ArkyvFont.mono(.regular, size: 11))
+                    .foregroundStyle(ArkyvColor.accent)
+            } else if !isReady {
                 Text("Preparing…")
                     .font(ArkyvFont.mono(.regular, size: 11))
                     .foregroundStyle(ArkyvColor.subdued)
