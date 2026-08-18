@@ -67,6 +67,16 @@ struct ArkyvApp: App {
                             await MediaCacheStressTest.run()
                         }
                     }
+                    // Option 2 Validation Gate 01 (two-device test) — an
+                    // on-demand, read-only snapshot of the real,
+                    // already-running container's most recent items.
+                    // Unlike the hooks above, this deliberately reads the
+                    // REAL modelContainer (not an isolated one) — the
+                    // whole point is inspecting real synced data — but it
+                    // only ever fetches and logs, never mutates.
+                    if CommandLine.arguments.contains("--arkyv-validate-recent-media") {
+                        OptionTwoValidationLog.reportMostRecentItems(container: modelContainer)
+                    }
                     #endif
                 }
         }

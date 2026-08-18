@@ -72,6 +72,16 @@ struct ArchiveView: View {
     @State private var searching = false
     @State private var query = ""
 
+    #if DEBUG
+    /// Option 2 Validation Gate 01 (two-device test) — DEBUG-only,
+    /// read-only, no UI. See `OptionTwoValidationLog`. Seeded on first
+    /// appearance so items already present at launch are never mistaken
+    /// for a live arrival; every id inserted here is permanent for the
+    /// view's lifetime (a soft-deleted/re-fetched item should never
+    /// re-log as "new").
+    @State private var optionTwoValidationSeenIDs: Set<UUID> = []
+    #endif
+
     private var filters: [ArchiveFilter] {
         [.all, .unfiled, .favorites] + folders.map { .folder($0.id) }
     }
@@ -199,6 +209,16 @@ struct ArchiveView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
+        #if DEBUG
+        .onAppear {
+            if optionTwoValidationSeenIDs.isEmpty {
+                optionTwoValidationSeenIDs = Set(allItemsRaw.map(\.id))
+            }
+        }
+        .onChange(of: allItemsRaw) { _, newValue in
+            OptionTwoValidationLog.observeNewItems(newValue, seen: &optionTwoValidationSeenIDs)
+        }
+        #endif
     }
 
     /// Resolves an `ItemRoute` back to its live `StoredItem` by `id`, from
