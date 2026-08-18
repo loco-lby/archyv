@@ -24,7 +24,7 @@ Packages/ArkyvKit/              Shared Swift package — models, design tokens, 
     Design/     ArkyvColor, ArkyvFont, ArkyvMetrics   (Figma tokens, defined once)
     Model/      ItemKind, FolderIcon
     Store/      StoredModels (SwiftData), ArkyvStore, MediaStore, AppGroup,
-                ImageDecodeCache/ImageDecoding, IntegrityCheck
+                ImageDecodeCache/ImageDecoding, IntegrityCheck, CherryManifest (DEBUG)
     Capture/    CaptureDraft
   Sources/ArkyvBench/            `swift run` synthetic-archive benchmark harness
                                   (Scale Foundation 01 — see its own doc comment)
@@ -369,6 +369,91 @@ methodology and full numbers below; durable takeaways only here.
   a masonry cell's own view body or `LocalImageView`'s decode path — those
   run once per visible cell, not once per user action, and would compound
   the cost above rather than just paying it once per mutation.
+
+## Recovery / Portability Contract (Foundation 01)
+
+From a full audit of what it takes to reconstruct a Cherry after device
+loss, reinstall, or partial sync. No schema/CloudKit architecture changed
+this pass — this is what's true about the *existing* one.
+
+- **The authoritative original is the media bytes, held twice, on
+  purpose.** `StoredItem.localFilename` → a `MediaStore` file is the
+  primary local read path every render uses. `StoredItem.imageData`
+  (`@Attribute(.externalStorage)`) is a second, deliberately redundant
+  on-device copy of the *same* bytes, whose only job is to be the
+  CloudKit sync transport (`.externalStorage` is what SwiftData's
+  CloudKit integration maps to a `CKAsset`) — a plain filename string
+  couldn't sync the bytes themselves, only its own text. **Yes, original
+  media is uploaded to iCloud/CloudKit today**, via this mechanism, for
+  every new capture (`Repository.fileCapture` populates `imageData`
+  directly from the just-written `MediaStore` file) — this was
+  previously mis-documented in `StoredModels.swift` as "not wired in
+  yet, a later milestone"; that comment was stale and has been
+  corrected as part of this audit.
+- **Self-healing recovery already exists for the reinstall/new-device
+  case.** `MediaStore.data(for:restoringFrom:)` — consumed by
+  `LocalImageView.load()` and `ItemDetailView.presentCropEditor()` —
+  tries the local file first and, only if it's missing, materializes it
+  from `item.imageData` and writes it to disk exactly as if it had been
+  captured on this device. This is the actual mechanism behind "replace
+  your phone, sign into the same Apple ID, reinstall Cherries, your
+  archive comes back" — not a documented product promise anywhere yet,
+  but a real, already-built, already-used code path.
+- **Known gap: historical items backfill slowly.** `ImageBackfill` only
+  populates `imageData` for pre-existing items 20 at a time, once per
+  app foreground activation (deliberately conservative, never blocking
+  launch). A large historical archive could take many app opens to
+  become fully CloudKit-protected. Not a bug — a real, quantifiable
+  window during which an old, not-yet-backfilled item has no recovery
+  path if its *local* copy is also lost before that device's backfill
+  catches up. `IntegrityCheck`'s `itemsWithRecoverableMedia` /
+  `itemsWithNoKnownRecovery` (added this pass) is how to observe this on
+  a given device.
+- **Everything else is a plain synced property, no special case
+  needed:** `cropRegion` (scalar `cropX/Y/Width/Height`), tags, notes,
+  sourceURL, favorite, folder/membership relationships, timestamps,
+  soft-delete tombstones — all ordinary `@Model` properties on the same
+  CloudKit-enabled `ModelConfiguration` (`ArkyvStore.makeModelContainer`,
+  `cloudKitDatabase: .private(...)`), synced the same way as everything
+  else with zero custom sync code. `StoredFolder`/`StoredFolderMembership`
+  sync identically to `StoredItem` — no special-casing anywhere.
+- **No custom sync/conflict logic exists** — `dirty`/`remoteSyncedAt`
+  (on all three models) are written on every mutation but never read
+  anywhere in the codebase; they're vestigial bookkeeping from an
+  earlier "D1/D2" milestone stage, not wired into any actual decision.
+  All sync and conflict resolution is entirely SwiftData's own built-in
+  CloudKit integration — nothing here overrides or races it. Two-device
+  concurrent edits fall back to SwiftData/CloudKit's documented default
+  merge behavior (field-level, not something this codebase customizes).
+- **Filenames are opaque, globally-unique-enough UUIDs, but not
+  content-identifying.** `MediaStore.save`'s filename UUID is
+  independent of `StoredItem.id` (two separate random UUIDs) — safe
+  from collisions, but a media file with no surviving `StoredItem` row
+  pointing at it cannot be reconnected to "which capture" by inspecting
+  the file alone. This is why `IntegrityCheck`'s orphan detection can
+  only ever report *that* a file is unclaimed, never *whose* it was —
+  true reconnection (Recovery/Portability Phase 5's category D vs. E)
+  would need a durable content ID embedded some other way (e.g. image
+  metadata) — a schema-adjacent decision, not implemented here per
+  explicit instruction to stop and report rather than add it.
+- **Standard device/iCloud backup is a second, independent safety
+  net.** Neither `MediaStore`'s directory nor the SwiftData store file
+  are excluded from backup (no `isExcludedFromBackup` anywhere in the
+  codebase) — a full-device iCloud/Finder backup restore brings the
+  whole App Group container back verbatim, independent of CloudKit
+  record sync. Not a promise Cherries actively engineers for, but a
+  real, currently-true protection layer worth knowing about.
+- **`CherryManifest`** (`Store/CherryManifest.swift`, `#if DEBUG`, no UI,
+  no import path) proves the current models already contain everything
+  a future portable `Archive/media/ + cherries.json` export would need —
+  verified with a round-trip JSON test (encode → decode → exactly
+  equal, including soft-deleted tombstones). Folder-organized export,
+  ZIP packaging, and any actual product export UX remain undesigned;
+  this only answers "is the data representable," which it is.
+- **No CRITICAL/HIGH durability gap found.** The one real risk
+  identified (historical-item backfill window, above) is bounded,
+  self-correcting, and already observable via `IntegrityCheck` — not an
+  architectural gap requiring product/CloudKit redesign.
 
 ## Build
 
