@@ -2,29 +2,35 @@ import SwiftUI
 import SwiftData
 import ArkyvKit
 
-/// `screen-reference-detail`: full media, source, title, tags, notes, and the
-/// move / favorite actions.
+/// `screen-reference-detail`: Item Detail is primarily a *view* of a
+/// Cherry's context, not a form with several simultaneously-editable
+/// fields. The artifact dominates (0pt corners, matching One Archive's
+/// own masonry, not a rounded "card"), no manufactured title, and
+/// Source/Tags/Folder/Notes are all quiet summary/navigation affordances
+/// — "this context exists, tap to inspect or change it" — never inline
+/// text fields. Tapping any of them opens a dedicated "sideroom" editor
+/// (`NotesEditorView`/`SourceEditorView`/`TagsEditorView`/
+/// `FolderEditorView`, in `ItemDetailEditors.swift`) via `activeRoom`, a
+/// `fullScreenCover` — the same presentation `CropEditorView` already
+/// uses from this screen, chosen specifically because it has no
+/// swipe-to-dismiss gesture to disambiguate against: the room's own
+/// large Cherries X/✓ (`ContextEditorChrome`) are the only two ways out.
+/// Each room owns a local draft and only reports it back on ✓ via
+/// `onConfirm` — this file is the only place any of the four properties
+/// actually get persisted, so X genuinely means "cancel, nothing
+/// changed."
 struct ItemDetailView: View {
     @Bindable var item: StoredItem
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
-    @Environment(\.scenePhase) private var scenePhase
-    /// Tells RootView to hide its bottom nav while the note composer has
-    /// focus — see `NoteFocusSignal`'s doc comment for why this is an
-    /// explicit signal rather than RootView inferring it from keyboard
-    /// geometry.
-    @Environment(NoteFocusSignal.self) private var noteFocusSignal
-    @State private var showMovePicker = false
-    @State private var noteDraft = ""
-    /// Drives the note composer's active state. Tapping it (or the
-    /// composer's own tap gesture) sets this; the keyboard accessory's
-    /// Done, or a tap outside the composer, clears it. A focus-lost
-    /// transition is exactly when a pending edit gets flushed immediately
-    /// rather than waiting on the debounce below.
-    @FocusState private var noteFocused: Bool
-    @State private var noteSaveTask: Task<Void, Never>?
-    @State private var noteSaveState: NoteSaveState = .idle
-    @State private var saveStateFadeTask: Task<Void, Never>?
+
+    /// Which sideroom (if any) is currently presented.
+    private enum EditingRoom: Identifiable {
+        case notes, source, tags, folder
+        var id: Self { self }
+    }
+    @State private var activeRoom: EditingRoom?
+
     /// The item's actual image, loaded on demand for the crop editor — a
     /// single `Identifiable` payload, presented via `.fullScreenCover(item:)`
     /// rather than a separate `Bool` + optional. That combination
@@ -64,170 +70,137 @@ struct ItemDetailView: View {
     @State private var imageIsZoomed = false
     @State private var imageZoomResetTick = 0
 
-    private enum NoteSaveState { case idle, saving, saved }
-
-    private static let notesComposerID = "notesComposer"
-
     private var repo: Repository { Repository(context: context) }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if item.kind.isMedia {
-                        // Defaults to the saved crop — "what I picked,"
-                        // the same artifact Archive/folder grids just
-                        // showed when the user tapped into this item.
-                        // showingFullContext is the explicit, secondary
-                        // "where did this come from" view of the
-                        // untouched original. Same non-destructive
-                        // rendering LocalImageView already uses in
-                        // Archive: cropRegion: .fullImage takes its own
-                        // unchanged code path, so a never-cropped item
-                        // renders identically regardless of this toggle.
-                        ZoomableImageContainer(
-                            isZoomedIn: $imageIsZoomed,
-                            resetSignal: imageZoomResetTick,
-                            onSingleTap: {
-                                guard !item.cropRegion.isFullImage else { return }
-                                withAnimation(.easeInOut(duration: 0.2)) { showingFullContext.toggle() }
-                            }
-                        ) {
-                            LocalImageView(
-                                filename: item.localFilename,
-                                fallbackImageData: { item.imageData },
-                                contentMode: .fit,
-                                cropRegion: showingFullContext ? .fullImage : item.cropRegion
-                            )
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if item.kind.isMedia {
+                    // Defaults to the saved crop — "what I picked,"
+                    // the same artifact Archive/folder grids just
+                    // showed when the user tapped into this item.
+                    // showingFullContext is the explicit, secondary
+                    // "where did this come from" view of the
+                    // untouched original. Same non-destructive
+                    // rendering LocalImageView already uses in
+                    // Archive: cropRegion: .fullImage takes its own
+                    // unchanged code path, so a never-cropped item
+                    // renders identically regardless of this toggle.
+                    ZoomableImageContainer(
+                        isZoomedIn: $imageIsZoomed,
+                        resetSignal: imageZoomResetTick,
+                        onSingleTap: {
+                            guard !item.cropRegion.isFullImage else { return }
+                            withAnimation(.easeInOut(duration: 0.2)) { showingFullContext.toggle() }
                         }
-                        .aspectRatio(showingFullContext ? originalAspectRatio : item.aspectRatio, contentMode: .fit)
-                        .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
-                        .padding(.horizontal, 20)
-                        .padding(.top, 12)
-                        .overlay(alignment: .topTrailing) {
-                            if !item.cropRegion.isFullImage {
-                                contextToggleButton
-                            }
-                        }
-                        .onChange(of: showingFullContext) { _, _ in
-                            imageZoomResetTick += 1
+                    ) {
+                        LocalImageView(
+                            filename: item.localFilename,
+                            fallbackImageData: { item.imageData },
+                            contentMode: .fit,
+                            cropRegion: showingFullContext ? .fullImage : item.cropRegion
+                        )
+                    }
+                    .aspectRatio(showingFullContext ? originalAspectRatio : item.aspectRatio, contentMode: .fit)
+                    .frame(maxWidth: .infinity)
+                    // 0pt corners, no border, no shadow — the same sharp
+                    // visual language as One Archive's own masonry tiles,
+                    // not a rounded "card." Presentation-only; the shared
+                    // LocalImageView/CropRegion rendering underneath is
+                    // untouched.
+                    .clipShape(Rectangle())
+                    .padding(.horizontal, Self.contentHorizontalInset)
+                    .padding(.top, 12)
+                    .overlay(alignment: .topTrailing) {
+                        if !item.cropRegion.isFullImage {
+                            contextToggleButton
                         }
                     }
-
-                    VStack(alignment: .leading, spacing: 16) {
-                        if let source = item.sourceURL, !source.isEmpty {
-                            Text(source)
-                                .font(.arkyvCaption)
-                                .foregroundStyle(ArkyvColor.textSecondary)
-                        }
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(item.title ?? defaultTitle)
-                                .font(.arkyvTitle)
-                                .foregroundStyle(ArkyvColor.textPrimary)
-                            Spacer()
-                            Text("Saved \(item.createdAt.formatted(date: .abbreviated, time: .omitted))")
-                                .font(.arkyvCaption)
-                                .foregroundStyle(ArkyvColor.subdued)
-                        }
-
-                        if !item.tags.isEmpty {
-                            FlowTags(tags: item.tags)
-                        }
-
-                        Rectangle().fill(ArkyvColor.divider).frame(height: 1)
-
-                        notesSection
-
-                        HStack {
-                            Button {
-                                showMovePicker = true
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "folder")
-                                    Text("Move to...")
-                                }
-                                .font(ArkyvFont.mono(.medium, size: 15))
-                                .foregroundStyle(ArkyvColor.textPrimary)
-                            }
-                            Spacer()
-                            Button {
-                                try? repo.toggleFavorite(item)
-                            } label: {
-                                Image(systemName: item.isFavorite ? "heart.fill" : "heart")
-                                    .font(.system(size: 18))
-                                    .foregroundStyle(item.isFavorite ? .red : ArkyvColor.textPrimary)
-                            }
-                        }
-                        .padding(.top, 4)
-                    }
-                    .padding(20)
-                    // Tapping anywhere in here that isn't a more specific
-                    // control — the composer, "Move to...", the favorite
-                    // button — dismisses the keyboard. A plain
-                    // `.onTapGesture` on a container never intercepts a tap
-                    // that lands directly on a child Button or the
-                    // composer's own gesture; those consume the touch
-                    // first. So this can't interfere with navigation or the
-                    // other controls, only with genuinely empty space.
-                    .onTapGesture {
-                        if noteFocused {
-                            log("background tap — dismissing keyboard")
-                            noteFocused = false
-                        }
+                    .onChange(of: showingFullContext) { _, _ in
+                        imageZoomResetTick += 1
                     }
                 }
+
+                // A compact, centered, self-contained control cluster —
+                // Source/Tags/Folder as one row of quiet chips, "+ Add
+                // note" as a smaller/lighter chip beneath — all
+                // summary/navigation affordances, never inline editable
+                // fields. See this file's top doc comment. Centered as a
+                // group (not stretched edge-to-edge) so it reads as one
+                // small contextual unit tied to the image, not three
+                // labels spanning the room's width.
+                metadataCluster
+                    .padding(.horizontal, Self.contentHorizontalInset)
+                    .padding(.top, 16)
+                    .padding(.bottom, 24)
             }
-            .scrollDismissesKeyboard(.interactively)
-            // Suspends the page's own scroll while the image above is
-            // zoomed in, so panning the image doesn't fight the page
-            // scrolling underneath it — re-enables the instant zoom
-            // returns to 1x (see `imageIsZoomed`'s doc comment).
-            .scrollDisabled(imageIsZoomed)
-            .background(ArkyvColor.canvas)
-            .safeAreaInset(edge: .top) { header }
-            .toolbar(.hidden, for: .navigationBar)
-            .sheet(isPresented: $showMovePicker) {
-                MoveToFolderView(item: item)
-                    .presentationDetents([.medium, .large])
-            }
-            .fullScreenCover(item: $cropEditingSession) { session in
-                CropEditorView(
-                    image: session.image,
-                    region: session.region,
-                    onConfirm: { region in confirmCrop(region) },
-                    onDismiss: { cropEditingSession = nil }
+        }
+        .background(ArkyvColor.canvas)
+        .safeAreaInset(edge: .top) { header }
+        .toolbar(.hidden, for: .navigationBar)
+        .fullScreenCover(item: $activeRoom) { room in
+            switch room {
+            case .notes:
+                NotesEditorView(
+                    item: item,
+                    onConfirm: { draft in
+                        try? repo.updateNote(item, body: draft)
+                        activeRoom = nil
+                    },
+                    onCancel: { activeRoom = nil }
+                )
+            case .source:
+                SourceEditorView(
+                    item: item,
+                    onConfirm: { draft in
+                        try? repo.updateSourceURL(item, to: draft)
+                        activeRoom = nil
+                    },
+                    onCancel: { activeRoom = nil }
+                )
+            case .tags:
+                TagsEditorView(
+                    item: item,
+                    onConfirm: { tags in
+                        try? repo.updateTags(item, to: tags)
+                        activeRoom = nil
+                    },
+                    onCancel: { activeRoom = nil }
+                )
+            case .folder:
+                FolderEditorView(
+                    item: item,
+                    modelContext: context,
+                    onConfirm: { folder in
+                        if let folder {
+                            try? repo.move(item, to: folder)
+                        } else {
+                            // "Unfiled" selected — clears every active
+                            // membership via the existing, already-public
+                            // `setMemberships(_:to:)` (its own doc
+                            // comment explicitly covers `to: []` as
+                            // "leaving the item alive and Unfiled"), and
+                            // clears the legacy single-owner field the
+                            // same direct way `move()` itself does.
+                            item.folder = nil
+                            try? repo.setMemberships(item, to: [])
+                        }
+                        activeRoom = nil
+                    },
+                    onCancel: { activeRoom = nil }
                 )
             }
-            .onAppear {
-                noteDraft = item.noteBody ?? ""
-                log("appeared for item \(item.id), noteBody length=\(item.noteBody?.count ?? 0)")
-            }
-            .onDisappear {
-                log("disappeared — flushing pending note save")
-                flushNoteSave(reason: "view-disappeared")
-                // Safety net: normally focus loss fires the onChange below
-                // first and this is already false, but a view can leave the
-                // hierarchy without a guaranteed prior blur event, and
-                // leaving this stuck true would leave RootView's bottom nav
-                // permanently hidden.
-                noteFocusSignal.isActive = false
-            }
-            .onChange(of: noteFocused) { old, new in
-                noteFocusSignal.isActive = new
-                if new && !old {
-                    log("note focus gained")
-                    withAnimation { proxy.scrollTo(Self.notesComposerID, anchor: .bottom) }
-                } else if old && !new {
-                    log("note focus lost")
-                    flushNoteSave(reason: "focus-lost")
-                }
-            }
-            .onChange(of: scenePhase) { _, phase in
-                guard phase != .active else { return }
-                log("scenePhase -> \(phase) — flushing pending note save")
-                flushNoteSave(reason: "app-background")
-            }
+        }
+        .fullScreenCover(item: $cropEditingSession) { session in
+            CropEditorView(
+                image: session.image,
+                region: session.region,
+                onConfirm: { region in confirmCrop(region) },
+                onDismiss: { cropEditingSession = nil }
+            )
+        }
+        .onAppear {
+            log("appeared for item \(item.id)")
         }
     }
 
@@ -259,19 +232,13 @@ struct ItemDetailView: View {
         .accessibilityLabel(showingFullContext ? "Show saved crop" : "Show full screenshot")
     }
 
-    private var defaultTitle: String {
-        switch item.kind {
-        case .screenshot: return "Screenshot"
-        case .image: return "Image"
-        case .note, .text: return "Note"
-        }
-    }
-
+    /// Header — Favorite lives here, next to Share, since "favorite this /
+    /// share this" are peer actions about the current item. Every icon
+    /// button gets an explicit 44×44 tap target.
     private var header: some View {
         HStack {
             Button {
-                log("back tapped — flushing pending note save")
-                flushNoteSave(reason: "navigate-back")
+                log("back tapped")
                 dismiss()
             } label: {
                 HStack(spacing: 8) {
@@ -295,181 +262,150 @@ struct ItemDetailView: View {
                 } label: {
                     Image(systemName: "crop").font(.system(size: 20))
                         .foregroundStyle(ArkyvColor.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Crop")
                 .accessibilityHint("Opens the crop editor to change what Archive shows for this item.")
             }
-            ShareLink(item: shareText) {
-                Image(systemName: "square.and.arrow.up").font(.system(size: 20))
-                    .foregroundStyle(ArkyvColor.textPrimary)
+            // Favorite + Share as one tight cluster. Each keeps its full
+            // 44×44 hit target (accessibility-safe, non-overlapping);
+            // what tightens the visual gap is *where the glyph sits
+            // inside that frame* — Favorite's pinned to its frame's
+            // trailing edge, Share's to its frame's leading edge.
+            HStack(spacing: 14) {
+                Button {
+                    try? repo.toggleFavorite(item)
+                } label: {
+                    Image(systemName: item.isFavorite ? "heart.fill" : "heart")
+                        .font(.system(size: 18))
+                        .foregroundStyle(item.isFavorite ? .red : ArkyvColor.textPrimary)
+                        .frame(width: 44, height: 44, alignment: .trailing)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel(item.isFavorite ? "Remove from favorites" : "Add to favorites")
+                ShareLink(item: shareText) {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 20))
+                        .foregroundStyle(ArkyvColor.textPrimary)
+                        .frame(width: 44, height: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Share")
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
         .background(ArkyvColor.canvas)
     }
 
     private var shareText: String {
-        item.noteBody ?? item.title ?? item.sourceURL ?? "arkyv capture"
+        item.noteBody ?? item.title ?? item.sourceURL ?? "Cherries capture"
     }
 
-    @ViewBuilder private var notesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("NOTES")
-                .font(.arkyvSection)
-                .foregroundStyle(ArkyvColor.textSecondary)
-            // A vertical-axis TextField, not TextEditor — this is the
-            // native SwiftUI control for "auto-grows with content, caps at
-            // a line count, scrolls internally past that," so there's no
-            // manual height/geometry math here at all. That matters beyond
-            // convenience: hand-rolled height calculations (subtracting
-            // screen/keyboard geometry to size a text view) are the classic
-            // source of the "Invalid frame dimension (negative or
-            // non-finite)" class of warning, and this sidesteps it
-            // entirely rather than risk reintroducing it.
-            TextField(
-                "",
-                text: $noteDraft,
-                prompt: Text("Add a note...")
-                    .font(.arkyvBody)
-                    .foregroundStyle(ArkyvColor.subdued),
-                axis: .vertical
-            )
-            .font(.arkyvBody)
-            .foregroundStyle(ArkyvColor.textPrimary)
-            .lineLimit(3...6)
-            .padding(12)
-            .focused($noteFocused)
-            .onChange(of: noteDraft) { _, _ in scheduleDebouncedSave() }
-            .toolbar { ToolbarItemGroup(placement: .keyboard) { noteAccessoryBar } }
-            .accessibilityLabel("Note")
-            .accessibilityHint("Edits the note for this item. Saves automatically as you type.")
-            .arkyvOutlinedSurface(
-                stroke: noteFocused ? ArkyvColor.accent : ArkyvColor.divider,
-                radius: ArkyvRadius.card
-            )
-            .contentShape(Rectangle())
-            .onTapGesture { noteFocused = true }
-            .id(Self.notesComposerID)
-            .animation(.easeOut(duration: 0.15), value: noteFocused)
-        }
-    }
+    // MARK: - Metadata row (Source / Tags / Folder) — pure navigation
 
-    /// The note-editing accessory: one intentional bar directly above the
-    /// keyboard (rendered via `.toolbar(placement: .keyboard)`, i.e. it's
-    /// UIKit's own input accessory view — not something built by stacking
-    /// SwiftUI content in the ordinary layout system, so it's unaffected by
-    /// whatever RootView's safe areas are doing). A single custom view here
-    /// — rather than separate `ToolbarItem`s — is what avoids the system's
-    /// default per-item capsule/bubble chrome; this renders exactly as
-    /// composed, full width, in Arkyv's own surface/border tokens.
-    private var noteAccessoryBar: some View {
-        HStack(spacing: 8) {
-            persistenceStatusLabel
-            Spacer()
-            Button {
-                log("keyboard Done tapped")
-                noteFocused = false
-            } label: {
-                HStack(spacing: 4) {
-                    Text("Done")
-                        .font(ArkyvFont.mono(.medium, size: 15))
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .foregroundStyle(ArkyvColor.accent)
+    /// Shared with the image block above: both use this exact constant
+    /// for their horizontal inset, so the metadata row's total width
+    /// always matches the artifact's own width exactly — one source of
+    /// truth rather than two independently-written insets that could
+    /// drift apart.
+    private static let contentHorizontalInset: CGFloat = 20
+
+    /// Source / Tags / Folder + Note as one compact, self-contained
+    /// control cluster — a row of three quiet chips, a smaller/lighter
+    /// "+ Add note" chip beneath. Centered as a group under the image
+    /// (not stretched across its width): this is meant to read as one
+    /// small contextual control group, not three lonely labels spanning
+    /// the room.
+    private var metadataCluster: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                metadataChip("Source", hint: "Opens the Source editor.") { activeRoom = .source }
+                metadataChip("Tags", hint: "Opens the Tags editor.") { activeRoom = .tags }
+                metadataChip("Folder", hint: "Opens the Folder editor.") { activeRoom = .folder }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Done")
-            .accessibilityHint("Dismisses the keyboard. Your note is already saving automatically.")
+            noteChip
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(ArkyvColor.surface)
-        .overlay(alignment: .top) {
-            Rectangle().fill(ArkyvColor.divider).frame(height: 1)
-        }
     }
 
-    @ViewBuilder private var persistenceStatusLabel: some View {
-        switch noteSaveState {
-        case .idle:
-            EmptyView()
-        case .saving:
-            Text("Saving…")
-                .font(.arkyvCaption)
-                .foregroundStyle(ArkyvColor.subdued)
-                .transition(.opacity)
-        case .saved:
-            Text("Saved")
-                .font(.arkyvCaption)
-                .foregroundStyle(ArkyvColor.subdued)
-                .transition(.opacity)
-        }
-    }
+    /// +1pt letterspacing applied to every Public Sans use in this
+    /// metadata/summary system.
+    private static let metadataTracking: CGFloat = 1
 
-    // MARK: Note autosave
-    //
-    // Two paths write the note: a debounced path for ordinary typing (below),
-    // and an immediate flush for anything that means "this text needs to be
-    // durable right now" — focus loss, back-navigation, the app
-    // backgrounding, or this view disappearing (all wired up in `body`).
-    // Both funnel through `flushNoteSave`, and `Repository.updateNote`
-    // no-ops on an unchanged value, so redundant flushes never double-save
-    // or show a false "Saved" state.
-
-    /// Schedules a save ~600ms out; only ever *schedules* — never assume
-    /// this is the thing that guarantees persistence, since a focus loss or
-    /// backgrounding can flush before it fires (and cancels it when they do).
-    /// Also the single place `.saving` gets set, so the accessory shows
-    /// "Saving…" for the full window a keystroke is actually pending.
-    private func scheduleDebouncedSave() {
-        noteSaveTask?.cancel()
-        log("debounced save scheduled")
-        withAnimation(.easeIn(duration: 0.15)) { noteSaveState = .saving }
-        noteSaveTask = Task {
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
-            flushNoteSave(reason: "debounce")
-        }
-    }
-
-    /// Persists the current `noteDraft` immediately. Always reads the live
-    /// `noteDraft` value (which reflects every keystroke synchronously,
-    /// independent of when the debounced save runs), so this never loses
-    /// trailing characters regardless of debounce timing.
-    private func flushNoteSave(reason: String) {
-        noteSaveTask?.cancel()
-        noteSaveTask = nil
-        let before = item.noteBody
-        do {
-            try repo.updateNote(item, body: noteDraft)
-            if item.noteBody != before {
-                log("note persistence succeeded (\(reason))")
-                showSaved()
-            } else {
-                log("flush (\(reason)): no change, skipped")
-                withAnimation(.easeOut(duration: 0.2)) { noteSaveState = .idle }
+    /// A Source/Tags/Folder navigation trigger — deliberately low
+    /// contrast (`textSecondary`, not `textPrimary`), no fill/background,
+    /// so the group reads as light, quiet text against the canvas rather
+    /// than a row of buttons competing with the image. No populated-state
+    /// cue (color/weight change, badge, count): the room itself is one
+    /// tap away and shows the real state; this chip's only job is "tap
+    /// here to enter it." Padding + `.frame(minHeight: 44)` still keep a
+    /// generous tap target even though there's no visible chrome to
+    /// anchor it to.
+    private func metadataChip(_ label: String, hint: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(ArkyvFont.publicSans(size: 15, weight: .semibold))
+                    .tracking(Self.metadataTracking)
+                    .foregroundStyle(ArkyvColor.textSecondary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(ArkyvColor.subdued)
             }
-        } catch {
-            log("note persistence FAILED (\(reason)): \(error)")
-            withAnimation(.easeOut(duration: 0.2)) { noteSaveState = .idle }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityHint(hint)
     }
 
-    /// Quiet, passive confirmation in the keyboard accessory: "Saved" for a
-    /// beat, then back to nothing. Never reached on a failed or no-op save
-    /// — see `flushNoteSave`, which only calls this on an actual successful
-    /// write.
-    private func showSaved() {
-        withAnimation(.easeIn(duration: 0.15)) { noteSaveState = .saved }
-        saveStateFadeTask?.cancel()
-        saveStateFadeTask = Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.3)) { noteSaveState = .idle }
+    // MARK: - Notes — deflated to a quiet nav affordance
+
+    private var hasNote: Bool {
+        !(item.noteBody?.isEmpty ?? true)
+    }
+
+    /// Notes is latent annotation, not permanent metadata: most Cherries
+    /// are saved for reasons the user already remembers, so an empty note
+    /// shouldn't read as a missing field — it should ask quietly. Once a
+    /// note exists, it's user-authored context and has earned a touch
+    /// more visibility, so the populated state reads slightly stronger
+    /// than the empty one — but this chip still stays smaller/lighter
+    /// than the Source/Tags/Folder trio above it; Notes should feel
+    /// secondary, not like a fourth equal sibling. Same unfilled,
+    /// no-background treatment as the trio, just smaller/quieter.
+    /// Tapping either state opens the unchanged Notes sideroom.
+    private var noteChip: some View {
+        Button { activeRoom = .notes } label: {
+            Group {
+                if hasNote {
+                    HStack(spacing: 4) {
+                        Text(item.noteBody ?? "")
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundStyle(ArkyvColor.textSecondary)
+                } else {
+                    Text("+ Add note")
+                        .foregroundStyle(ArkyvColor.subdued)
+                }
+            }
+            .font(ArkyvFont.publicSans(size: 12))
+            .tracking(Self.metadataTracking)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Note")
+        .accessibilityHint(hasNote ? "Tap to view or edit your note." : "Optional. Tap to add a note.")
     }
 
     private func log(_ message: @autoclosure () -> String) {
@@ -525,65 +461,6 @@ struct ItemDetailView: View {
         } catch {
             log("crop editor — updateCropRegion FAILED, editor stays open: \(error)")
             return false
-        }
-    }
-}
-
-/// Wrapping tag row.
-struct FlowTags: View {
-    let tags: [String]
-    var body: some View {
-        FlowLayout(spacing: 6) {
-            ForEach(tags, id: \.self) { TagPill(text: $0) }
-        }
-    }
-}
-
-/// Folder picker used by "Move to...".
-struct MoveToFolderView: View {
-    @Bindable var item: StoredItem
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var context
-    // Unfiltered `@Query` + in-memory filter, not a `#Predicate` nil-check —
-    // see ArchiveView.swift's `allFoldersRaw` doc comment: a `deletedAt ==
-    // nil` predicate combined with a `sort:` argument in the same `@Query`
-    // hits a SwiftData/Swift type-checker complexity limit.
-    @Query(sort: \StoredFolder.sortOrder)
-    private var allFoldersRaw: [StoredFolder]
-
-    private var folders: [StoredFolder] {
-        allFoldersRaw.filter { !$0.isSoftDeleted }
-    }
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(folders) { folder in
-                        Button {
-                            try? Repository(context: context).move(item, to: folder)
-                            dismiss()
-                        } label: {
-                            HStack(spacing: 10) {
-                                FolderIconView(icon: folder.icon, size: 18)
-                                Text(folder.name).font(.arkyvLabel)
-                                    .foregroundStyle(ArkyvColor.textPrimary)
-                                Spacer()
-                                if folder.id == item.folder?.id {
-                                    Image(systemName: "checkmark").foregroundStyle(ArkyvColor.textSecondary)
-                                }
-                            }
-                            .padding(16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .arkyvOutlinedSurface()
-                        }
-                    }
-                }
-                .padding(20)
-            }
-            .background(ArkyvColor.canvas)
-            .navigationTitle("Move to...")
-            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

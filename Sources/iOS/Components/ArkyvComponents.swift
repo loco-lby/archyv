@@ -147,16 +147,33 @@ struct LocalImageView: View {
     }
 }
 
-/// The `#tag` pill from the reference-detail design.
+/// The `#tag` pill from the reference-detail design. `onRemove` defaults to
+/// `nil` (read-only, every existing call site's behavior); Item Detail's
+/// editable tag list is the only caller that passes one — Public Sans
+/// (Item Detail's quieter metadata face) rather than `.arkyvCaption`
+/// (Lora) since this is currently only ever used there.
 struct TagPill: View {
     let text: String
+    var onRemove: (() -> Void)? = nil
     var body: some View {
-        Text(text.hasPrefix("#") ? text : "#\(text)")
-            .font(.arkyvCaption)
-            .foregroundStyle(ArkyvColor.textSecondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .arkyvOutlinedSurface(fill: ArkyvColor.surface, stroke: ArkyvColor.divider, radius: ArkyvRadius.pill)
+        HStack(spacing: 4) {
+            Text(text.hasPrefix("#") ? text : "#\(text)")
+                .font(ArkyvFont.publicSans(size: 12))
+                .tracking(1)
+                .foregroundStyle(ArkyvColor.textSecondary)
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(ArkyvColor.subdued)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove tag")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .arkyvOutlinedSurface(fill: ArkyvColor.surface, stroke: ArkyvColor.divider, radius: ArkyvRadius.pill)
     }
 }
 

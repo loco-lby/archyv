@@ -234,6 +234,31 @@ public struct Repository {
         try context.save()
     }
 
+    /// Updates an item's source link. Same whitespace-only-normalizes-to-nil
+    /// and no-op-when-unchanged contract as `updateNote`, for the same
+    /// reasons (multiple autosave flush triggers can call this redundantly;
+    /// "cleared the link" and "never set one" stay the same state).
+    public func updateSourceURL(_ item: StoredItem, to sourceURL: String?) throws {
+        let trimmed = sourceURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        guard normalized != item.sourceURL else { return }
+        item.sourceURL = normalized
+        touch(item)
+        try context.save()
+    }
+
+    /// Replaces an item's tag list wholesale — callers (add/remove/dedupe)
+    /// compute the full desired array and hand it here, rather than this
+    /// method offering separate add/remove entry points; that keeps the
+    /// dedupe/trim/no-op-when-unchanged policy in exactly one place. No-ops
+    /// when `tags` already matches, same reasoning as `updateNote`.
+    public func updateTags(_ item: StoredItem, to tags: [String]) throws {
+        guard tags != item.tags else { return }
+        item.tags = tags
+        touch(item)
+        try context.save()
+    }
+
     /// Updates an existing item's crop non-destructively — only the
     /// `cropX`/`cropY`/`cropWidth`/`cropHeight` metadata changes;
     /// `localFilename`/`imageData` (the original pixels) are never

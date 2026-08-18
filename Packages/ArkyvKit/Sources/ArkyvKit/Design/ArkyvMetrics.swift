@@ -27,6 +27,20 @@ public enum ArkyvSpacing {
     public static let sheetSection: CGFloat = 18
 }
 
+/// Cherries' motion principle: **fast hands, calm room**. Input responds
+/// immediately, but a visual state change should *settle* into place, not
+/// pop or celebrate — no spring/overshoot, nothing flashes, nothing feels
+/// spring-loaded or rushed. One token for now (small local state changes,
+/// e.g. a selection highlight); deliberately not a whole animation
+/// framework — add the next case only when a genuinely different kind of
+/// transition needs it.
+public enum ArkyvMotion {
+    /// Calm settle for small, local state changes — 200ms, native
+    /// ease-in-out. Communicates "understood, settling here," not
+    /// "look at this."
+    public static let settle: Animation = .easeInOut(duration: 0.2)
+}
+
 /// Brand images from the asset catalog.
 public enum ArkyvAsset {
     public static let wordmark = "ArkyvWordmark"

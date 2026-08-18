@@ -68,6 +68,7 @@ targets:
           - IntelOneMono-Bold.ttf
           - InstrumentSans.ttf
           - Lora-VariableFont_wght.ttf
+          - PublicSans-VariableFont_wght.ttf
 
   # ─────────────────────── iOS Share Extension ───────────────────────
   ArkyvShare:
@@ -94,6 +95,7 @@ targets:
           - IntelOneMono-Bold.ttf
           - InstrumentSans.ttf
           - Lora-VariableFont_wght.ttf
+          - PublicSans-VariableFont_wght.ttf
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: ShareViewController

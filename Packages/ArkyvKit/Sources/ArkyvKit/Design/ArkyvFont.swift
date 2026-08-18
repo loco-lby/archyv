@@ -56,6 +56,34 @@ public enum ArkyvFont {
         }
         return .custom(name, size: size)
     }
+
+    /// Public Sans (`Resources/Fonts/PublicSans-VariableFont_wght.ttf`,
+    /// upright only, `UIAppFonts`-registered) — the quieter utility/
+    /// metadata face, introduced for Item Detail's context system
+    /// (section labels, field text, tag/source/folder affordances) while
+    /// Lora remains the broader expressive/content/navigation face
+    /// elsewhere. Not used by any `.arkyv*` token below — deliberately
+    /// scoped to call sites that opt in, not an app-wide migration.
+    ///
+    /// Same naming shape as Lora/Space Grotesk/Commissioner: this
+    /// variable font's own default instance is Thin (wght=100), but every
+    /// named instance *does* declare an explicit PostScript name in its
+    /// fvar table — confirmed via
+    /// `UIFont.fontNames(forFamilyName: "Public Sans")` at runtime, which
+    /// resolves them under a `PublicSansRoman-<Weight>` prefix (not
+    /// `PublicSans-<Weight>`, matching neither the family name nor the
+    /// default instance's own `PublicSans-Thin` PostScript name) rather
+    /// than assumed from the file.
+    public static func publicSans(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        let name: String
+        switch weight {
+        case .bold: name = "PublicSansRoman-Bold"
+        case .semibold: name = "PublicSansRoman-SemiBold"
+        case .medium: name = "PublicSansRoman-Medium"
+        default: name = "PublicSansRoman-Regular"
+        }
+        return .custom(name, size: size)
+    }
 }
 
 // Convenience semantic styles used across screens. Same names, same sizes,
