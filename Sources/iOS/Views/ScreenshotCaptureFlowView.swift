@@ -191,7 +191,19 @@ struct ScreenshotCaptureFlowView: View {
                                 // "Saved" state is visible — nothing more
                                 // to do here.
                             } else {
+                                // LIFECYCLE / FAULT INJECTION FOUNDATION 01:
+                                // confirmSave (below) is fully synchronous
+                                // — by the time onDismiss can observe
+                                // saveSucceeded == false, fileCapture has
+                                // either never run or has already
+                                // definitively failed, never "might still
+                                // run later." Safe to reclaim the staged
+                                // file now rather than leave it as
+                                // IntegrityCheck-only-detectable litter.
                                 log("crop editor cancelled — dismissing whole capture")
+                                if let filename = draft.localFilename {
+                                    MediaStore.shared.delete(filename: filename)
+                                }
                                 capture.dismiss()
                             }
                         },
@@ -231,7 +243,15 @@ struct ScreenshotCaptureFlowView: View {
     private var fallbackCaptureLayer: some View {
         VStack(spacing: 0) {
             HStack {
-                CherriesCancelControl(action: { capture.dismiss() })
+                CherriesCancelControl(action: {
+                    // Same reasoning as the crop-canvas cancel path above
+                    // — reachable only pre-save, so reclaiming the staged
+                    // file here is safe.
+                    if let filename = draft.localFilename {
+                        MediaStore.shared.delete(filename: filename)
+                    }
+                    capture.dismiss()
+                })
                 Spacer()
                 CherriesConfirmControl(action: { _ = confirmSave(cropRegion: .fullImage) })
             }

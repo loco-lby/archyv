@@ -144,8 +144,28 @@ struct ItemDetailView: View {
                 NotesEditorView(
                     item: item,
                     onConfirm: { draft in
-                        try? repo.updateNote(item, body: draft)
-                        activeRoom = nil
+                        // LIFECYCLE / FAULT INJECTION FOUNDATION 01: only
+                        // dismiss the room on a successful save — mirrors
+                        // CropEditorView's own onConfirm-returns-Bool
+                        // pattern below. Before this fix, `try?` silently
+                        // swallowed a save failure and `activeRoom = nil`
+                        // ran unconditionally, so an injected/genuine
+                        // Repository failure closed the room exactly as
+                        // if the edit had been saved — the room's local
+                        // draft (the user's typed text) was discarded
+                        // right along with it, even though nothing was
+                        // actually persisted. Rollback already restores
+                        // `item.noteBody` to its prior persisted value
+                        // (see `Repository.save()`), so staying open here
+                        // simply means the user sees their own unsaved
+                        // edit again and can retry — never a false
+                        // "saved" outcome, never a lost edit.
+                        do {
+                            try repo.updateNote(item, body: draft)
+                            activeRoom = nil
+                        } catch {
+                            log("notes save FAILED, room stays open: \(error)")
+                        }
                     },
                     onCancel: { activeRoom = nil }
                 )
@@ -153,8 +173,12 @@ struct ItemDetailView: View {
                 SourceEditorView(
                     item: item,
                     onConfirm: { draft in
-                        try? repo.updateSourceURL(item, to: draft)
-                        activeRoom = nil
+                        do {
+                            try repo.updateSourceURL(item, to: draft)
+                            activeRoom = nil
+                        } catch {
+                            log("source save FAILED, room stays open: \(error)")
+                        }
                     },
                     onCancel: { activeRoom = nil }
                 )
@@ -162,8 +186,12 @@ struct ItemDetailView: View {
                 TagsEditorView(
                     item: item,
                     onConfirm: { tags in
-                        try? repo.updateTags(item, to: tags)
-                        activeRoom = nil
+                        do {
+                            try repo.updateTags(item, to: tags)
+                            activeRoom = nil
+                        } catch {
+                            log("tags save FAILED, room stays open: \(error)")
+                        }
                     },
                     onCancel: { activeRoom = nil }
                 )
@@ -172,20 +200,36 @@ struct ItemDetailView: View {
                     item: item,
                     modelContext: context,
                     onConfirm: { folder in
-                        if let folder {
-                            try? repo.move(item, to: folder)
-                        } else {
-                            // "Unfiled" selected — clears every active
-                            // membership via the existing, already-public
-                            // `setMemberships(_:to:)` (its own doc
-                            // comment explicitly covers `to: []` as
-                            // "leaving the item alive and Unfiled"), and
-                            // clears the legacy single-owner field the
-                            // same direct way `move()` itself does.
-                            item.folder = nil
-                            try? repo.setMemberships(item, to: [])
+                        do {
+                            if let folder {
+                                try repo.move(item, to: folder)
+                            } else {
+                                // "Unfiled" selected — clears every active
+                                // membership via the existing, already-public
+                                // `setMemberships(_:to:)` (its own doc
+                                // comment explicitly covers `to: []` as
+                                // "leaving the item alive and Unfiled"), and
+                                // clears the legacy single-owner field the
+                                // same direct way `move()` itself does.
+                                //
+                                // `item.folder = nil` mutates the object
+                                // directly, before `setMemberships` is
+                                // even called — if `setMemberships`'s own
+                                // save() then fails, its rollback reverts
+                                // EVERY pending change on this shared
+                                // context, not just the ones it made
+                                // itself, so this direct mutation is
+                                // reverted right along with it. No manual
+                                // restore needed here — see
+                                // LifecycleFaultInjectionTests for direct
+                                // proof of this.
+                                item.folder = nil
+                                try repo.setMemberships(item, to: [])
+                            }
+                            activeRoom = nil
+                        } catch {
+                            log("folder save FAILED, room stays open: \(error)")
                         }
-                        activeRoom = nil
                     },
                     onCancel: { activeRoom = nil }
                 )

@@ -259,6 +259,15 @@ private struct ShareDrawerContent: View {
     @State private var selectedFolder: StoredFolder?
     @State private var isSaving = false
     @State private var saveError = false
+    /// LIFECYCLE / FAULT INJECTION FOUNDATION 01: set right after
+    /// `confirmSave()`'s `fileCapture` call returns successfully — guards
+    /// `cancelAndCleanUp()` against deleting a file that a just-saved
+    /// `StoredItem` now depends on. `confirmSave` is fully synchronous (no
+    /// delay/Task between the save call and this flag being set), so by
+    /// the time any Cancel tap's handler can run, this flag already
+    /// accurately reflects whether the save happened — there is no window
+    /// where a save could still be "about to happen" underneath it.
+    @State private var didSave = false
     /// Storage/Disk Pressure Foundation 01: `true` once `load()` has
     /// resolved to `nil` — see `ShareViewController.extractDraft()`'s
     /// doc comment for exactly what that means (an image was shared but
@@ -322,7 +331,7 @@ private struct ShareDrawerContent: View {
     // which would be illegible in Light mode.
     private var actionBar: some View {
         HStack {
-            CherriesCancelControl(action: onCancel, color: ArkyvColor.textPrimary)
+            CherriesCancelControl(action: cancelAndCleanUp, color: ArkyvColor.textPrimary)
             Spacer()
             CherriesConfirmControl(action: confirmSave, isEnabled: isReady && !isSaving, color: ArkyvColor.textPrimary)
         }
@@ -476,11 +485,25 @@ private struct ShareDrawerContent: View {
             } else {
                 try Repository(context: context).fileCapture(draft, folders: [])
             }
+            didSave = true
             onDone()
         } catch {
             isSaving = false
             saveError = true
         }
+    }
+
+    /// LIFECYCLE / FAULT INJECTION FOUNDATION 01: reclaims the staged
+    /// MediaStore file on a genuine cancel — same reasoning as
+    /// `ScreenshotCaptureFlowView`'s cancel paths. `didSave` (set only
+    /// after a successful `fileCapture` above) is the guard that keeps
+    /// this from ever deleting a file a just-saved `StoredItem` now
+    /// depends on.
+    private func cancelAndCleanUp() {
+        if !didSave, let filename = draft?.localFilename {
+            MediaStore.shared.delete(filename: filename)
+        }
+        onCancel()
     }
 }
 

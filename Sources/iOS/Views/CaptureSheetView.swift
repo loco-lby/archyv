@@ -130,6 +130,23 @@ struct CaptureSheetView: View {
 
     private var dismissButton: some View {
         Button {
+            // LIFECYCLE / FAULT INJECTION FOUNDATION 01: a staged-but-
+            // never-confirmed photo is otherwise permanently orphaned in
+            // MediaStore the moment this drawer closes (only detectable
+            // later via IntegrityCheck, never auto-deleted) — clean it up
+            // here, at the one moment we have full certainty it's truly
+            // abandoned. Guarded by `confirmingFolderID == nil`: `confirm(_:)`
+            // schedules `capture.file(...)` after a 180ms delay, and that
+            // Task is NOT cancelled by dismissing — a folder tap followed
+            // immediately by this X would otherwise delete the exact file
+            // the pending save is about to read into the new StoredItem,
+            // turning a real, valid Cherry into one with no recoverable
+            // media at all. Skipping cleanup whenever a confirm is in
+            // flight leaves that (rare, already-existing) case exactly as
+            // safe as before this fix.
+            if confirmingFolderID == nil, let staged = stagedPhoto {
+                MediaStore.shared.delete(filename: staged.filename)
+            }
             capture.dismiss()
         } label: {
             // icon-dismiss: 32×32 tap target, X drawn at 12×12 — the circle is
