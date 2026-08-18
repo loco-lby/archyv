@@ -128,33 +128,38 @@ public final class StoredItem {
     public var kindRaw: String = ItemKind.image.rawValue
     /// Remote Storage path (set after upload).
     public var storagePath: String?
-    /// Local cached image filename in Application Support/Media. This
-    /// remains the primary local read path (`LocalImageView` et al. are
-    /// unchanged) — see `imageData` below for the separate CloudKit
-    /// transport field.
+    /// Local filename in `MediaStore`'s directory. Media Architecture
+    /// Cutover 01: `MediaStore` is now a derived, disposable LOCAL
+    /// WORKING CACHE, not a permanent original — see `imageData` below
+    /// for the actual declared authority. `localFilename` remains the
+    /// fast local read path every render tries first (unchanged); it's
+    /// simply no longer required to exist for the Cherry to be safe.
     public var localFilename: String?
 
-    /// The CloudKit sync transport for this item's image bytes.
-    /// `.externalStorage` tells SwiftData to keep large binary data out of
-    /// the main SQLite row — the same mechanism SwiftData's CloudKit
-    /// integration uses to map a field to a `CKAsset`, so this field is
-    /// what actually carries original media bytes to iCloud and back.
-    /// `localFilename` → `MediaStore` remains the primary *local* read
-    /// path (unchanged, still the fast path every render uses); this
-    /// field exists specifically so a device that never wrote that local
-    /// file (a reinstall, or a brand-new device signed into the same
-    /// account) has something to recover from — see `MediaStore.data
-    /// (for:restoringFrom:)`'s doc comment for the self-healing read that
-    /// consumes it, and the Recovery/Portability Contract below.
+    /// **The declared authoritative durable media representation** —
+    /// both locally (this is what a failed/evicted/never-written
+    /// `MediaStore` cache reconstructs FROM) and remotely (`.externalStorage`
+    /// is the same mechanism SwiftData's CloudKit integration maps to a
+    /// `CKAsset`, so this field is what actually carries original media
+    /// bytes to the user's private iCloud and back).
     ///
-    /// UPDATE (was "D1 — not wired into any read/write path yet"; that's
-    /// no longer true and this comment was stale): `Repository.fileCapture`
-    /// populates it for every new capture, `ImageBackfill` populates it in
-    /// small batches for historical items that predate that, and
-    /// `LocalImageView`/`ItemDetailView.presentCropEditor` both read it as
-    /// a fallback when the local `MediaStore` file is missing. CloudKit
-    /// sync itself is on (see `ArkyvStore.makeModelContainer`'s
-    /// `cloudKitDatabase: .private(...)`), not a future milestone.
+    /// Populated synchronously inside `Repository.fileCapture`, the exact
+    /// same call that inserts and saves the `StoredItem` — the instant
+    /// that `save()` returns successfully, this is durable (SQLite's ACID
+    /// commit) independent of CloudKit upload timing, independent of
+    /// network state, and independent of whether `MediaStore`'s file
+    /// still exists. `ImageBackfill` populates it in small batches for
+    /// historical items that predate D3A. `MediaStore.data(for:
+    /// reconstructingFrom:)` is the routine, expected read path whenever
+    /// the local cache is cold — not an emergency restore — reconstructing
+    /// a byte-identical working file from this field, coalesced across
+    /// concurrent requests by `MediaCacheCoordinator`.
+    ///
+    /// This authority model was validated empirically against real
+    /// two-device CloudKit sync (Option 2 Validation Gate 01): a
+    /// `StoredItem` never became query-visible on a receiving device
+    /// without this field already being fully present, byte-readable,
+    /// and decodable.
     @Attribute(.externalStorage) public var imageData: Data?
 
     public var ocrText: String?

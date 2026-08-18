@@ -135,7 +135,13 @@ struct CaptureSheetView: View {
             // MediaStore the moment this drawer closes (only detectable
             // later via IntegrityCheck, never auto-deleted) — clean it up
             // here, at the one moment we have full certainty it's truly
-            // abandoned. Guarded by `confirmingFolderID == nil`: `confirm(_:)`
+            // abandoned. This is still the PRE-save window (Media
+            // Architecture Cutover 01): no StoredItem/imageData exists
+            // yet for this file, so it's genuine litter, not cache — the
+            // cutover's cache-disposability contract only begins once
+            // Repository.fileCapture's save() actually succeeds, which
+            // this cancel path is specifically the case where it never
+            // does. Guarded by `confirmingFolderID == nil`: `confirm(_:)`
             // schedules `capture.file(...)` after a 180ms delay, and that
             // Task is NOT cancelled by dismissing — a folder tap followed
             // immediately by this X would otherwise delete the exact file

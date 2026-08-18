@@ -328,13 +328,13 @@ func runMediaStorageArchitectureBenchmark(itemCount: Int) {
 
     // Option 2's actual cache-miss round trip: materialize from
     // externalStorage, then write it to a working file (exactly what
-    // MediaStore.data(for:restoringFrom:) already does for D4 recovery
+    // MediaStore.data(for:reconstructingFrom:) already does for D4 recovery
     // today) — the real, total cost a cache miss would pay under Option 2,
     // not just the read half.
     let cacheMissDir = FileManager.default.temporaryDirectory.appendingPathComponent("arkyvbench-cachemiss-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: cacheMissDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: cacheMissDir) }
-    time("full cache-miss round trip (\(itemCount)x): read imageData + atomic-write working file (MediaStore.data(for:restoringFrom:) shape)") {
+    time("full cache-miss round trip (\(itemCount)x): read imageData + atomic-write working file (MediaStore.data(for:reconstructingFrom:) shape)") {
         for id in ids {
             let perItemContext = ModelContext(container)
             let descriptor = FetchDescriptor<StoredItem>(predicate: #Predicate { $0.id == id })

@@ -112,6 +112,19 @@ struct RootView: View {
                     let backgroundContext = ModelContext(container)
                     ImageBackfill.runNextBatch(context: backgroundContext)
                 }
+                // Media Architecture Cutover 01 §7/§20: one bounded
+                // eviction pass per foreground activation, off the main
+                // actor — same pattern as the ImageBackfill batch above.
+                // No daemon, no perpetual worker. Gated behind
+                // `MediaStore.evictionEnabled` (currently `false`) — see
+                // that constant's doc comment for the deliberate safety-
+                // ramp reasoning; this call site is ready to go the
+                // moment a future milestone flips it.
+                if MediaStore.evictionEnabled {
+                    Task.detached(priority: .background) {
+                        MediaStore.shared.evictIfNeeded()
+                    }
+                }
                 startSeedGateLoop()
             } else {
                 // D4: stop polling the moment we leave .active — never

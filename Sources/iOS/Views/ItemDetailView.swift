@@ -488,8 +488,14 @@ struct ItemDetailView: View {
         }
         let fallback = item.imageData
         Task {
+            // Media Architecture Cutover 01: a missing MediaStore cache
+            // file here is a routine cold miss, not a rare restore case —
+            // `data(for:reconstructingFrom:)` materializes it (through
+            // `MediaCacheCoordinator`, coalescing any concurrent request
+            // for the same filename) so a subsequent re-crop or full-
+            // resolution open finds it warm.
             let data = await Task.detached(priority: .userInitiated) {
-                MediaStore.shared.data(for: filename) ?? fallback
+                await MediaStore.shared.data(for: filename, reconstructingFrom: { fallback })
             }.value
             guard let data, let image = UIImage(data: data) else {
                 log("crop editor — failed to load image data")

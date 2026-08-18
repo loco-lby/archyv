@@ -19,33 +19,48 @@ public enum IntegrityCheck {
         public var itemCount = 0
         public var folderCount = 0
         public var membershipCount = 0
-        /// Live (non-deleted) items with a `localFilename` that has no
-        /// corresponding file in `MediaStore` — content the app would
-        /// currently render as a broken/placeholder image *right now*,
-        /// on this device. Split further below by whether `imageData`
-        /// (the CloudKit sync transport) offers a recovery path: this
-        /// count alone doesn't distinguish "will self-heal on next
-        /// access" from "no known way back."
+        /// Media Architecture Cutover 01: under the declared media
+        /// contract, `StoredItem.imageData` is the durable authority and
+        /// `MediaStore` is a derived, disposable cache — so a live
+        /// (non-deleted) item with a `localFilename` that has no
+        /// corresponding `MediaStore` file is, by itself, **HEALTHY /
+        /// CACHE MISS**: routine, expected, self-healing on next access,
+        /// and NOT counted against `isClean` (see below). Kept as a
+        /// field because it's still a useful population count (e.g. "how
+        /// cold is the cache right now"), just no longer a cleanliness
+        /// signal on its own. Split further below by whether `imageData`
+        /// actually offers a recovery path — that split is what
+        /// determines real cleanliness, not this count alone.
         public var itemsWithMissingMedia: [UUID] = []
         /// Subset of `itemsWithMissingMedia` that has `imageData`
-        /// populated — Recovery/Portability Foundation 01's category B
-        /// ("temporarily unavailable"): `MediaStore.data(for:
-        /// restoringFrom:)` (the same self-healing read `LocalImageView`
-        /// already uses) can materialize the file from this the next
-        /// time the item is opened. Nothing to do here; informational.
+        /// populated — **CACHE MISS** (imageData exists, MediaStore
+        /// absent — normal) or, if a just-attempted materialization
+        /// failed to persist, **CACHE WRITE FAILURE** (imageData still
+        /// readable, MediaStore absent because the write couldn't
+        /// complete — recoverable/non-corrupt either way, see
+        /// `MediaStore.data(for:reconstructingFrom:)`'s own product-rule
+        /// doc comment). This scan can't distinguish the two from
+        /// filesystem state alone, and doesn't need to: both render fine
+        /// from `imageData` and neither is a cleanliness failure.
         public var itemsWithRecoverableMedia: [UUID] = []
         /// Subset of `itemsWithMissingMedia` with `imageData` also `nil`
-        /// — category C ("no locally-known recovery path"). Not
-        /// necessarily "permanently" lost: `imageData` may simply not
-        /// have synced down from CloudKit yet, or (for an item that
-        /// predates D3A) `ImageBackfill` may not have reached it yet —
-        /// this scan has no way to distinguish those from genuine loss,
-        /// which is exactly why it only ever reports, never deletes.
+        /// — **MEDIA LOSS**: imageData absent and no valid authoritative
+        /// media remains. The ONLY missing-media category `isClean`
+        /// depends on. Not necessarily "permanently" lost: `imageData`
+        /// may simply not have synced down from CloudKit yet, or (for an
+        /// item that predates D3A) `ImageBackfill` may not have reached
+        /// it yet — this scan has no way to distinguish those from
+        /// genuine loss, which is exactly why it only ever reports,
+        /// never deletes.
         public var itemsWithNoKnownRecovery: [UUID] = []
         /// Files physically present in `MediaStore`'s directory that no
         /// live *or* soft-deleted `StoredItem.localFilename` references —
         /// candidates for the "abandoned capture" cleanup discussed in the
-        /// Data Integrity Contract, never auto-deleted here.
+        /// Data Integrity Contract, never auto-deleted here. Under the
+        /// cache contract (Media Architecture Cutover 01), this is purely
+        /// diagnostic, not a GC prerequisite — `MediaStore.evictIfNeeded()`
+        /// reclaims space by cache-cap/recency alone and has no need to
+        /// know whether a given file is "orphaned" in this sense.
         public var orphanedMediaFilenames: [String] = []
         /// Live items whose legacy `item.folder` doesn't match their
         /// active membership set's "first" convention (see
@@ -61,8 +76,18 @@ public enum IntegrityCheck {
         /// membership row without going through the Repository.
         public var duplicateActiveMemberships: [String] = []
 
+        /// Media Architecture Cutover 01: deliberately depends on
+        /// `itemsWithNoKnownRecovery` (real MEDIA LOSS), NOT
+        /// `itemsWithMissingMedia` — a cold `MediaStore` cache for an
+        /// item whose `imageData` is intact is HEALTHY under the
+        /// declared media contract, not a cleanliness failure. Before
+        /// this milestone, `itemsWithMissingMedia` (which included every
+        /// recoverable cache miss) counted against `isClean`; that was
+        /// correct when `MediaStore` was the sole/permanent original, and
+        /// is actively wrong now that it's a disposable cache expected to
+        /// run cold routinely.
         public var isClean: Bool {
-            itemsWithMissingMedia.isEmpty && orphanedMediaFilenames.isEmpty
+            itemsWithNoKnownRecovery.isEmpty && orphanedMediaFilenames.isEmpty
                 && folderMembershipDisagreements.isEmpty && duplicateActiveMemberships.isEmpty
         }
     }

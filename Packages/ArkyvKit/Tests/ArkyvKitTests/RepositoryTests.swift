@@ -1202,7 +1202,7 @@ final class RepositoryTests: XCTestCase {
     @MainActor
     func testIntegrityCheckDistinguishesRecoverableFromUnrecoverableMissingMedia() throws {
         // Simulates exactly the scenario `MediaStore.data(for:
-        // restoringFrom:)` exists to handle: a reinstall/new-device
+        // reconstructingFrom:)` exists to handle: a reinstall/new-device
         // StoredItem whose `imageData` synced down via CloudKit but whose
         // local MediaStore file was never written on this device.
         let repo = try makeRepo()
@@ -1214,8 +1214,12 @@ final class RepositoryTests: XCTestCase {
         let report = IntegrityCheck.run(context: repo.context)
 
         XCTAssertEqual(report.itemsWithMissingMedia, [item.id])
-        XCTAssertEqual(report.itemsWithRecoverableMedia, [item.id], "imageData is populated — MediaStore.data(for:restoringFrom:) can self-heal this on next access")
+        XCTAssertEqual(report.itemsWithRecoverableMedia, [item.id], "imageData is populated — MediaStore.data(for:reconstructingFrom:) can self-heal this on next access")
         XCTAssertEqual(report.itemsWithNoKnownRecovery, [])
+        // Media Architecture Cutover 01: a recoverable cache miss is
+        // HEALTHY under the declared media contract, not a cleanliness
+        // failure — imageData is the authority, and it's intact.
+        XCTAssertTrue(report.isClean, "a cold MediaStore cache with imageData intact must not fail cleanliness — that's the routine, expected state under the cache contract")
     }
 
     @MainActor

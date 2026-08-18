@@ -28,17 +28,18 @@ import ArkyvKit
 ///     visible crop is identical either way.
 struct LocalImageView: View {
     let filename: String?
-    /// D4: CloudKit-restore fallback source, called only when the normal
-    /// MediaStore file is missing (a fresh-device restore, where
-    /// `imageData` synced via CloudKit but the local file was never
-    /// written on this device). A closure, not a plain `Data?` — reading
-    /// `item.imageData` eagerly on every view evaluation would fault in
-    /// the (often multi-hundred-KB-to-multi-MB) externalStorage blob on
-    /// the main thread for every grid cell, every time, even though
-    /// MediaStore already has the file in the overwhelming common case.
-    /// Defaults to `{ nil }` so every existing call site (staged/draft
-    /// captures, which have no backing `StoredItem` at all) needs no
-    /// change.
+    /// Media Architecture Cutover 01: the authoritative durable source —
+    /// `item.imageData` — called whenever the `MediaStore` cache file is
+    /// missing. Under the declared media contract this is the ROUTINE
+    /// cold-cache-miss path (a fresh device, an evicted cache entry, or
+    /// simply never yet materialized), not an emergency restore. A
+    /// closure, not a plain `Data?` — reading `item.imageData` eagerly on
+    /// every view evaluation would fault in the (often multi-hundred-KB-
+    /// to-multi-MB) externalStorage blob on the main thread for every
+    /// grid cell, every time, even though the cache already has the file
+    /// in the overwhelming common case. Defaults to `{ nil }` so every
+    /// existing call site (staged/draft captures, which have no backing
+    /// `StoredItem` at all) needs no change.
     var fallbackImageData: () -> Data? = { nil }
     var contentMode: ContentMode = .fill
     /// Non-destructive crop — see `CropRegion`. Defaults to `.fullImage`,
@@ -181,21 +182,39 @@ struct LocalImageView: View {
         }.value
         if handle(primary, for: filename) { return }
 
-        // Phase 2: D4 fallback, only reached when MediaStore didn't have
-        // the file. `fallbackImageData()` reads a SwiftData model
+        // Phase 2: cold-cache-miss fallback, only reached when MediaStore
+        // didn't have the file — the routine, expected shape under the
+        // declared media contract (Media Architecture Cutover 01), not an
+        // emergency repair. `fallbackImageData()` reads a SwiftData model
         // property (`item.imageData`), so it MUST run here — on the main
         // actor, where `.task` already runs — never inside the detached
         // Task above, which SwiftData model objects aren't safe to touch
         // from. Only the resulting plain `Data` (Sendable) crosses into
-        // the next detached hop to write it to disk.
+        // the next detached hop.
         guard let restored = fallbackImageData() else {
             if filename == self.filename { didFail = true }
             return
         }
-        let materialized = await Task.detached(priority: .userInitiated) {
-            let data = MediaStore.shared.data(for: filename, restoringFrom: restored)
-            return Self.decodeAndCache(data, cacheKey: cacheKey, target: target, originalPixelSize: originalPixelSize, filename: filename)
-        }.value
+        let materialized: UIImage?
+        switch target {
+        case .thumbnail:
+            // Media Cache Foundation 01 §12 / Cutover §4: a thumbnail
+            // decodes directly from `imageData`'s bytes — no MediaStore
+            // cache file write required merely to render a small tile.
+            // A cold Archive scroll must never materialize hundreds of
+            // full originals just to show downsampled thumbnails.
+            materialized = await Task.detached(priority: .userInitiated) {
+                Self.decodeAndCache(restored, cacheKey: cacheKey, target: target, originalPixelSize: originalPixelSize, filename: filename)
+            }.value
+        case .full:
+            // Full-resolution consumers (Item Detail, Crop Editor) DO
+            // warm the cache — a real file genuinely benefits repeat
+            // full-resolution access, unlike a one-off downsampled decode.
+            materialized = await Task.detached(priority: .userInitiated) {
+                let data = await MediaStore.shared.data(for: filename, reconstructingFrom: { restored })
+                return Self.decodeAndCache(data, cacheKey: cacheKey, target: target, originalPixelSize: originalPixelSize, filename: filename)
+            }.value
+        }
         if !handle(materialized, for: filename), filename == self.filename {
             didFail = true
         }

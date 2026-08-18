@@ -5,18 +5,21 @@ import SwiftData
 import ArkyvKit
 
 #if DEBUG
-/// Media Cache Foundation 01: a scripted, on-device measurement of the
-/// specific NEW cost Option 2 (Media Storage Architecture 01) would
-/// introduce — reading `StoredItem.imageData` (a SwiftData
-/// `.externalStorage` attribute) and materializing it into a real disk
-/// cache file (`MediaCachePrototype`, from `ArkyvKit`) — compared against
-/// a warm cache hit, at real-device I/O speeds rather than the isolated
-/// macOS-CLI numbers `ArkyvBench` already produced.
+/// Media Cache Foundation 01 / Media Architecture Cutover 01: a scripted,
+/// on-device measurement of the real cache-miss/reconstruction cost —
+/// reading `StoredItem.imageData` (a SwiftData `.externalStorage`
+/// attribute) and materializing it into a real disk cache file — compared
+/// against a warm cache hit, at real-device I/O speeds rather than the
+/// isolated macOS-CLI numbers `ArkyvBench` already produced.
+///
+/// Since the cutover, this exercises the REAL production `MediaStore`
+/// type directly (the prototype it originally used has been retired) —
+/// but always via `MediaStore(isolatedRoot:)`, a scratch temp directory,
+/// never `MediaStore.shared`/the real `Media/` directory. Also touches
+/// only an isolated, in-memory `ModelContainer` (never the real on-disk/
+/// CloudKit store) — no real user data anywhere in this file.
 ///
 /// Entirely inert unless launched with `--arkyv-bench-media-cache`.
-/// Touches only an isolated, in-memory `ModelContainer` (never the real
-/// on-disk/CloudKit store) and a scratch temp directory (never the real
-/// `Media/` directory) — no real user data anywhere in this file.
 enum MediaCacheStressTest {
     /// Realistic per-item sizes, matching Storage Foundation 01's own
     /// blended estimate — deliberately capped below the ~4-6MB high end
@@ -33,7 +36,7 @@ enum MediaCacheStressTest {
         let ids = await populate(container: container, itemCount: itemCount)
 
         let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent("media-cache-stress-\(UUID().uuidString)")
-        let cache = MediaCachePrototype(root: cacheRoot, capacityBytes: 500_000_000)
+        let cache = MediaStore(isolatedRoot: cacheRoot)
         defer { try? FileManager.default.removeItem(at: cacheRoot) }
 
         // Mirrors LocalImageView's own masonry thumbnail target.
@@ -98,7 +101,7 @@ enum MediaCacheStressTest {
         defer { try? FileManager.default.removeItem(at: cacheRoot) }
         // Confirm the "device" genuinely starts with nothing.
         let startedEmpty = !FileManager.default.fileExists(atPath: cacheRoot.path)
-        let cache = MediaCachePrototype(root: cacheRoot, capacityBytes: 500_000_000)
+        let cache = MediaStore(isolatedRoot: cacheRoot)
 
         var allOK = true
         for id in ids {
@@ -107,7 +110,7 @@ enum MediaCacheStressTest {
                 let descriptor = FetchDescriptor<StoredItem>(predicate: #Predicate { $0.id == id })
                 guard let item = try? context.fetch(descriptor).first, let imageData = item.imageData,
                       let filename = item.localFilename else { return (false, false) }
-                guard let materialized = cache.data(for: filename, reconstructingFrom: imageData) else { return (false, false) }
+                guard let materialized = await cache.data(for: filename, reconstructingFrom: { imageData }) else { return (false, false) }
                 let decoded = ImageDecoding.decode(materialized, maxPixelSize: nil) != nil
                 return (decoded, materialized == imageData)
             }.value
@@ -134,7 +137,7 @@ enum MediaCacheStressTest {
         let id = ids[0]
         let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent("media-cache-offline-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: cacheRoot) }
-        let cache = MediaCachePrototype(root: cacheRoot, capacityBytes: 500_000_000)
+        let cache = MediaStore(isolatedRoot: cacheRoot)
 
         let result: (firstReadOK: Bool, secondReadAfterDeleteOK: Bool, byteIdentical: Bool) = await Task.detached(priority: .userInitiated) {
             let context = ModelContext(container)
@@ -143,7 +146,7 @@ enum MediaCacheStressTest {
                 return (false, false, false)
             }
             // Step 1: imageData is readable and yields a working cache file.
-            guard let first = cache.data(for: filename, reconstructingFrom: imageData) else { return (false, false, false) }
+            guard let first = await cache.data(for: filename, reconstructingFrom: { imageData }) else { return (false, false, false) }
             // Step 2: delete ONLY the derived cache representation — never
             // touches imageData/the model at all.
             try? FileManager.default.removeItem(at: cache.url(for: filename))
@@ -151,7 +154,7 @@ enum MediaCacheStressTest {
             // again from imageData alone — the whole point of "imageData
             // is genuinely sufficient as local durable authority, even
             // before/without any CloudKit involvement."
-            guard let second = cache.data(for: filename, reconstructingFrom: imageData) else { return (true, false, false) }
+            guard let second = await cache.data(for: filename, reconstructingFrom: { imageData }) else { return (true, false, false) }
             return (true, true, first == second && second == imageData)
         }.value
         print("[MediaCacheStressTest] E. imageData readable: \(result.firstReadOK), survives cache-file deletion + reconstructs: \(result.secondReadAfterDeleteOK), byte-identical throughout: \(result.byteIdentical)")
@@ -214,7 +217,7 @@ enum MediaCacheStressTest {
     /// cache for its file (which reconstructs from `imageData` on a
     /// miss), then decode. Off the main actor, matching how
     /// `LocalImageView.load()` already does its own decode work.
-    private static func measureBatch(label: String, ids: [UUID], container: ModelContainer, cache: MediaCachePrototype, maxPixelSize: CGFloat?) async {
+    private static func measureBatch(label: String, ids: [UUID], container: ModelContainer, cache: MediaStore, maxPixelSize: CGFloat?) async {
         let start = Date()
         var decodedCount = 0
         for id in ids {
@@ -227,36 +230,35 @@ enum MediaCacheStressTest {
         print("[MediaCacheStressTest] \(label): \(decodedCount)/\(ids.count) decoded, \(String(format: "%.1f", elapsedMS))ms total (\(String(format: "%.2f", perItem))ms/item)")
     }
 
-    private static func measureSingle(label: String, id: UUID, container: ModelContainer, cache: MediaCachePrototype, maxPixelSize: CGFloat?) async {
+    private static func measureSingle(label: String, id: UUID, container: ModelContainer, cache: MediaStore, maxPixelSize: CGFloat?) async {
         let start = Date()
         let decoded = await loadAndDecode(id: id, container: container, cache: cache, maxPixelSize: maxPixelSize)
         let elapsedMS = Date().timeIntervalSince(start) * 1000
         print("[MediaCacheStressTest] \(label): \(decoded != nil ? "OK" : "FAILED") in \(String(format: "%.2f", elapsedMS))ms")
     }
 
-    private static func loadAndDecode(id: UUID, container: ModelContainer, cache: MediaCachePrototype, maxPixelSize: CGFloat?) async -> UIImage? {
+    private static func loadAndDecode(id: UUID, container: ModelContainer, cache: MediaStore, maxPixelSize: CGFloat?) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
             let context = ModelContext(container)
             let descriptor = FetchDescriptor<StoredItem>(predicate: #Predicate { $0.id == id })
             guard let item = try? context.fetch(descriptor).first, let imageData = item.imageData else { return nil }
             let filename = item.localFilename ?? "\(id).jpg"
-            guard let bytes = cache.data(for: filename, reconstructingFrom: imageData) else { return nil }
+            guard let bytes = await cache.data(for: filename, reconstructingFrom: { imageData }) else { return nil }
             return ImageDecoding.decode(bytes, maxPixelSize: maxPixelSize)
         }.value
     }
 
     /// Section 7/Crop Editor fidelity: the materialized cache file must be
     /// byte-for-byte identical to the durable `imageData` source it came
-    /// from — the same guarantee `MediaStore.data(for:restoringFrom:)`
-    /// already provides today (Recovery/Portability Foundation 01),
-    /// re-confirmed here for the prototype cache specifically.
-    private static func verifyByteIdentity(id: UUID, container: ModelContainer, cache: MediaCachePrototype) async {
+    /// from — the same guarantee `MediaStore.data(for:reconstructingFrom:)`
+    /// provides in production, re-confirmed here.
+    private static func verifyByteIdentity(id: UUID, container: ModelContainer, cache: MediaStore) async {
         let result: Bool = await Task.detached(priority: .userInitiated) {
             let context = ModelContext(container)
             let descriptor = FetchDescriptor<StoredItem>(predicate: #Predicate { $0.id == id })
             guard let item = try? context.fetch(descriptor).first, let imageData = item.imageData,
                   let filename = item.localFilename else { return false }
-            guard let materialized = cache.data(for: filename, reconstructingFrom: imageData) else { return false }
+            guard let materialized = await cache.data(for: filename, reconstructingFrom: { imageData }) else { return false }
             return materialized == imageData
         }.value
         print("[MediaCacheStressTest] C. Crop Editor fidelity check: materialized cache file byte-identical to imageData — \(result ? "CONFIRMED" : "FAILED")")
