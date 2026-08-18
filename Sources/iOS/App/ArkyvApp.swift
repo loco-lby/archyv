@@ -34,6 +34,27 @@ struct ArkyvApp: App {
             RootView()
                 .environment(capture)
                 .tint(ArkyvColor.textPrimary)
+                .task {
+                    // Scale Foundation 01: entirely inert unless explicitly
+                    // launched with this argument (`devicectl device
+                    // process launch ... com.expatinsurance.arkyv
+                    // --arkyv-bench-image-cache`) — never triggered by
+                    // ordinary development or use. Deliberately NOT run
+                    // from `init()`: a long synchronous stress loop before
+                    // the app ever renders its first frame trips iOS's
+                    // launch watchdog (confirmed — an earlier version of
+                    // this hook did exactly that and got killed by signal
+                    // 9 well under any real memory pressure). Runs after
+                    // the real UI is already up, off the main thread, so
+                    // it can't block launch or normal use either way.
+                    #if DEBUG
+                    if CommandLine.arguments.contains("--arkyv-bench-image-cache") {
+                        Task.detached(priority: .userInitiated) {
+                            await ImageCacheStressTest.run()
+                        }
+                    }
+                    #endif
+                }
         }
         .modelContainer(modelContainer)
     }
