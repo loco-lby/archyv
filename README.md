@@ -226,6 +226,66 @@ ImageDecodeCache.swift`) rather than a bare `UIImage(data:)`:
   `ImageDecodeCache` instead, and only request `.thumbnail` for genuinely
   small, fixed-size renders.
 
+## Data Integrity Contract (Foundation 01)
+
+From a full capture→persistence→CloudKit lifecycle audit. Practical rules
+for anyone touching `Repository`/capture flows, not a full architecture
+doc.
+
+- **Media is written before the `StoredItem` that references it, always.**
+  Every capture surface (`ScreenshotDetector`, the Share Extension,
+  `CaptureSheetView`'s photo picker) writes to `MediaStore` first and only
+  then builds a `CaptureDraft`/calls `Repository.fileCapture`. No code path
+  creates a `StoredItem.localFilename` reference before the file exists.
+- **Original media is never rewritten or deleted out from under a live
+  item.** Confirmed by inspection: `MediaStore.shared.delete(filename:)`
+  has exactly one call site in the whole app (`CaptureSheetView`'s "remove
+  staged photo" button, on content that was never filed). Cropping,
+  editing metadata, moving between folders — none of them touch the
+  original bytes.
+- **Every `Repository` write ends in `save()` (the private helper), never
+  a bare `context.save()`.** `save()` rolls the context back on failure,
+  so a caller that catches an error and retries (every capture surface
+  does) can't accidentally resurrect a failed attempt's still-pending
+  objects alongside the retry's. If you add a new mutating method, route
+  its write through `save()`, not `context.save()` directly.
+- **`fileCapture` has no idempotency key.** Calling it twice for the same
+  `CaptureDraft` creates two distinct `StoredItem`s — there's nothing on
+  `StoredItem` tying it back to `draft.id`. Known, not fixed (would need a
+  schema change); callers must not blindly retry `fileCapture` itself
+  after a save whose outcome is genuinely unknown (as opposed to a
+  caught, definite failure, which rollback already makes safe to retry).
+- **`setMemberships` is the single authoritative write boundary for
+  folder/membership consistency** — it's the one place that reconciles
+  both the membership rows *and* legacy `item.folder` (to
+  `folders.first`/`nil`) in the same `save()`. `move(_:to:)` is just
+  `setMemberships(item, to: [folder])`. Don't hand-roll a second place
+  that mutates `item.folder`; route through `setMemberships` (or `move`)
+  so the two representations can't drift apart again.
+- **Soft-delete cascades to memberships, not to the other side.**
+  `softDelete(folder:)` deactivates its own membership rows; `softDelete
+  (item:)` now does the same for its own rows (fixed this pass — it used
+  to leave them active). Neither ever touches `StoredItem` fields/media on
+  the *other* side of a membership — deleting a folder never deletes its
+  items, and vice versa isn't a concept that exists.
+- **Media staged for an abandoned capture (explicit cancel, or a dropped
+  add-mode sheet) is not currently cleaned up**, except when
+  `CaptureCoordinator.file(_:into:)` itself catches a `fileCapture`
+  failure (fixed this pass — it now deletes the file it just staged
+  before dismissing). Cancel paths in `ScreenshotCaptureFlowView`/the
+  Share Extension leave their staged file on disk. This is a known,
+  accepted gap (disk hygiene, not data loss) — see `IntegrityCheck` below
+  for how to *observe* it; nothing auto-deletes on a mere "looks orphaned"
+  signal.
+- **`IntegrityCheck.run(context:)`** (`Store/IntegrityCheck.swift`,
+  `#if DEBUG` only, not wired into any launch path) is a read-only scan
+  for missing media, orphaned media files, folder/membership disagreement,
+  and duplicate active memberships. It only ever reports counts/IDs —
+  never mutates or deletes. Call it manually (Xcode console / future
+  debug menu) when investigating a data-integrity question; don't wire it
+  into app launch without first checking its I/O cost against a
+  realistically large archive.
+
 ## Build
 
 Requires Xcode 16+ and [XcodeGen](https://github.com/yonsson/XcodeGen) (`brew install xcodegen`).
