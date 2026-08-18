@@ -53,10 +53,25 @@ a view — use the tokens.
   is a considered checkpoint, not a locked-in permanent brand decision — expect it
   to keep evolving with real-world use. The other auditioned font files stay in
   `Resources/Fonts/` unregistered/unreferenced until a final typeface is chosen
-  and the rest are cleaned up.
+  and the rest are cleaned up. Public Sans (`ArkyvFont.publicSans`) was added
+  additively as a second, quieter face for Item Detail's utility/metadata layer
+  (Source/Tags/Folder/Notes chips) — it is scoped to that context UI, not a
+  replacement for Lora elsewhere in the app.
 - **Radii:** buttons `2px` (sharp), cards `12px`, pills `4px`, sheet `28–32px`;
   Archive masonry tiles are a deliberate exception at `0pt` (see One Archive v0.1
   below).
+- **Motion:** one principle governs all Cherries motion — **fast hands, calm
+  room**. Input responds immediately, but a visual state change should *settle*,
+  not *pop*: no bounce/overshoot, no flash, nothing celebratory for ordinary
+  actions, nothing that rushes the user past a choice they may still be
+  considering. Motion exists to reassure ("your input was understood"), preserve
+  continuity, and let a state settle into place — never to demand attention. For
+  small, local state changes, ~180–240ms of native ease-in-out is a useful
+  starting point (`ArkyvMotion.settle` in `ArkyvMetrics.swift`), tuned by feel
+  rather than treated as a rigid token — add the next `ArkyvMotion` case only
+  when a genuinely different kind of transition needs one. Shorthand: *"You're in
+  a library, not a sports bar."* First approved real-world example: Item Detail's
+  Folder room selection animation.
 - Lucide icons in the design map to **SF Symbols**; the Cherries wordmark and
   Home/Plus/Menu dock icons are bundled as template-rendered vector assets
   (`CherriesWordmark`, `CherriesIconHome`/`CherriesIconAdd`/`CherriesIconMenu`).
@@ -101,6 +116,51 @@ reasoning behind it, for future work to build on rather than re-litigate:
   extended real-world use rather than speculative visual tweaking. Manual
   drag/reordering of Archive items is an intentional product idea worth
   revisiting later, but is not currently implemented.
+
+## Item Detail v0.1
+
+Item Detail (`ItemDetailView`, its four "sideroom" editors in
+`ItemDetailEditors.swift`, and the shared `ContextEditorChrome`) reached a
+physically-approved checkpoint. The product/design reasoning behind it:
+
+- **Image/artifact first, a view not a form:** Item Detail is primarily a
+  summary of a Cherry's context, not an editing surface — the artifact stays
+  visually dominant and nothing on the main room is inline-editable anymore.
+- **Source / Tags / Folder are the three primary retrieval/context
+  siblings** — one compact, centered control cluster beneath the image, quiet
+  text + chevron, no boxes/backgrounds. Notes is optional annotation and
+  intentionally secondary: a small "+ Add note" / single-line-preview entry
+  point beneath the trio, never a fourth equal sibling, never a large inline
+  form on this screen.
+- **Editing happens in focused "siderooms," not inline:** tapping Source,
+  Tags, Folder, or Notes opens a dedicated `fullScreenCover` room built on the
+  shared X / title / ✓ `ContextEditorChrome`. Each room owns a local draft — X
+  genuinely cancels (nothing persists), the large ✓ is the only persistence
+  boundary, and confirming always returns to the same Item Detail item. This
+  is the "tap a piece of context → dedicated room → finish/cancel → return"
+  model — deliberately not the earlier keyboard-adjacent inline-editing
+  experiment (custom keyboard toolbar/Done accessory, relocated-field focus
+  state), which was fully removed rather than kept as a fallback.
+- **Empty context asks quietly; existing context may earn more visibility**
+  — e.g. Notes' quiet empty "+ Add note" vs. its slightly stronger populated
+  single-line-preview treatment.
+- **Folder room** matches One Archive's own visual language (bold/dimmed
+  contrast, no bounding cards, no per-folder decorative glyph system) and
+  reuses Archive's own active-state dot as the local-selection indicator.
+  Folder reassignment stays a local draft until the room's ✓; "+ New Folder"
+  is a secondary, bottom-of-list creation action and currently still
+  persists the folder immediately on creation (only the *assignment* is
+  staged) — a known, deliberate simplification, not yet worth the
+  complexity of deferring creation itself.
+- **Crop/full-context rendering stays protected** — `CropRegion` math and
+  `CropEditorView`'s gesture engine were deliberately untouched through this
+  entire pass and shouldn't be rewritten casually alongside product UI work.
+- **What's next:** Source/Tags/Folder/Notes rooms can keep growing
+  individually without that complexity leaking back into the main Item
+  Detail surface. Known follow-ups, not part of this checkpoint: Share
+  currently shares text rather than the saved image; `NoteFocusSignal` (now
+  unused, since no field lives inline on Item Detail anymore) is flagged for
+  future removal alongside broader RootView/App cleanup.
 
 ## Build
 
