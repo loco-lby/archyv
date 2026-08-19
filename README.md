@@ -1084,9 +1084,9 @@ schema, sync, or UI changes):
 **Remaining risks (no CRITICAL/HIGH found):**
 - MEDIUM — tags can silently lose a concurrent addition with zero
   indication to the user.
-- MEDIUM — concurrent folder moves can leave an item in 2+ folders at
-  once from an unintended race (now has diagnostic visibility via
-  `itemsWithMultipleActiveFolders`; no auto-resolution).
+- ~~MEDIUM — concurrent folder moves can leave an item in 2+ folders at
+  once from an unintended race~~ — **resolved, see Single-Folder Invariant
+  Foundation 01 below.**
 - MEDIUM — CloudKit sync status is entirely invisible to the user.
 - LOW — convergence latency varies significantly by field/payload size
   and by how quickly the app goes quiet after a write.
@@ -1095,3 +1095,64 @@ None of these are custom-sync/CRDT-shaped problems — they're either
 already-detectable via `IntegrityCheck`, or product/UX questions (tag
 merge UX, multi-folder surfacing, sync status visibility) for a future,
 separately-scoped milestone.
+
+## Single-Folder Invariant Contract (Foundation 01)
+
+**GREEN.** The product contract — a `StoredItem` has zero active folder
+memberships (Unfiled) or exactly one, never more — is now enforced and
+deterministic across devices, confirmed via real two-device testing. No
+custom sync engine, CRDT, or version vector was built.
+
+**Canonical representation:** `StoredFolderMembership` is the canonical
+relationship; `StoredItem.folder` is a compatibility mirror that must
+agree with it, never an independent source of truth. `Repository.setMemberships`
+is the sole local write boundary and already reconciles `item.folder` to
+the membership set on every local write.
+
+**Root cause of duplicate memberships:** membership rows are independent
+CKRecords. Two devices concurrently moving the same item to two different
+folders each insert their own row; CloudKit has no reason to conflict two
+inserts of different records, so both sync down active everywhere.
+`setMemberships`'s exclusivity guarantee only covers rows a device
+locally knows about at call time — it cannot retroactively deactivate a
+row a different device inserts concurrently.
+
+**Reconciliation rule (`FolderMembershipReconciler`):** when an item has
+2+ active memberships, the most-recently-created one wins (tie-broken by
+membership UUID — never observed in practice, no timestamp ties in the
+real archive's conflict set). Every other active membership is
+deactivated and `item.folder` is mirrored to the winner. Deterministic
+regardless of fetch/`Set`/`Dictionary` iteration order (confirmed via a
+25-iteration shuffled-input test) — the exact class of non-determinism
+found and fixed in `IntegrityCheck` last milestone. Idempotent: a
+no-op (no write, no `save()`) against already-clean state, confirmed on
+both synthetic data and the real archive (a second `reconcileAll` pass
+produced zero corrections).
+
+**Trigger:** one bounded pass per foreground activation in `RootView`,
+alongside the existing `ImageBackfill`/cache-eviction passes — same
+pattern, no daemon, no CloudKit polling.
+
+**Real archive repair:** 11 pre-existing real items (predating this
+milestone's testing by 9 days — this exact race had already happened
+during ordinary two-device use) were previewed read-only, reviewed, and
+approved before any mutation. 10 of 11 required only deactivating a
+stale hidden membership with **zero visible folder change** — Cherries
+was already displaying the correct folder; only the invisible duplicate
+underneath was cleaned up. One item's displayed folder changed
+(Deadwest → Recipes), correctly reflecting its genuinely most-recent
+placement. Confirmed via `IntegrityCheck`: `itemsWithMultipleActiveFolders`
+went from 11 to 0, matching on both devices.
+
+**Known, separately-scoped limitation:** `folderMembershipDisagreements`
+did not reach 0 (6 remain, deterministic count on both devices) — but
+this is a *different* bug class than the one this milestone fixed. All 6
+are items with 0 or 1 active membership where `item.folder` is stale:
+either `Repository.removeMembership()` (which never touches `item.folder`)
+or `Repository.softDelete(folder)` (which deactivates memberships but
+never clears member items' `item.folder`) left a legacy pointer behind.
+`FolderMembershipReconciler` only fires on 2+ active memberships by
+design — it doesn't touch this population. The item stays fully
+retrievable via the canonical membership-based read path in every case;
+this is a legacy-mirror staleness issue, not data loss or unreachability.
+Left unfixed pending a separate, explicitly-scoped decision.
