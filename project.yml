@@ -88,7 +88,7 @@ targets:
     info:
       path: Sources/Share/Info.plist
       properties:
-        CFBundleDisplayName: Save to arkyv
+        CFBundleDisplayName: Cherries
         UIAppFonts:
           - IntelOneMono-Regular.ttf
           - IntelOneMono-Medium.ttf
