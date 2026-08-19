@@ -1226,3 +1226,39 @@ code changes were required.
 
 Next: a real TestFlight/production-environment validation milestone,
 once the CloudKit production schema deployment above is confirmed.
+
+## Pre-Launch Migration Ferry (Foundation 01)
+
+DEBUG/internal-only migration tooling — not a shipped feature, no UI —
+proving the technical-identity cutover plan's chosen path (export → clean
+new identity → reimport) is safe before it's ever attempted for real.
+
+- **`CherryManifest`** (extended from its earlier Recovery/Portability
+  Foundation 01 export-only form) now carries `imageData` directly and
+  provides `importArchive`, which reconstructs folders → items → the
+  canonical single-folder membership through the same field-level rules
+  `Repository`/`FolderMembershipReconciler` use — not by copying the
+  SQLite database. **Fail-closed**: refuses to import into any non-empty
+  destination (no merge/idempotency engine — a deliberate scope decision
+  for a one-time internal tool). A single atomic `save()` means a failed
+  import leaves the destination exactly as empty as it started.
+- **`MigrationFerry`** is the on-device harness: exports the real archive
+  (read-only), writes the artifact to the app's own Documents directory
+  (never the App Group — trivially distinguishable from real archive
+  storage), reads it back from disk, imports into a fresh isolated
+  in-memory container (never the real App Group or any CloudKit
+  container), and runs a full round-trip comparison plus `IntegrityCheck`.
+- **Proven against the real archive**: 84 items (83 active, 1
+  soft-deleted), 12 folders, 75 memberships, ~73.6MB of authoritative
+  `imageData` — exported in 0.27s to a 101,098,627-byte JSON artifact
+  (SHA256 `1e1bef03…0ce441ed`, independently re-verified off-device),
+  imported in 0.04s. Round-trip comparison: **zero mismatches** across
+  imageData byte-identity, crop regions, and all metadata/membership
+  fields, for every item. `itemsWithMultipleActiveFolders`,
+  `folderMembershipDisagreements`, `duplicateActiveMemberships`, and
+  `itemsWithNoKnownRecovery` all zero in the reconstructed isolated
+  archive. Real archive confirmed unchanged afterward (item/folder counts
+  identical before and after).
+- **GREEN** — the current real archive can be exported and reconstructed
+  byte-for-byte into a fresh isolated store. Safe to proceed to the
+  technical-identity cutover this ferry exists to prepare for.
