@@ -1222,6 +1222,72 @@ final class RepositoryTests: XCTestCase {
         XCTAssertTrue(report.isClean, "a cold MediaStore cache with imageData intact must not fail cleanliness — that's the routine, expected state under the cache contract")
     }
 
+    // MARK: - Media Cache Eviction Activation 01
+
+    /// Section 12: after genuinely evicting a cache file (not simulating —
+    /// this actually deletes the real `MediaStore` file, then reconstructs
+    /// it back through the real production path), `IntegrityCheck` must
+    /// report HEALTHY/CACHE MISS (recoverable, isClean), never MEDIA LOSS.
+    @MainActor
+    func testIntegrityCheckStaysCleanAfterARealEvictionAndReconstructsCorrectly() async throws {
+        let repo = try makeRepo()
+        let bytes = Data("real cache-backed bytes".utf8)
+        let filename = try MediaStore.shared.save(data: bytes)
+        defer { MediaStore.shared.delete(filename: filename) }
+        let item = try repo.fileCapture(CaptureDraft(kind: .screenshot, localFilename: filename))
+        XCTAssertEqual(item.imageData, bytes, "fileCapture must have populated imageData from the real MediaStore file")
+
+        // Genuinely evict — delete the real cache file, exactly what
+        // `MediaStore.evictIfNeeded()` would do.
+        MediaStore.shared.delete(filename: filename)
+        XCTAssertNil(MediaStore.shared.data(for: filename), "sanity: the file is genuinely gone")
+
+        let reportAfterEviction = IntegrityCheck.run(context: repo.context)
+        XCTAssertEqual(reportAfterEviction.itemsWithRecoverableMedia, [item.id])
+        XCTAssertEqual(reportAfterEviction.itemsWithNoKnownRecovery, [], "imageData is still intact — this is a cache miss, not media loss")
+        XCTAssertTrue(reportAfterEviction.isClean)
+
+        // Reconstruct through the real production path and confirm byte
+        // identity. `imageData` extracted to a plain local first — the
+        // same main-actor-then-cross-into-Sendable-closure pattern
+        // production call sites (e.g. ItemDetailView) already use, since
+        // `StoredItem` itself isn't Sendable.
+        let capturedImageData = item.imageData
+        let reconstructed = await MediaStore.shared.data(for: filename, reconstructingFrom: { capturedImageData })
+        XCTAssertEqual(reconstructed, bytes)
+
+        let reportAfterReconstruction = IntegrityCheck.run(context: repo.context)
+        XCTAssertTrue(reportAfterReconstruction.isClean)
+        XCTAssertEqual(reportAfterReconstruction.itemsWithMissingMedia, [], "the cache is warm again")
+    }
+
+    /// Same shape, at a small scale representative of "many evicted" —
+    /// every item independently stays HEALTHY, and an entire isolated
+    /// cache being cleared at once doesn't change that.
+    @MainActor
+    func testIntegrityCheckStaysCleanWhenManyItemsCacheFilesAreEvictedAtOnce() throws {
+        let repo = try makeRepo()
+        var items: [(item: StoredItem, filename: String, bytes: Data)] = []
+        for i in 0..<8 {
+            let bytes = Data("bytes-\(i)".utf8)
+            let filename = try MediaStore.shared.save(data: bytes)
+            let item = try repo.fileCapture(CaptureDraft(kind: .screenshot, localFilename: filename))
+            items.append((item, filename, bytes))
+        }
+        defer { items.forEach { MediaStore.shared.delete(filename: $0.filename) } }
+
+        // Evict the entire isolated set at once.
+        for (_, filename, _) in items {
+            MediaStore.shared.delete(filename: filename)
+        }
+
+        let report = IntegrityCheck.run(context: repo.context)
+        let evictedIDs = Set(items.map(\.item.id))
+        XCTAssertEqual(Set(report.itemsWithRecoverableMedia), evictedIDs)
+        XCTAssertTrue(report.itemsWithNoKnownRecovery.isEmpty)
+        XCTAssertTrue(report.isClean, "evicting every cache file at once must still report clean — imageData is intact for all of them")
+    }
+
     @MainActor
     func testCherryManifestExportRoundTripsThroughJSONWithoutLoss() throws {
         let repo = try makeRepo()

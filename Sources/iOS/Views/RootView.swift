@@ -112,17 +112,39 @@ struct RootView: View {
                     let backgroundContext = ModelContext(container)
                     ImageBackfill.runNextBatch(context: backgroundContext)
                 }
-                // Media Architecture Cutover 01 §7/§20: one bounded
-                // eviction pass per foreground activation, off the main
-                // actor — same pattern as the ImageBackfill batch above.
-                // No daemon, no perpetual worker. Gated behind
-                // `MediaStore.evictionEnabled` (currently `false`) — see
-                // that constant's doc comment for the deliberate safety-
-                // ramp reasoning; this call site is ready to go the
-                // moment a future milestone flips it.
+                // Media Architecture Cutover 01 §7/§20, Media Cache
+                // Eviction Activation 01: one bounded eviction pass per
+                // foreground activation, off the main actor — same
+                // pattern as the ImageBackfill batch above. No daemon, no
+                // perpetual worker. Gated behind `MediaStore.evictionEnabled`
+                // — see that constant's doc comment for the safety-ramp
+                // reasoning.
+                //
+                // This is the ONLY production eviction trigger — the
+                // post-write trigger `reconstruct(filename:from:)` used to
+                // also have was removed, because only THIS call site has
+                // the SwiftData access needed to compute
+                // `filenamesLackingImageData()`, the protected set that
+                // structurally prevents evicting a historical item's sole
+                // remaining local copy. Fails CLOSED: if that query itself
+                // throws, this pass skips eviction entirely rather than
+                // risk evicting with an incomplete protected set — the cap
+                // is a goal, not a guarantee, and a delayed trim is always
+                // safe where an under-protected one is not.
                 if MediaStore.evictionEnabled {
+                    let container = modelContext.container
                     Task.detached(priority: .background) {
-                        MediaStore.shared.evictIfNeeded()
+                        let backgroundContext = ModelContext(container)
+                        guard let protectedFilenames = try? Repository(context: backgroundContext).filenamesLackingImageData() else {
+                            #if DEBUG
+                            print("[RootView] eviction pass skipped this activation — filenamesLackingImageData() query failed, failing closed")
+                            #endif
+                            return
+                        }
+                        let result = MediaStore.shared.evictIfNeeded(protecting: protectedFilenames)
+                        #if DEBUG
+                        print("[RootView] eviction pass: scanned=\(result.scannedCount) evicted=\(result.evictedCount) protected=\(protectedFilenames.count)")
+                        #endif
                     }
                 }
                 startSeedGateLoop()

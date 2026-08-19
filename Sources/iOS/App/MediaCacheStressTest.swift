@@ -78,8 +78,74 @@ enum MediaCacheStressTest {
         await runReinstallSimulation()
         await runOfflineLocalAuthorityCheck()
 
+        // F/G/H/I — Media Cache Eviction Activation 01.
+        await runEvictionPerformanceAndAccountingCheck()
+
         print("[MediaCacheStressTest] done. Exiting.")
         exit(0)
+    }
+
+    // MARK: - F/G/H/I. Eviction performance + storage accounting (Eviction Activation 01 §2/§5/§14/§15)
+
+    /// A real-device measurement of the eviction pass itself — scan cost
+    /// under and over cap, trim cost, and first-access-after-eviction vs.
+    /// warm-access cost. Uses a deliberately SMALL test cap (not the real
+    /// 1GB) per §2's own instruction — the point is exercising the exact
+    /// production algorithm's behavior/cost shape, not manufacturing
+    /// gigabytes of on-device test data.
+    private static func runEvictionPerformanceAndAccountingCheck() async {
+        print("[MediaCacheStressTest] F. Eviction performance + storage accounting...")
+        let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent("media-cache-eviction-\(UUID().uuidString)")
+        let cache = MediaStore(isolatedRoot: cacheRoot)
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+
+        let testCap: Int64 = 20 * 1024 * 1024 // 20MB, per §2
+        let fileSize = 200 * 1024 // 200KB/file — realistic screenshot-ish size
+        let underCapCount = 50 // 50 * 200KB = 10MB, comfortably under 20MB
+        // ~1,500 files — representative of the real 1GB production cap's
+        // own realistic file-count ceiling (~640-1,300 files at a
+        // ~800KB-1.6MB blended average, Media Cache Foundation 01 §6) —
+        // this specifically stresses enumeration/sorting cost at a
+        // genuinely large, not merely moderate, file count.
+        let overCapCount = 1_500
+
+        // F1. Scan of an UNDER-cap cache — should be a fast no-op.
+        for i in 0..<underCapCount {
+            let name = "under-\(i)-\(UUID().uuidString).jpg"
+            try? Data(repeating: UInt8(i % 256), count: fileSize).write(to: cacheRoot.appendingPathComponent(name))
+        }
+        let underScanStart = Date()
+        let (underEvicted, underScanned) = cache.evictIfNeeded(capacityBytes: testCap, gracePeriod: 0)
+        let underScanMS = Date().timeIntervalSince(underScanStart) * 1000
+        print("[MediaCacheStressTest] F1. Scan under-cap cache (\(underScanned) files): \(String(format: "%.2f", underScanMS))ms, evicted=\(underEvicted) (expect 0)")
+
+        // F2. Grow past cap, measure scan+trim together.
+        for i in 0..<(overCapCount - underCapCount) {
+            let name = "over-\(i)-\(UUID().uuidString).jpg"
+            try? Data(repeating: UInt8(i % 256), count: fileSize).write(to: cacheRoot.appendingPathComponent(name))
+        }
+        let trimStart = Date()
+        let (trimEvicted, trimScanned) = cache.evictIfNeeded(capacityBytes: testCap, gracePeriod: 0)
+        let trimMS = Date().timeIntervalSince(trimStart) * 1000
+        let afterTrimBytes = cache.totalBytesOnDisk()
+        print("[MediaCacheStressTest] F2. Scan+trim over-cap cache (\(trimScanned) files scanned, \(trimEvicted) evicted): \(String(format: "%.2f", trimMS))ms")
+        print("[MediaCacheStressTest] F2. Storage accounting: totalBytesOnDisk after trim = \(afterTrimBytes) bytes, cap = \(testCap) bytes — within cap: \(afterTrimBytes <= testCap)")
+
+        // G. First access after eviction (cold reconstruction) vs. a
+        // subsequent warm access — reuses the isolated container already
+        // populated in `run()`'s A/B/C sections would be ideal, but this
+        // function is self-contained, so a fresh tiny population suffices
+        // to isolate the specific cold-vs-warm-post-eviction cost.
+        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let ids = await populate(container: container, itemCount: 1)
+        let id = ids[0]
+        let coldAfterEvictionStart = Date()
+        _ = await loadAndDecode(id: id, container: container, cache: cache, maxPixelSize: nil)
+        let coldAfterEvictionMS = Date().timeIntervalSince(coldAfterEvictionStart) * 1000
+        let warmStart = Date()
+        _ = await loadAndDecode(id: id, container: container, cache: cache, maxPixelSize: nil)
+        let warmMS = Date().timeIntervalSince(warmStart) * 1000
+        print("[MediaCacheStressTest] G. First access after eviction: \(String(format: "%.2f", coldAfterEvictionMS))ms, subsequent warm access: \(String(format: "%.2f", warmMS))ms")
     }
 
     // MARK: - D. Reinstall / fresh-local-store simulation (Validation Gate 01 §2)

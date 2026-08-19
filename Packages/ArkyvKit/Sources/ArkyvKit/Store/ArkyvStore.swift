@@ -504,6 +504,26 @@ public struct Repository {
         return all.max(by: { $0.updatedAt < $1.updatedAt }) ?? all.first
     }
 
+    // MARK: Media cache protection (Media Cache Eviction Activation 01)
+
+    /// `MediaStore` filenames that must NEVER be evicted: items (live or
+    /// soft-deleted — a soft-deleted item's media is still "claimed," per
+    /// `IntegrityCheck`'s own existing philosophy) whose `imageData`
+    /// hasn't been populated yet, for which the `MediaStore` file is
+    /// currently the ONLY local copy, not a cache entry. Historical/
+    /// pre-`ImageBackfill` items only — new captures always have
+    /// `imageData` populated synchronously at save time. Cheap: SwiftData
+    /// lazily faults `.externalStorage` attributes, so checking `nil`
+    /// doesn't materialize any image bytes (same reasoning
+    /// `ImageBackfill.runNextBatch` already relies on).
+    public func filenamesLackingImageData() throws -> Set<String> {
+        let items = try context.fetch(FetchDescriptor<StoredItem>())
+        return Set(items.compactMap { item -> String? in
+            guard item.imageData == nil, let filename = item.localFilename else { return nil }
+            return filename
+        })
+    }
+
     // MARK: Helpers
 
     private func touch(_ folder: StoredFolder) {

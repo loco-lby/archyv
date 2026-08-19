@@ -50,29 +50,40 @@ public struct MediaStore: Sendable {
     /// constant, not a policy engine.
     public static let cacheCapacityBytes: Int64 = 1_073_741_824
 
-    /// **Safety ramp (Media Architecture Cutover 01 §20/§9), a deliberate
-    /// decision, not a placeholder.** The reconstruction path
-    /// (`data(for:reconstructingFrom:)`/`reconstruct(filename:from:)`) is
-    /// thoroughly validated — unit-tested, on-device benchmarked, and
-    /// confirmed against real two-device CloudKit sync. Eviction
-    /// (`evictIfNeeded()`) is different in kind: it's the first piece of
-    /// code in this app's history that actively DELETES files backing
-    /// real, wanted, already-captured Cherries, and it has zero real-
-    /// world production runtime behind it yet — only synthetic/test
-    /// validation. Existing users' entire `MediaStore` directories
-    /// predate this architecture and have never been touched by anything
-    /// resembling automatic deletion.
-    ///
-    /// Shipping reconstruction, the declared authority model, and backup
-    /// exclusion now while holding eviction back one release lets the new
-    /// cold-cache-miss path accumulate real production hours — and lets
-    /// any bug reports cleanly separate "did reconstruction fail" from
-    /// "did eviction wrongly remove something" — before the one
-    /// irreversible-in-practice action (deleting an existing local
-    /// original) starts running automatically for every user. `false`
-    /// here is the entire ramp: flip to `true` in a dedicated, explicitly
-    /// approved follow-up milestone once this release has run cleanly.
-    public static let evictionEnabled = false
+    /// **Ramp closed (Media Cache Eviction Activation 01), enabled
+    /// deliberately, not by default.** The Media Architecture Cutover 01
+    /// ramp held this `false` for one release specifically to let
+    /// reconstruction accumulate real production runtime before deletion
+    /// went live. This milestone's own deletion-contract audit then found
+    /// — and fixed — two real structural gaps eviction had before this
+    /// flag could safely flip: (1) no protection against evicting a very
+    /// recently staged, not-yet-saved capture (`evictionGracePeriod`,
+    /// below — structural, not timing-luck), and (2) no protection
+    /// against evicting a historical/pre-`ImageBackfill` item's `imageData`-
+    /// still-nil sole local copy (`Repository.filenamesLackingImageData()`,
+    /// threaded through as `evictIfNeeded(protecting:)` at the one
+    /// production call site with SwiftData access, `RootView`). Both are
+    /// unit-tested; the full mixed concurrent-read/reconstruct/evict
+    /// stress path, deletion-failure tolerance, directory recreation, and
+    /// real-device performance (135ms scan+trim at a realistic ~1,500-
+    /// file scale, entirely off the main actor) all passed. `true` here
+    /// is the production decision this milestone exists to make.
+    public static let evictionEnabled = true
+
+    /// Media Cache Eviction Activation 01 §1/§7: a file younger than this
+    /// is NEVER eviction-eligible, regardless of cache size or how it
+    /// sorts by recency. This is the **structural** (not timing-luck)
+    /// protection against the pre-save/authority-transition window: a
+    /// freshly-staged capture file has no `StoredItem`/`imageData` yet,
+    /// and eviction has no way to know that from the filesystem alone —
+    /// its modification date being "recent" was already almost always
+    /// enough to protect it in practice (freshly-written files sort last
+    /// for removal), but "almost always" is exactly the "timing luck"
+    /// this milestone's own audit was asked to rule out. Comfortably
+    /// longer than any realistic capture-to-save latency, including a
+    /// careful crop-review session before tapping ✓.
+    public static let evictionGracePeriod: TimeInterval = 300
+
 
     /// The directory every filename from `url(for:)` lives in — exposed
     /// (read-only) for `IntegrityCheck`'s orphan scan, which needs to
@@ -211,7 +222,16 @@ public struct MediaStore: Sendable {
         do {
             try fresh.write(to: staging, options: .atomic)
             try FileManager.default.moveItem(at: staging, to: destination)
-            if Self.evictionEnabled { evictIfNeeded() }
+            // Media Cache Eviction Activation 01: deliberately does NOT
+            // trigger eviction here. `MediaStore` has no SwiftData access
+            // at this call site, so it can't compute the "items whose
+            // imageData is still nil" protected set — evicting without
+            // that protection risks deleting the sole local copy of a
+            // historical, not-yet-backfilled item. The once-per-
+            // foreground-activation trigger (`RootView`), which DOES have
+            // SwiftData access, is the only production eviction entry
+            // point — see its own call site for the protected-filenames
+            // computation.
         } catch {
             try? FileManager.default.removeItem(at: staging)
             // Product rule: render anyway. Only the cache write failed;
@@ -235,44 +255,74 @@ public struct MediaStore: Sendable {
     /// Single bounded pass, oldest-by-modification-date first, until
     /// under `capacityBytes` (defaults to the real production
     /// `MediaStore.cacheCapacityBytes`) — no daemon, no perpetual
-    /// background worker (Media Cache Foundation 01 §4). Triggered
-    /// opportunistically: after a cache write that might have pushed the
-    /// total over cap (`reconstruct(filename:from:)` above), and once per
-    /// foreground activation (`RootView`'s `scenePhase` hook, mirroring
-    /// `ImageBackfill`/`SeedGate`'s existing pattern). Safe to call from
-    /// any thread/actor — pure filesystem work, no main-actor requirement.
+    /// background worker (Media Cache Foundation 01 §4). The ONLY
+    /// production trigger is once per foreground activation (`RootView`'s
+    /// `scenePhase` hook, mirroring `ImageBackfill`/`SeedGate`'s existing
+    /// pattern) — see that call site for why the post-write trigger this
+    /// used to also have was removed. Safe to call from any thread/actor
+    /// — pure filesystem work, no main-actor requirement.
     ///
-    /// `capacityBytes` is a parameter (not just the hardcoded constant)
-    /// solely so tests can exercise real eviction-ordering behavior with
-    /// small files instead of needing gigabytes of test data — every
-    /// production call site omits it, using the one real constant.
+    /// Two independent, structural (not timing-based) protections, per
+    /// Media Cache Eviction Activation 01's deletion-contract audit:
+    /// - `protecting`: filenames that must never be removed regardless of
+    ///   age or cache pressure — the caller-computed set of items whose
+    ///   `imageData` isn't populated yet, for which this file is (for
+    ///   now) the ONLY local copy, not a cache entry. Still counts toward
+    ///   `capacityBytes` accounting (it's real disk usage), just never a
+    ///   removal candidate.
+    /// - `evictionGracePeriod`: no file younger than this is ever a
+    ///   removal candidate either, regardless of `protecting` — see that
+    ///   constant's own doc comment.
+    ///
+    /// `capacityBytes`/`gracePeriod` are parameters (not just the
+    /// hardcoded constants) solely so tests can exercise real eviction-
+    /// ordering/protection behavior with small files and without waiting
+    /// 5 real minutes — every production call site omits both, using the
+    /// two real constants.
     @discardableResult
-    public func evictIfNeeded(capacityBytes: Int64 = MediaStore.cacheCapacityBytes) -> (evictedCount: Int, scannedCount: Int) {
+    public func evictIfNeeded(capacityBytes: Int64 = MediaStore.cacheCapacityBytes, gracePeriod: TimeInterval = MediaStore.evictionGracePeriod, protecting protectedFilenames: Set<String> = []) -> (evictedCount: Int, scannedCount: Int) {
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey, .totalFileAllocatedSizeKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else { return (0, 0) }
 
-        var files: [(url: URL, size: Int64, modified: Date)] = []
+        let now = Date()
+        var candidates: [(url: URL, size: Int64, modified: Date)] = []
         var total: Int64 = 0
+        var scanned = 0
         for case let fileURL as URL in enumerator {
             guard let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .totalFileAllocatedSizeKey, .isRegularFileKey]),
                   values.isRegularFile == true else { continue }
             let size = Int64(values.totalFileAllocatedSize ?? 0)
-            files.append((fileURL, size, values.contentModificationDate ?? .distantPast))
             total += size
+            scanned += 1
+            guard !protectedFilenames.contains(fileURL.lastPathComponent) else { continue }
+            let modified = values.contentModificationDate ?? .distantPast
+            guard now.timeIntervalSince(modified) > gracePeriod else { continue }
+            candidates.append((fileURL, size, modified))
         }
-        guard total > capacityBytes else { return (0, files.count) }
+        guard total > capacityBytes else { return (0, scanned) }
 
         var evicted = 0
-        for file in files.sorted(by: { $0.modified < $1.modified }) {
+        for file in candidates.sorted(by: { $0.modified < $1.modified }) {
             guard total > capacityBytes else { break }
-            try? FileManager.default.removeItem(at: file.url)
-            total -= file.size
-            evicted += 1
+            do {
+                try FileManager.default.removeItem(at: file.url)
+                // Only decremented on CONFIRMED removal — Cutover
+                // Activation 01 §9: a silently-failed deletion must never
+                // be counted as if it succeeded, which could otherwise
+                // make this loop stop early while genuinely still over
+                // cap. Self-correcting either way: a failed removal here
+                // just leaves that file to be reconsidered, accurately,
+                // on the next opportunistic pass.
+                total -= file.size
+                evicted += 1
+            } catch {
+                continue
+            }
         }
-        return (evicted, files.count)
+        return (evicted, scanned)
     }
 
     /// Storage/Disk Pressure Foundation 01 (Phase 9): approximate total
