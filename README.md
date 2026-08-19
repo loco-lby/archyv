@@ -922,7 +922,7 @@ open ScreenshotApp.xcodeproj
 Then select the **Arkyv** scheme and run on an iPhone / simulator.
 
 > **Note on the App Group entitlement:** the app, Share Extension, and macOS app
-> share `group.com.expatinsurance.arkyv` (SwiftData store + media live there).
+> share `group.com.deadwest.cherries` (SwiftData store + media live there).
 > Xcode's automatic signing (team `AZPJ6UN5SY`) will provision it on first run.
 
 ### Shared package validation (no simulator needed)
@@ -1262,3 +1262,44 @@ new identity → reimport) is safe before it's ever attempted for real.
 - **GREEN** — the current real archive can be exported and reconstructed
   byte-for-byte into a fresh isolated store. Safe to proceed to the
   technical-identity cutover this ferry exists to prepare for.
+
+## Technical Identity Cutover (Foundation 01)
+
+**GREEN — permanent namespace live, new environment verified empty, old
+environment fully intact.** A clean cut (no dual-container bridge) from
+the prototype Expat Insurance / Arkyv namespace to the permanent
+Deadwest / Cherries identity:
+
+| | Legacy (still installed, untouched) | Permanent |
+|---|---|---|
+| App | `com.expatinsurance.arkyv` | `com.deadwest.cherries` |
+| Share Extension | `com.expatinsurance.arkyv.Share` | `com.deadwest.cherries.share` |
+| macOS | `com.expatinsurance.arkyv.mac` | `com.deadwest.cherries.mac` |
+| App Group | `group.com.expatinsurance.arkyv` | `group.com.deadwest.cherries` |
+| CloudKit | `iCloud.com.expatinsurance.arkyv` | `iCloud.com.deadwest.cherries` |
+
+No record migration was attempted from the legacy CloudKit container —
+the pre-launch migration artifact (`Cherries_PreLaunch_Migration_2026-08-19.json`,
+verified byte-identical, stored outside the project at `~/Documents/Cherries
+Migration Backup/`) is the sole transfer mechanism, applied in a later,
+separate milestone. No Production CloudKit schema deployed.
+
+**Verified on physical device:** both identities coexist (old app/archive
+completely unaffected — `itemCount=84` unchanged); new app launches to a
+genuinely empty archive (0 items, 5 default-seeded folders, `isClean=true`);
+compiled entitlements confirmed correct via `codesign`, not just source
+files, on both the main app and Share Extension; the new App Group
+container confirmed physically distinct with `arkyv.store`/`Media/`
+correctly nested under it; one disposable, clearly-tagged test item
+confirmed local `imageData` persists normally in the new environment.
+Zero remaining production/runtime references to the legacy namespace —
+only one intentional, documented comment explaining the cutover.
+
+**Known limitation:** the `ArkyvMac` app target has no XcodeGen-generated
+scheme, so it can't be built via a bare `xcodebuild -target` invocation
+outside Xcode's own GUI (pre-existing gap, unrelated to this cutover —
+its identity/build *configuration* was verified via `-showBuildSettings`
+instead, and the shared `ArkyvKit` package it depends on builds cleanly
+for macOS via its own scheme).
+
+Next: import the verified migration archive into the new environment.
