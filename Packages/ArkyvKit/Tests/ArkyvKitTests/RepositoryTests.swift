@@ -1223,6 +1223,152 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(report.itemsWithMultipleActiveFolders, [])
     }
 
+    // MARK: - Single-Folder Invariant Foundation 01
+
+    @MainActor
+    func testReconcilerWinnerPicksTheMostRecentlyCreatedMembership() throws {
+        let repo = try makeRepo()
+        let folderA = try repo.createFolder(name: "Folder A", icon: .symbol("star"))
+        let folderB = try repo.createFolder(name: "Folder B", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"))
+
+        let older = StoredFolderMembership(item: item, folder: folderA, createdAt: Date(timeIntervalSince1970: 100))
+        let newer = StoredFolderMembership(item: item, folder: folderB, createdAt: Date(timeIntervalSince1970: 200))
+
+        let winner = FolderMembershipReconciler.winner(among: [older, newer])
+
+        XCTAssertEqual(winner?.id, newer.id)
+    }
+
+    @MainActor
+    func testReconcilerWinnerTieBreaksByMembershipIDWhenTimestampsMatch() throws {
+        let repo = try makeRepo()
+        let folderA = try repo.createFolder(name: "Folder A", icon: .symbol("star"))
+        let folderB = try repo.createFolder(name: "Folder B", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"))
+        let sameInstant = Date(timeIntervalSince1970: 100)
+
+        let low = StoredFolderMembership(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, item: item, folder: folderA, createdAt: sameInstant)
+        let high = StoredFolderMembership(id: UUID(uuidString: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")!, item: item, folder: folderB, createdAt: sameInstant)
+
+        // Order shouldn't matter — the tie-break is a pure function of the
+        // IDs themselves, not of array/iteration order.
+        XCTAssertEqual(FolderMembershipReconciler.winner(among: [low, high])?.id, high.id)
+        XCTAssertEqual(FolderMembershipReconciler.winner(among: [high, low])?.id, high.id)
+    }
+
+    /// Section 10: the exact class of bug found in `IntegrityCheck` last
+    /// milestone was non-determinism from `Dictionary`/`Set` iteration
+    /// order. Proves the reconciler's winner selection is a pure function
+    /// of the membership data, never of the order it's handed in.
+    @MainActor
+    func testReconcilerWinnerIsDeterministicRegardlessOfShuffledInputOrder() throws {
+        let repo = try makeRepo()
+        let folders = try (0..<5).map { try repo.createFolder(name: "Folder \($0)", icon: .symbol("star")) }
+        let item = try repo.fileCapture(.note("hello"))
+        let memberships = folders.enumerated().map { index, folder in
+            StoredFolderMembership(item: item, folder: folder, createdAt: Date(timeIntervalSince1970: Double(index) * 10))
+        }
+        let expectedWinnerID = memberships.last!.id
+
+        for _ in 0..<25 {
+            let shuffled = memberships.shuffled()
+            XCTAssertEqual(FolderMembershipReconciler.winner(among: shuffled)?.id, expectedWinnerID)
+        }
+    }
+
+    /// Reproduces the exact real-world shape confirmed in the live
+    /// archive: two devices concurrently move the same item, producing 2+
+    /// simultaneously-active memberships to different folders (bypassing
+    /// the Repository, matching what independent CloudKit inserts look
+    /// like once synced to a single device's local store).
+    @MainActor
+    func testReconcileAllDeactivatesAllButTheWinnerAndReconcilesLegacyFolder() throws {
+        let repo = try makeRepo()
+        let folderA = try repo.createFolder(name: "Folder A", icon: .symbol("star"))
+        let folderB = try repo.createFolder(name: "Folder B", icon: .symbol("star"))
+        let folderC = try repo.createFolder(name: "Folder C", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"))
+
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderA, createdAt: Date(timeIntervalSince1970: 100)))
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderB, createdAt: Date(timeIntervalSince1970: 300)))
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderC, createdAt: Date(timeIntervalSince1970: 200)))
+        try repo.context.save()
+
+        let summary = try FolderMembershipReconciler.reconcileAll(repository: repo)
+
+        XCTAssertEqual(summary.itemsReconciled.count, 1)
+        XCTAssertEqual(summary.itemsReconciled.first?.winningFolderID, folderB.id, "folderB has the latest createdAt (300)")
+        XCTAssertEqual(summary.itemsReconciled.first?.deactivatedMembershipIDs.count, 2)
+
+        let activeFolders = try repo.folders(for: item)
+        XCTAssertEqual(activeFolders.map(\.id), [folderB.id])
+        XCTAssertEqual(item.folder?.id, folderB.id)
+    }
+
+    @MainActor
+    func testReconcileAllLeavesSingleMembershipItemsCompletelyUntouched() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Solo Folder", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [folder])
+        let updatedAtBefore = item.updatedAt
+
+        let summary = try FolderMembershipReconciler.reconcileAll(repository: repo)
+
+        XCTAssertEqual(summary.itemsReconciled, [])
+        XCTAssertEqual(item.updatedAt, updatedAtBefore, "an item already satisfying the invariant must not be touched/saved at all")
+    }
+
+    /// Section 11: idempotency / loop-safety — once reconciled, running
+    /// again against already-clean state must be a true no-op, not merely
+    /// "produces the same result again." Two devices that each
+    /// independently reconcile the same already-correct data must not
+    /// generate endless sync churn reaffirming what's already true.
+    @MainActor
+    func testReconcileAllIsIdempotentOnAlreadyReconciledState() throws {
+        let repo = try makeRepo()
+        let folderA = try repo.createFolder(name: "Folder A", icon: .symbol("star"))
+        let folderB = try repo.createFolder(name: "Folder B", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"))
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderA, createdAt: Date(timeIntervalSince1970: 100)))
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderB, createdAt: Date(timeIntervalSince1970: 200)))
+        try repo.context.save()
+
+        let firstRun = try FolderMembershipReconciler.reconcileAll(repository: repo)
+        XCTAssertEqual(firstRun.itemsReconciled.count, 1)
+
+        let updatedAtAfterFirstRun = item.updatedAt
+        let secondRun = try FolderMembershipReconciler.reconcileAll(repository: repo)
+
+        XCTAssertEqual(secondRun.itemsReconciled, [], "already-clean state must produce zero corrections on a repeated run")
+        XCTAssertEqual(item.updatedAt, updatedAtAfterFirstRun, "a no-op reconciliation pass must not touch/save already-correct items")
+    }
+
+    @MainActor
+    func testFolderMembershipPreviewMatchesReconcileAllWithoutMutatingAnything() throws {
+        let repo = try makeRepo()
+        let folderA = try repo.createFolder(name: "Folder A", icon: .symbol("star"))
+        let folderB = try repo.createFolder(name: "Folder B", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"))
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderA, createdAt: Date(timeIntervalSince1970: 100)))
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderB, createdAt: Date(timeIntervalSince1970: 200)))
+        try repo.context.save()
+
+        let previews = try FolderMembershipReconciler.preview(repository: repo)
+
+        XCTAssertEqual(previews.count, 1)
+        let preview = previews[0]
+        XCTAssertEqual(preview.itemID, item.id)
+        XCTAssertEqual(preview.winningFolderName, "Folder B")
+        XCTAssertEqual(preview.membershipsToDeactivate.map(\.folderName), ["Folder A"])
+        XCTAssertTrue(preview.wouldChangeVisibleFolder, "item.folder was never set (nil) — Folder B is a visible change from Unfiled")
+
+        // Read-only: the underlying data must be completely unmutated.
+        let stillActive = try repo.folders(for: item)
+        XCTAssertEqual(Set(stillActive.map(\.id)), Set([folderA.id, folderB.id]))
+        XCTAssertNil(item.folder)
+    }
+
     @MainActor
     func testIntegrityCheckDetectsMissingMedia() throws {
         let repo = try makeRepo()

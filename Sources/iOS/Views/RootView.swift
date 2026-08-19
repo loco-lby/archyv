@@ -112,6 +112,31 @@ struct RootView: View {
                     let backgroundContext = ModelContext(container)
                     ImageBackfill.runNextBatch(context: backgroundContext)
                 }
+                // Single-Folder Invariant Foundation 01: one bounded
+                // reconciliation pass per foreground activation, off the
+                // main actor — same pattern as the ImageBackfill batch
+                // above. No daemon, no CloudKit polling, no custom sync.
+                // Corrects the one way two devices can violate "0 or 1
+                // active folder membership per item" — concurrently moving
+                // the same item to two different folders, which CloudKit
+                // has no way to conflict on its own since each move
+                // inserts an independent, non-conflicting
+                // `StoredFolderMembership` record. `reconcileAll` is a
+                // true no-op (no write, no `save()`) against already-clean
+                // state, so this costs nothing on every ordinary
+                // activation once the archive is reconciled — see its own
+                // doc comment for the idempotency guarantee.
+                Task.detached(priority: .background) {
+                    let backgroundContext = ModelContext(container)
+                    let repo = Repository(context: backgroundContext)
+                    if let summary = try? FolderMembershipReconciler.reconcileAll(repository: repo) {
+                        #if DEBUG
+                        if !summary.itemsReconciled.isEmpty {
+                            print("[RootView] folder reconciliation: corrected \(summary.itemsReconciled.count) of \(summary.itemsScanned) scanned items")
+                        }
+                        #endif
+                    }
+                }
                 // Media Architecture Cutover 01 §7/§20, Media Cache
                 // Eviction Activation 01: one bounded eviction pass per
                 // foreground activation, off the main actor — same

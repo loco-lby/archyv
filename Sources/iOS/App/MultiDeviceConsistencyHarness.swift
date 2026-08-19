@@ -97,6 +97,48 @@ enum MultiDeviceConsistencyHarness {
             case "integrity-check":
                 let checkReport = IntegrityCheck.run(context: context)
                 print("[MDC] IntegrityCheck: isClean=\(checkReport.isClean) itemCount=\(checkReport.itemCount) folderCount=\(checkReport.folderCount) membershipCount=\(checkReport.membershipCount) missingMedia=\(checkReport.itemsWithMissingMedia.count) noKnownRecovery=\(checkReport.itemsWithNoKnownRecovery.count) orphanedMedia=\(checkReport.orphanedMediaFilenames.count) folderDisagreements=\(checkReport.folderMembershipDisagreements.count) duplicateMemberships=\(checkReport.duplicateActiveMemberships.count) multiFolderItems=\(checkReport.itemsWithMultipleActiveFolders.count)")
+            case "inspect-multi-folder":
+                // Single-Folder Invariant Foundation 01, Section 12:
+                // READ-ONLY. Reports full identity/context for every item
+                // IntegrityCheck flags as having 2+ active folder
+                // memberships, so real archive items can be told apart from
+                // MDC-test fixtures before any reconciliation is written or
+                // run. Never mutates.
+                try inspectMultiFolderItems(repo: repo)
+            case "reconcile-folders":
+                // Single-Folder Invariant Foundation 01: MUTATING. Directly
+                // invokes the same FolderMembershipReconciler.reconcileAll
+                // that RootView's foreground-activation hook calls in
+                // production — exposed here as a controllable, on-demand
+                // trigger for deterministic two-device test timing.
+                let summary = try FolderMembershipReconciler.reconcileAll(repository: repo)
+                print("[MDC] reconcile-folders: scanned=\(summary.itemsScanned) reconciled=\(summary.itemsReconciled.count)")
+                for result in summary.itemsReconciled {
+                    print("[MDC]   item=\(result.itemID) winner=\(result.winningFolderID?.uuidString ?? "nil") deactivated=\(result.deactivatedMembershipIDs.count) legacyFolderChanged=\(result.legacyFolderChanged)")
+                }
+            case "inspect-folder-disagreements":
+                // Single-Folder Invariant Foundation 01: READ-ONLY.
+                // itemsWithMultipleActiveFolders dropped to 0 after
+                // reconciliation, but folderMembershipDisagreements did
+                // not reach 0 — this characterizes the remaining
+                // disagreements, which by definition now involve items
+                // with 0 or 1 active membership (not the race
+                // FolderMembershipReconciler targets).
+                let checkReport = IntegrityCheck.run(context: context)
+                print("[MDC] --- inspect-folder-disagreements: \(checkReport.folderMembershipDisagreements.count) item(s) ---")
+                let allItems = try context.fetch(FetchDescriptor<StoredItem>())
+                for itemID in checkReport.folderMembershipDisagreements {
+                    guard let item = allItems.first(where: { $0.id == itemID }) else { continue }
+                    let activeMemberships = (try? repo.memberships(for: item)) ?? []
+                    print("[MDC] item id=\(item.id) tags=\(item.tags) legacyFolder=\(item.folder?.name ?? "nil") legacyFolderDeleted=\(item.folder?.isSoftDeleted ?? false) activeMembershipCount=\(activeMemberships.count) activeMembershipFolders=\(activeMemberships.map { $0.folder?.name ?? "nil" })")
+                }
+                print("[MDC] --- end inspect-folder-disagreements ---")
+            case "preview-folder-reconciliation":
+                // Single-Folder Invariant Foundation 01, Section 3/12:
+                // READ-ONLY. Computes exactly what
+                // FolderMembershipReconciler.reconcileAll would do,
+                // without calling it — never mutates or saves anything.
+                try previewFolderReconciliation(repo: repo)
             default:
                 print("[MDC] unknown action: \(action)")
             }
@@ -191,6 +233,53 @@ enum MultiDeviceConsistencyHarness {
             if i == 0 { try repo.toggleFavorite(item) }
             print("[MDC] batch-created item \(i) id=\(item.id)")
         }
+    }
+
+    // MARK: - Single-Folder Invariant Foundation 01
+
+    /// READ-ONLY. For every item `IntegrityCheck` flags with 2+ active
+    /// folder memberships, prints its tags, legacy `folder`, and every
+    /// active membership (folder name + membership `createdAt`, sorted
+    /// oldest-first — the same ordering a deterministic "earliest wins"
+    /// reconciliation rule would use) so real archive items can be told
+    /// apart from `mdc-test`-tagged fixtures before any repair is written.
+    private static func inspectMultiFolderItems(repo: Repository) throws {
+        let checkReport = IntegrityCheck.run(context: repo.context)
+        print("[MDC] --- inspect-multi-folder: \(checkReport.itemsWithMultipleActiveFolders.count) item(s) ---")
+        let descriptor = FetchDescriptor<StoredItem>()
+        let allItems = try repo.context.fetch(descriptor)
+        for itemID in checkReport.itemsWithMultipleActiveFolders {
+            guard let item = allItems.first(where: { $0.id == itemID }) else { continue }
+            let isTestFixture = item.tags.contains(testTag)
+            print("[MDC] item id=\(item.id) isMDCTestFixture=\(isTestFixture)")
+            print("[MDC]   tags=\(item.tags) legacyFolder=\(item.folder?.name ?? "nil") createdAt=\(item.createdAt)")
+            let activeMemberships = (try? repo.memberships(for: item))?.sorted { $0.createdAt < $1.createdAt } ?? []
+            for membership in activeMemberships {
+                print("[MDC]   membership folder=\(membership.folder?.name ?? "nil") membershipCreatedAt=\(membership.createdAt) membershipID=\(membership.id)")
+            }
+        }
+        print("[MDC] --- end inspect-multi-folder ---")
+    }
+
+    /// READ-ONLY. Prints the exact before/after `FolderMembershipReconciler`
+    /// proposes for every item currently violating the single-folder
+    /// invariant — never calls `reconcileAll`, never mutates anything.
+    private static func previewFolderReconciliation(repo: Repository) throws {
+        let previews = try FolderMembershipReconciler.preview(repository: repo)
+        print("[MDC] --- preview-folder-reconciliation: \(previews.count) item(s) ---")
+        for preview in previews {
+            print("[MDC] item id=\(preview.itemID)")
+            print("[MDC]   currentLegacyFolder=\(preview.currentLegacyFolderName ?? "nil (Unfiled)")")
+            for m in preview.activeMemberships {
+                print("[MDC]   activeMembership folder=\(m.folderName ?? "nil") createdAt=\(m.createdAt) membershipID=\(m.membershipID)")
+            }
+            print("[MDC]   proposedWinner=\(preview.winningFolderName ?? "nil")")
+            for m in preview.membershipsToDeactivate {
+                print("[MDC]   wouldDeactivate folder=\(m.folderName ?? "nil") membershipID=\(m.membershipID)")
+            }
+            print("[MDC]   resultingLegacyFolder=\(preview.resultingLegacyFolderName ?? "nil (Unfiled)") wouldChangeVisibleFolder=\(preview.wouldChangeVisibleFolder)")
+        }
+        print("[MDC] --- end preview-folder-reconciliation ---")
     }
 
     // MARK: - Report
