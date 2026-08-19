@@ -77,6 +77,22 @@ struct ArkyvApp: App {
                     if CommandLine.arguments.contains("--arkyv-validate-recent-media") {
                         OptionTwoValidationLog.reportMostRecentItems(container: modelContainer)
                     }
+                    // Multi-Device Consistency Foundation 01 — deliberately
+                    // operates on the REAL modelContainer (not isolated):
+                    // this milestone's whole point is observing real
+                    // cross-device CloudKit merge behavior. Every mutation
+                    // routes through the same Repository methods any real
+                    // UI action would call, against clearly-tagged test
+                    // Cherries only — see MultiDeviceConsistencyHarness's
+                    // own doc comment.
+                    if let flagIndex = CommandLine.arguments.firstIndex(of: "--arkyv-mdc"),
+                       flagIndex + 1 < CommandLine.arguments.count {
+                        let action = CommandLine.arguments[flagIndex + 1]
+                        let container = modelContainer
+                        Task.detached(priority: .userInitiated) {
+                            await MultiDeviceConsistencyHarness.run(action: action, container: container)
+                        }
+                    }
                     #endif
                 }
         }

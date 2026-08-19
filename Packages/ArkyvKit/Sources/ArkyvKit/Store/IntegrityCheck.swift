@@ -75,6 +75,25 @@ public enum IntegrityCheck {
         /// empty; a non-empty result means something inserted a
         /// membership row without going through the Repository.
         public var duplicateActiveMemberships: [String] = []
+        /// Multi-Device Consistency Foundation 01: live items with active
+        /// memberships to 2+ *distinct* folders simultaneously — not to be
+        /// confused with `duplicateActiveMemberships` (same item+folder
+        /// pair duplicated). `setMemberships`'s "exclusive" reconciliation
+        /// only sees rows its own device knows about at call time; two
+        /// devices independently moving the same item to two different
+        /// folders each insert one new, distinct `StoredFolderMembership`
+        /// CKRecord, and CloudKit has no reason to conflict those (they're
+        /// different records) — both sync down as active. Confirmed via
+        /// direct two-device testing. The v0.2 schema doesn't forbid an
+        /// item belonging to multiple folders, so this isn't corruption —
+        /// the item stays fully reachable via `folders(for:)` — but it's
+        /// almost always an unintended race rather than a deliberate
+        /// multi-select, so it's surfaced here for visibility. Diagnostic
+        /// only: NOT part of `isClean`, and nothing here auto-resolves it —
+        /// a real fix would mean picking a winner across devices, which is
+        /// exactly the kind of custom conflict protocol this milestone is
+        /// scoped to avoid building.
+        public var itemsWithMultipleActiveFolders: [UUID] = []
 
         /// Media Architecture Cutover 01: deliberately depends on
         /// `itemsWithNoKnownRecovery` (real MEDIA LOSS), NOT
@@ -128,10 +147,30 @@ public enum IntegrityCheck {
         }
 
         // Legacy folder / membership disagreement.
+        //
+        // Multi-Device Consistency Foundation 01: for an item with 2+
+        // simultaneously-active memberships (see
+        // `itemsWithMultipleActiveFolders` above — confirmed to happen via
+        // a real cross-device race), which one counts as "expected" here
+        // must be picked deterministically. It previously read `.first` off
+        // an array built via `Dictionary(grouping:)`, whose iteration order
+        // is randomized per-process (Swift's Set/Dictionary hashing is
+        // seeded per-launch) — so two devices scanning *identical* synced
+        // data could each pick a different "first" folder and disagree on
+        // this count for reasons that have nothing to do with their actual
+        // data. Confirmed directly: two devices with matching
+        // itemCount/folderCount/membershipCount/itemsWithMultipleActiveFolders
+        // reported different folderMembershipDisagreements counts (16 vs.
+        // 11) purely from this. Sorting by `createdAt` (earliest active
+        // membership wins, tie-broken by `id`) makes the pick a pure
+        // function of the data, not of process-local iteration order — a
+        // diagnostic-only fix, no schema/sync change.
         let activeByItem = Dictionary(grouping: memberships.filter { !$0.isSoftDeleted && $0.folder?.isSoftDeleted == false }) { $0.item?.id }
         for item in liveItems {
-            let activeFolderIDs = (activeByItem[item.id] ?? []).compactMap { $0.folder?.id }
-            let expectedLegacyFolderID = activeFolderIDs.first
+            let activeMemberships = (activeByItem[item.id] ?? []).sorted {
+                $0.createdAt != $1.createdAt ? $0.createdAt < $1.createdAt : $0.id.uuidString < $1.id.uuidString
+            }
+            let expectedLegacyFolderID = activeMemberships.first?.folder?.id
             if item.folder?.id != expectedLegacyFolderID {
                 report.folderMembershipDisagreements.append(item.id)
             }
@@ -147,6 +186,13 @@ public enum IntegrityCheck {
         }
         report.duplicateActiveMemberships = Array(duplicateKeys)
 
+        // Items with active memberships to 2+ distinct folders at once.
+        report.itemsWithMultipleActiveFolders = activeByItem.compactMap { itemID, rows in
+            guard let itemID else { return nil }
+            let distinctFolderIDs = Set(rows.compactMap { $0.folder?.id })
+            return distinctFolderIDs.count > 1 ? itemID : nil
+        }
+
         log(report)
         return report
     }
@@ -156,6 +202,7 @@ public enum IntegrityCheck {
             "missingMedia=\(report.itemsWithMissingMedia.count) (recoverable=\(report.itemsWithRecoverableMedia.count) " +
             "noKnownRecovery=\(report.itemsWithNoKnownRecovery.count)) orphanedMedia=\(report.orphanedMediaFilenames.count) " +
             "folderDisagreements=\(report.folderMembershipDisagreements.count) duplicateMemberships=\(report.duplicateActiveMemberships.count) " +
+            "multiFolderItems=\(report.itemsWithMultipleActiveFolders.count) " +
             "— \(report.isClean ? "CLEAN" : "see counts above")")
     }
 }

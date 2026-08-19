@@ -1178,6 +1178,51 @@ final class RepositoryTests: XCTestCase {
         XCTAssertFalse(report.isClean)
     }
 
+    // MARK: - Multi-Device Consistency Foundation 01
+
+    /// Reproduces, deterministically and without any real CloudKit
+    /// round-trip, the exact race confirmed on physical devices: two
+    /// devices concurrently move the same item into two *different*
+    /// folders. Each device's own `setMemberships` call only reconciles
+    /// against rows it locally knows about, so it inserts one new,
+    /// independent `StoredFolderMembership` CKRecord; CloudKit has no
+    /// reason to conflict two inserts of different records, so both sync
+    /// down as active on every device. Simulated here by bypassing the
+    /// Repository (inserting both membership rows directly), which is
+    /// exactly what two independent `setMemberships` calls converging via
+    /// CloudKit look like from a single device's local store afterward.
+    @MainActor
+    func testIntegrityCheckDetectsItemWithMultipleActiveFolders() throws {
+        let repo = try makeRepo()
+        let folderA = try repo.createFolder(name: "Folder A", icon: .symbol("star"))
+        let folderB = try repo.createFolder(name: "Folder B", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"))
+
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderA))
+        repo.context.insert(StoredFolderMembership(item: item, folder: folderB))
+        try repo.context.save()
+
+        let report = IntegrityCheck.run(context: repo.context)
+
+        XCTAssertEqual(report.itemsWithMultipleActiveFolders, [item.id])
+        // Diagnostic only: the v0.2 schema doesn't forbid an item
+        // belonging to multiple folders, and the item stays fully
+        // reachable via `folders(for:)` either way — this must not be
+        // conflated with genuine corruption/cleanliness failure.
+        XCTAssertTrue(report.isClean, "multi-folder membership is schema-legitimate, not a cleanliness failure — it's surfaced for visibility only")
+    }
+
+    @MainActor
+    func testIntegrityCheckDoesNotFlagItemWithOneActiveFolder() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Solo Folder", icon: .symbol("star"))
+        _ = try repo.fileCapture(.note("hello"), folders: [folder])
+
+        let report = IntegrityCheck.run(context: repo.context)
+
+        XCTAssertEqual(report.itemsWithMultipleActiveFolders, [])
+    }
+
     @MainActor
     func testIntegrityCheckDetectsMissingMedia() throws {
         let repo = try makeRepo()
