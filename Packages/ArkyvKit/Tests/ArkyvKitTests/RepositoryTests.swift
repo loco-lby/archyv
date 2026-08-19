@@ -582,6 +582,126 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(try repo.memberships(for: item).count, 0)
     }
 
+    // MARK: - Single-Folder Invariant Foundation 01 (closeout: legacy mirror)
+
+    @MainActor
+    func testRemoveFinalMembershipSetsLegacyFolderToNil() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+        XCTAssertEqual(item.folder?.id, deadwest.id)
+
+        try repo.removeMembership(item, from: deadwest)
+
+        XCTAssertNil(item.folder, "no active membership remains — item.folder must mirror Unfiled, not the folder just removed from")
+    }
+
+    @MainActor
+    func testRemoveMembershipWhileAnotherRemainsMirrorsTheRemainingWinner() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest, inspiration])
+
+        try repo.removeMembership(item, from: deadwest)
+
+        XCTAssertEqual(item.folder?.id, inspiration.id, "the one remaining canonical membership must be mirrored, never independently decided")
+    }
+
+    @MainActor
+    func testRemoveMembershipIsANoOpOnAlreadyStaleFieldsWhenMembershipNeverExisted() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [])
+        let updatedAtBefore = item.updatedAt
+
+        try repo.removeMembership(item, from: deadwest) // never was a member — must stay a true no-op
+
+        XCTAssertNil(item.folder)
+        XCTAssertEqual(item.updatedAt, updatedAtBefore)
+    }
+
+    @MainActor
+    func testSoftDeleteFolderMakesMemberItemCanonicalUnfiledWithNilLegacyFolder() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+        XCTAssertEqual(item.folder?.id, deadwest.id)
+
+        try repo.softDelete(deadwest)
+
+        XCTAssertEqual(try repo.memberships(for: item).count, 0)
+        XCTAssertNil(item.folder, "the item's sole folder was deleted — item.folder must mirror Unfiled, not the now-deleted folder")
+        XCTAssertFalse(item.isSoftDeleted, "the item itself must remain fully reachable — no hard delete, no cascading soft-delete")
+    }
+
+    @MainActor
+    func testSoftDeleteFolderMirrorsTheRemainingCanonicalMembershipWhenOneExists() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest, inspiration])
+
+        try repo.softDelete(deadwest)
+
+        XCTAssertEqual(item.folder?.id, inspiration.id, "a valid canonical membership remains — that must be mirrored, not left stale or nil")
+    }
+
+    @MainActor
+    func testSoftDeleteFolderWithSeveralMemberItemsReconcilesEachIndependently() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let soloItem = try repo.fileCapture(.note("solo"), folders: [deadwest])
+        let multiItem = try repo.fileCapture(.note("multi"), folders: [deadwest, inspiration])
+        let untouchedItem = try repo.fileCapture(.note("untouched"), folders: [inspiration])
+
+        try repo.softDelete(deadwest)
+
+        XCTAssertNil(soloItem.folder, "loses its only folder — Unfiled")
+        XCTAssertEqual(multiItem.folder?.id, inspiration.id, "keeps its other valid membership")
+        XCTAssertEqual(untouchedItem.folder?.id, inspiration.id, "never referenced the deleted folder — must be completely untouched")
+    }
+
+    /// Section 3: repeated operations must not produce additional writes.
+    @MainActor
+    func testSoftDeleteFolderIsIdempotentAndProducesNoFurtherChurnOnRepeat() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let item = try repo.fileCapture(.note("hello"), folders: [deadwest])
+
+        try repo.softDelete(deadwest)
+        XCTAssertNil(item.folder)
+        let updatedAtAfterFirstDelete = item.updatedAt
+
+        try repo.softDelete(deadwest) // already deleted — must not re-touch the item
+
+        XCTAssertNil(item.folder)
+        XCTAssertEqual(item.updatedAt, updatedAtAfterFirstDelete, "an item with no remaining active membership must not be re-touched on a repeated delete")
+    }
+
+    /// Confirms `FolderMembershipReconciler` is a true no-op after the
+    /// Repository write paths above have already correctly mirrored
+    /// `item.folder` — the closeout fix and the reconciler must never
+    /// disagree about what "correct" looks like.
+    @MainActor
+    func testReconcileAllIsANoOpAfterRemoveMembershipAndSoftDeleteFolderAlreadySelfCorrected() throws {
+        let repo = try makeRepo()
+        let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        let inspiration = try repo.createFolder(name: "Inspiration", icon: .symbol("star"))
+        let removedFromItem = try repo.fileCapture(.note("a"), folders: [deadwest, inspiration])
+        let deletedFolderItem = try repo.fileCapture(.note("b"), folders: [deadwest])
+
+        try repo.removeMembership(removedFromItem, from: deadwest)
+        try repo.softDelete(deadwest)
+
+        let summary = try FolderMembershipReconciler.reconcileAll(repository: repo)
+
+        XCTAssertEqual(summary.itemsReconciled, [], "both write paths already self-corrected item.folder — the reconciler must find nothing left to fix")
+        XCTAssertEqual(removedFromItem.folder?.id, inspiration.id)
+        XCTAssertNil(deletedFolderItem.folder)
+    }
+
     @MainActor
     func testRemovingNonexistentMembershipIsHarmlessNoOp() throws {
         let repo = try makeRepo()
@@ -686,8 +806,14 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(try repo.memberships(for: item).count, 0)
     }
 
+    /// Folder deletion still never touches an item's content fields —
+    /// note, favorite, media, creation time. `item.folder`/`updatedAt` are
+    /// the one deliberate exception as of Single-Folder Invariant
+    /// Foundation 01's closeout: see
+    /// `testSoftDeleteFolderMakesMemberItemCanonicalUnfiledWithNilLegacyFolder`
+    /// for why that mutation is correct, not a regression.
     @MainActor
-    func testFolderDeletionDoesNotMutateItemFields() throws {
+    func testFolderDeletionDoesNotMutateItemContentFields() throws {
         let repo = try makeRepo()
         let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
         let item = try repo.fileCapture(
@@ -699,7 +825,6 @@ final class RepositoryTests: XCTestCase {
         let favoriteBefore = item.isFavorite
         let filenameBefore = item.localFilename
         let createdAtBefore = item.createdAt
-        let updatedAtBefore = item.updatedAt
 
         try repo.softDelete(deadwest)
 
@@ -707,7 +832,6 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(item.isFavorite, favoriteBefore)
         XCTAssertEqual(item.localFilename, filenameBefore)
         XCTAssertEqual(item.createdAt, createdAtBefore)
-        XCTAssertEqual(item.updatedAt, updatedAtBefore)
     }
 
     // MARK: - fileCapture with folder sets (Milestone B)

@@ -21,15 +21,23 @@ import SwiftData
 /// predating that testing).
 ///
 /// This type is the reconciliation half: given a set of active
-/// memberships that violates the invariant, it deterministically picks
-/// one winner, deactivates the rest, and mirrors `item.folder` to match —
-/// the same shape of "detect → correct → persist normally, let the
-/// correction sync back through CloudKit" already used by
+/// memberships, it deterministically picks the canonical winner (if any),
+/// deactivates any extra active memberships, and mirrors `item.folder` to
+/// match — the same shape of "detect → correct → persist normally, let
+/// the correction sync back through CloudKit" already used by
 /// `setMemberships` itself, just applied after the fact instead of
 /// before. No custom sync protocol, no schema change, no polling: the
 /// correction is an ordinary local write like any other, and CloudKit's
 /// existing last-writer-wins behavior propagates it exactly like any
 /// other edit.
+///
+/// Single-Folder Invariant Foundation 01 closeout: also covers the
+/// narrower case of an item with 0 or 1 active memberships whose
+/// `item.folder` mirror has simply gone stale — found in
+/// `Repository.removeMembership`/`softDelete(folder:)`, both fixed at
+/// their own write sites as of this closeout, but pre-existing real data
+/// can still carry the resulting staleness forward. Same "make the
+/// mirror agree with canonical membership state" job either way.
 public enum FolderMembershipReconciler {
     /// Deterministically picks the winner among a set of active
     /// memberships for the same item: the most-recently-created row,
@@ -67,16 +75,30 @@ public enum FolderMembershipReconciler {
         public var itemsReconciled: [ReconciliationResult] = []
     }
 
-    /// Mutating. For every live item with 2+ active folder memberships,
-    /// deactivates every membership except the deterministic `winner(among:)`
-    /// and reconciles `item.folder` to match the winner's folder (`nil`
-    /// if the winner is somehow already gone — defensive, not expected).
-    /// Idempotent: an item already at 0 or 1 active membership is left
-    /// completely untouched (not even `touch`ed/saved), so repeated calls
-    /// against already-clean state are true no-ops — no sync churn merely
-    /// to reaffirm already-correct state, and no two devices independently
-    /// "reconciling" an already-single-winner item can never disagree,
-    /// since there's nothing left to disagree about once one device's
+    /// Mutating. Makes `item.folder` agree with canonical membership state
+    /// for every live item, covering all three shapes the invariant
+    /// governs:
+    /// - **2+ active memberships** (the concurrent-move race): deactivates
+    ///   every membership except the deterministic `winner(among:)` and
+    ///   mirrors `item.folder` to it.
+    /// - **exactly 1 active membership**, but `item.folder` disagrees
+    ///   (Single-Folder Invariant Foundation 01 closeout: found via
+    ///   `Repository.removeMembership`/`softDelete(folder:)` predating
+    ///   their own mirror fixes): mirrors `item.folder` to that membership.
+    ///   No deactivation needed — there's nothing extra to remove.
+    /// - **0 active memberships**, but `item.folder` is stale non-nil
+    ///   (same predating-fix cause): sets `item.folder = nil`.
+    ///
+    /// In every case the result is never a "surprising" folder — it's
+    /// always exactly what canonical membership state already supports,
+    /// never an independently-invented answer.
+    ///
+    /// Idempotent: an item already agreeing is left completely untouched
+    /// (not even `touch`ed/saved), so repeated calls against already-clean
+    /// state are true no-ops — no sync churn merely to reaffirm
+    /// already-correct state, and no two devices independently
+    /// reconciling an already-agreeing item can ever disagree, since
+    /// there's nothing left to disagree about once one device's
     /// correction has synced.
     @discardableResult
     public static func reconcileAll(repository: Repository) throws -> Summary {
@@ -92,22 +114,26 @@ public enum FolderMembershipReconciler {
 
         for item in liveItems {
             let active = activeByItem[item.id] ?? []
-            guard active.count > 1 else { continue }
-            guard let winningMembership = winner(among: active) else { continue }
+            let winningMembership = winner(among: active)
+            let canonicalFolder = winningMembership?.folder
+            let legacyChanged = item.folder?.id != canonicalFolder?.id
 
             var deactivatedIDs: [UUID] = []
-            for membership in active where membership.id != winningMembership.id {
-                membership.deletedAt = .now
-                membership.dirty = true
-                deactivatedIDs.append(membership.id)
-                if let folder = membership.folder { touchedFolders[folder.id] = folder }
+            if active.count > 1, let winningMembership {
+                for membership in active where membership.id != winningMembership.id {
+                    membership.deletedAt = .now
+                    membership.dirty = true
+                    deactivatedIDs.append(membership.id)
+                    if let folder = membership.folder { touchedFolders[folder.id] = folder }
+                }
             }
 
-            let legacyChanged = item.folder?.id != winningMembership.folder?.id
+            guard legacyChanged || !deactivatedIDs.isEmpty else { continue }
+
             if legacyChanged {
-                item.folder = winningMembership.folder
+                item.folder = canonicalFolder
             }
-            if let folder = winningMembership.folder { touchedFolders[folder.id] = folder }
+            if let folder = canonicalFolder { touchedFolders[folder.id] = folder }
 
             item.updatedAt = .now
             item.dirty = true
@@ -115,7 +141,7 @@ public enum FolderMembershipReconciler {
 
             summary.itemsReconciled.append(ReconciliationResult(
                 itemID: item.id,
-                winningFolderID: winningMembership.folder?.id,
+                winningFolderID: canonicalFolder?.id,
                 deactivatedMembershipIDs: deactivatedIDs,
                 legacyFolderChanged: legacyChanged
             ))
@@ -148,9 +174,10 @@ public enum FolderMembershipReconciler {
     }
 
     /// READ-ONLY. Computes exactly what `reconcileAll` would do, for every
-    /// live item currently violating the invariant, without mutating or
-    /// saving anything. Exists so a real archive's proposed repair can be
-    /// reviewed before `reconcileAll` ever runs against it.
+    /// live item currently disagreeing (2+ active memberships, or 0/1 with
+    /// a stale legacy mirror), without mutating or saving anything. Exists
+    /// so a real archive's proposed repair can be reviewed before
+    /// `reconcileAll` ever runs against it.
     public static func preview(repository: Repository) throws -> [Preview] {
         let items = try repository.context.fetch(FetchDescriptor<StoredItem>())
         let liveItems = items.filter { !$0.isSoftDeleted }
@@ -160,20 +187,22 @@ public enum FolderMembershipReconciler {
         var previews: [Preview] = []
         for item in liveItems {
             let active = (activeByItem[item.id] ?? []).sorted { $0.createdAt < $1.createdAt }
-            guard active.count > 1, let winningMembership = winner(among: active) else { continue }
+            let winningMembership = winner(among: active)
+            let canonicalFolder = winningMembership?.folder
+            guard item.folder?.id != canonicalFolder?.id || active.count > 1 else { continue }
 
             let snapshots = active.map {
                 MembershipSnapshot(membershipID: $0.id, folderID: $0.folder?.id, folderName: $0.folder?.name, createdAt: $0.createdAt)
             }
-            let toDeactivate = snapshots.filter { $0.membershipID != winningMembership.id }
+            let toDeactivate = winningMembership.map { winner in snapshots.filter { $0.membershipID != winner.id } } ?? []
 
             previews.append(Preview(
                 itemID: item.id,
                 currentLegacyFolderName: item.folder?.name,
                 activeMemberships: snapshots,
-                winningFolderName: winningMembership.folder?.name,
+                winningFolderName: canonicalFolder?.name,
                 membershipsToDeactivate: toDeactivate,
-                resultingLegacyFolderName: winningMembership.folder?.name
+                resultingLegacyFolderName: canonicalFolder?.name
             ))
         }
         return previews

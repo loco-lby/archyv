@@ -95,13 +95,18 @@ public struct Repository {
         try save()
     }
 
-    /// Soft-deletes `folder`. As of v0.2 this NEVER touches `StoredItem` —
-    /// only the folder itself and its `StoredFolderMembership` rows are
-    /// deactivated. A reference that was only in this folder survives with
-    /// zero active memberships (naturally "Unfiled" — see
-    /// `StoredFolderMembership`'s doc comment); a reference also in other
-    /// folders keeps those memberships untouched. Notes, favorites, media
-    /// files, and every other item field are never touched here.
+    /// Soft-deletes `folder`. As of v0.2 this never touches an item's
+    /// identity, media, notes, favorites, tags, crop, or any other field —
+    /// only the folder itself, its `StoredFolderMembership` rows, and (as
+    /// of Single-Folder Invariant Foundation 01) the legacy `item.folder`
+    /// *compatibility mirror* on affected items. A reference that was only
+    /// in this folder survives with zero active memberships (naturally
+    /// "Unfiled" — see `StoredFolderMembership`'s doc comment) and now
+    /// correctly mirrors that as `item.folder == nil`, rather than leaving
+    /// a stale pointer at the just-deleted folder. A reference also in
+    /// other folders keeps those memberships untouched and mirrors
+    /// whichever one is canonical (`FolderMembershipReconciler.winner`,
+    /// same deterministic rule used for the >1-membership case).
     ///
     /// This replaces the pre-v0.2 behavior, which iterated `folder.items`
     /// and marked every one of them deleted too — i.e. deleting a folder
@@ -111,9 +116,19 @@ public struct Repository {
     public func softDelete(_ folder: StoredFolder) throws {
         folder.deletedAt = .now
         touch(folder)
+        var affectedItems: [StoredItem] = []
         for membership in folder.memberships ?? [] where !membership.isSoftDeleted {
             membership.deletedAt = .now
             membership.dirty = true
+            if let item = membership.item { affectedItems.append(item) }
+        }
+        for item in affectedItems {
+            let remaining = try memberships(for: item)
+            let canonicalFolder = FolderMembershipReconciler.winner(among: remaining)?.folder
+            if item.folder?.id != canonicalFolder?.id {
+                item.folder = canonicalFolder
+                touch(item)
+            }
         }
         try save()
     }
@@ -373,13 +388,21 @@ public struct Repository {
     /// Idempotent: a harmless no-op if it doesn't — removing a nonexistent
     /// membership is not an error. Never touches `item`'s own soft-delete
     /// state; an item losing its last membership here simply becomes
-    /// Unfiled.
+    /// Unfiled — and (Single-Folder Invariant Foundation 01) `item.folder`
+    /// now mirrors that correctly: `nil` if no active membership remains,
+    /// or whichever membership is canonical
+    /// (`FolderMembershipReconciler.winner`) if another one does.
     public func removeMembership(_ item: StoredItem, from folder: StoredFolder) throws {
         let matches = try memberships(for: item).filter { $0.folder?.id == folder.id }
         guard !matches.isEmpty else { return }
         for membership in matches {
             membership.deletedAt = .now
             membership.dirty = true
+        }
+        let remaining = try memberships(for: item)
+        let canonicalFolder = FolderMembershipReconciler.winner(among: remaining)?.folder
+        if item.folder?.id != canonicalFolder?.id {
+            item.folder = canonicalFolder
         }
         touch(item)
         touch(folder)
