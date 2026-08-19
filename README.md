@@ -971,3 +971,127 @@ to smoke-test the shared stack.
 
 Data is stored locally with SwiftData and synchronized through the user's
 private iCloud/CloudKit database — no external backend.
+
+## Multi-Device Consistency Contract (Foundation 01)
+
+Cherries relies entirely on SwiftData/CloudKit's native merge behavior —
+there is no custom sync engine, CRDT, or version-vector layer, and this
+milestone deliberately did not build one. What follows is the empirical
+v1 conflict contract, confirmed via real two-device testing (Sammy's
+iPhone 17 Pro Max + a second iPhone, same iCloud account), not assumed.
+
+**Safety result: no CRITICAL or HIGH defects found.** Across baseline
+convergence, concurrent favorite/note/sourceURL/tag edits, folder
+move/delete/creation races, crop conflicts, delete-vs-edit races,
+delete-vs-cache-reconstruction, simultaneous captures, and an
+offline-then-reconnect batch edit, `imageData` (the durable media
+authority) was never lost or corrupted, no logical Cherry ever vanished,
+no item ever became unreachable, and a full-archive `IntegrityCheck` on
+both devices after the entire stress campaign reported
+`itemsWithNoKnownRecovery` (real media loss) and `duplicateActiveMemberships`
+at **zero on both devices**.
+
+**Per-field conflict semantics:**
+
+- **Favorite / note / sourceURL** — plain scalar last-writer-wins at
+  CloudKit record granularity. Converges reliably; no character-level or
+  partial merge (a note fully replaces, never blends).
+- **Tags** — confirmed **whole-array last-writer-wins, not a merged
+  collection**. Two devices independently adding different tags to the
+  same item does *not* preserve both additions — one array wins outright,
+  and the other device's addition is silently, completely dropped with no
+  indication to either user. Treat as a real product limitation, not a
+  bug: this is exactly how a `[String]` property syncs under CloudKit's
+  per-record model.
+- **Folder placement** — the weakest point in the contract. Folder
+  membership (`StoredFolderMembership`) rows are independent CKRecords,
+  so two devices concurrently moving the same item into two *different*
+  folders can each successfully insert their own row, and CloudKit has no
+  reason to conflict two inserts of different records — both sync down as
+  simultaneously active. Confirmed as a real, non-trivial pattern: **11
+  items in the live archive** carry 2+ active folder memberships at once.
+  This is not corruption (the schema already allows multi-folder
+  membership) and the item stays fully reachable, but it's very likely
+  unintended by the user rather than deliberate multi-select. The legacy
+  `item.folder` scalar resolves independently via ordinary last-writer-wins
+  and may not agree with either device's last local action.
+- **Folder deletion** — deactivates the folder's memberships but does
+  **not** clear `item.folder` on member items (pre-existing Repository
+  behavior, not introduced by this milestone). A deleted folder can leave
+  member items with a stale legacy pointer; the item remains fully
+  retrievable via the canonical membership-based read path (effectively
+  Unfiled). This is exactly the shape `IntegrityCheck.folderMembershipDisagreements`
+  already exists to catch.
+- **Folder creation** — clean. Two devices creating folders with the same
+  display name produce distinct UUIDs and both sync correctly as separate
+  folders; duplicate names are allowed by design in v1.
+- **Crop** — whole-region last-writer-wins (`CropRegion`'s 4 doubles
+  replace atomically). One complete, valid crop always won outright — no
+  hybrid or invalid crop was ever observed. Convergence was noticeably
+  slower than scalar fields (~2 minutes observed vs. ~15-30s).
+- **Soft-delete** — last-writer-wins scalar. Under a genuine concurrent
+  delete-vs-edit race, `isSoftDeleted` divergence between devices was
+  observed to persist for several minutes before converging — but
+  `imageData` stayed fully intact throughout the entire divergence window
+  in every case, including while independently exercising cache
+  eviction/reconstruction mid-divergence on the device that hadn't yet
+  learned of the deletion. No hard-delete exists; this milestone
+  confirmed a soft-deleted item never becomes destructive to authoritative
+  media, even mid-race.
+- **Simultaneous new captures** — clean. Two near-simultaneous captures
+  on different devices produced distinct UUIDs and `localFilename`s, no
+  collision, and correctly-paired `imageData` on both devices.
+- **Offline batch edit → reconnect** — a device that made several edits
+  while genuinely offline (Airplane Mode) converged cleanly once
+  reconnected, with no corruption, no crash, and media intact.
+
+**Convergence timing is not uniform and is sensitive to how quickly the
+writing device goes quiet after a local edit.** CloudKit's background
+export needs real wall-clock time after a commit to actually serialize
+and transmit; a process that terminates or backgrounds very soon after a
+write can outrace it. Confirmed directly: an otherwise-identical note
+conflict stayed divergent for 60+ seconds with no post-write delay, and
+converged immediately with a 5-second delay before process exit. This is
+a genuine characteristic of the sync model, not merely a test-harness
+artifact — Cherries itself has no code path that force-exits after a
+write, but backgrounding shortly after an edit is an ordinary, frequent
+mobile scenario that plausibly has the same effect.
+
+**CloudKit error visibility: silent-only today.** Confirmed via full
+source review — no `CKError`, `NSPersistentCloudKitContainerEvent`, or any
+sync-status handling exists anywhere in the app. If an edit never syncs
+(quota, account issue, or the timing risk above), there is currently no
+in-app signal distinguishing "synced" from "pending" from "stuck." No UI
+or implementation work was done this milestone (correctly out of scope)
+— flagged for future product consideration, not a defect in itself.
+
+**Two narrow, diagnostic-only fixes were made to `IntegrityCheck`** (no
+schema, sync, or UI changes):
+- Added `itemsWithMultipleActiveFolders` — surfaces items with 2+
+  simultaneously-active folder memberships (see Folder placement above).
+  Report-only; nothing here auto-resolves a multi-folder race, since doing
+  so would mean picking a winner across devices — exactly the kind of
+  custom conflict protocol this milestone is scoped to avoid building.
+- Fixed a real non-determinism bug in `folderMembershipDisagreements`:
+  its "expected legacy folder" pick for an item with multiple active
+  memberships depended on `Dictionary`-grouping iteration order, which
+  Swift randomizes per-process — so two devices scanning *identical*
+  synced data could report different disagreement counts for reasons
+  unrelated to their actual data. Confirmed directly (16 vs. 10-16 across
+  runs before the fix) and confirmed fixed (16 = 16 on both devices,
+  repeatable) by sorting deterministically before picking.
+
+**Remaining risks (no CRITICAL/HIGH found):**
+- MEDIUM — tags can silently lose a concurrent addition with zero
+  indication to the user.
+- MEDIUM — concurrent folder moves can leave an item in 2+ folders at
+  once from an unintended race (now has diagnostic visibility via
+  `itemsWithMultipleActiveFolders`; no auto-resolution).
+- MEDIUM — CloudKit sync status is entirely invisible to the user.
+- LOW — convergence latency varies significantly by field/payload size
+  and by how quickly the app goes quiet after a write.
+
+None of these are custom-sync/CRDT-shaped problems — they're either
+already-detectable via `IntegrityCheck`, or product/UX questions (tag
+merge UX, multi-folder surfacing, sync status visibility) for a future,
+separately-scoped milestone.
