@@ -41,7 +41,7 @@ targets:
     info:
       path: Sources/iOS/App/Info.plist
       properties:
-        CFBundleDisplayName: arkyv
+        CFBundleDisplayName: Cherries
         ITSAppUsesNonExemptEncryption: false
         # A UILaunchScreen key (even minimal) is REQUIRED for the app to render
         # at native resolution — without it iOS letterboxes the app in a smaller
