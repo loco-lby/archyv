@@ -859,18 +859,56 @@ a real two-device CloudKit sync test), Cherries' media architecture is:
 - **A failed cache write never blocks viewing a Cherry** — if `imageData`
   is readable but the cache write fails (e.g. low disk), the caller still
   gets the bytes; only the on-disk cache copy is missing.
-- **Safety ramp, deliberate:** `MediaStore.evictionEnabled` is currently
-  `false`. Reconstruction, the declared authority model, and backup
-  exclusion all ship now; actual deletion of existing/cache files is held
-  back one release so the new cold-cache-miss path accumulates real
-  production runtime before the one irreversible-in-practice action
-  (deleting a local original) starts running automatically. See that
-  constant's doc comment for the full reasoning — flip it in a dedicated,
-  explicitly approved follow-up milestone.
 - **No mass migration.** Existing users already have byte-identical
   `MediaStore` + `imageData` copies (confirmed since D3A) — cutover
   required no rewrite of existing data, only a declaration of which copy
   is authoritative going forward.
+
+## Cache Eviction Contract (Eviction Activation 01)
+
+`MediaStore.evictionEnabled = true` — production eviction is live, after
+a dedicated deletion-contract audit found and fixed two real structural
+gaps the safety ramp above existed specifically to catch before this flag
+could safely flip.
+
+- **Capped at 1GB** (`MediaStore.cacheCapacityBytes`) — a single fixed
+  constant, not adaptive/proportional.
+- **Opportunistic, not a daemon.** The only production trigger is once
+  per foreground activation (`RootView`'s `scenePhase` hook, mirroring
+  `ImageBackfill`/`SeedGate`'s existing pattern) — no perpetual background
+  worker, no post-write trigger (removed — see below).
+- **Modification-date recency approximates LRU**, bumped on every cache
+  hit — intentionally approximate, not perfect theoretical LRU, per this
+  milestone's own explicit scope.
+- **Two structural (not timing-based) protections**, both proven via
+  dedicated tests, not assumed:
+  - `MediaStore.evictionGracePeriod` (5 minutes) — no file younger than
+    this is ever eviction-eligible, regardless of cache pressure or sort
+    order. Protects the pre-save/authority-transition window: a freshly
+    staged capture has no `StoredItem`/`imageData` yet, and eviction has
+    no way to know that from the filesystem alone.
+  - `Repository.filenamesLackingImageData()`, threaded through as
+    `evictIfNeeded(protecting:)` at the one call site with SwiftData
+    access (`RootView`). Protects historical/pre-`ImageBackfill` items
+    whose `MediaStore` file is still their only local copy. Fails
+    CLOSED — if this query itself throws, that pass skips eviction
+    entirely rather than risk evicting without full protection. This is
+    also why the post-write eviction trigger `reconstruct(filename:from:)`
+    used to have was removed entirely: `MediaStore` has no SwiftData
+    access at that call site to compute this protection, so it no longer
+    triggers eviction at all — only `RootView`'s foreground pass does.
+- **Deletion failures are tolerated, never faked as success.** A file
+  that can't be removed (e.g. `evictIfNeeded`'s own byte-accounting)
+  is only ever subtracted from the running total on a CONFIRMED removal
+  — the cap is a goal the next opportunistic pass will keep pursuing,
+  never a guarantee worth risking data over.
+- **Missing cache is normal, cache deletion never implies Cherry
+  deletion.** `imageData` is authoritative; a `MediaStore` file's absence
+  — whether never-written or evicted — is the same routine cold-cache-miss
+  state either way, self-healing on next access.
+- **Real-device performance:** scan+trim of a realistic ~1,500-file cache
+  measured ~135ms, entirely off the main actor, imperceptible in the
+  backgrounded foreground-activation trigger it runs from.
 
 ## Build
 
