@@ -1144,15 +1144,41 @@ underneath was cleaned up. One item's displayed folder changed
 placement. Confirmed via `IntegrityCheck`: `itemsWithMultipleActiveFolders`
 went from 11 to 0, matching on both devices.
 
-**Known, separately-scoped limitation:** `folderMembershipDisagreements`
-did not reach 0 (6 remain, deterministic count on both devices) — but
-this is a *different* bug class than the one this milestone fixed. All 6
-are items with 0 or 1 active membership where `item.folder` is stale:
-either `Repository.removeMembership()` (which never touches `item.folder`)
-or `Repository.softDelete(folder)` (which deactivates memberships but
-never clears member items' `item.folder`) left a legacy pointer behind.
-`FolderMembershipReconciler` only fires on 2+ active memberships by
-design — it doesn't touch this population. The item stays fully
-retrievable via the canonical membership-based read path in every case;
-this is a legacy-mirror staleness issue, not data loss or unreachability.
-Left unfixed pending a separate, explicitly-scoped decision.
+**Closeout (same-night follow-up): legacy mirror now agrees in every
+case, not just the 2+-membership one.** The 6 `folderMembershipDisagreements`
+above were a *different* bug class than the concurrent-move race:
+`Repository.removeMembership()` never updated `item.folder` when an
+item's last (or a remaining) membership changed, and
+`Repository.softDelete(folder:)` deactivated a deleted folder's
+memberships but never cleared or re-mirrored affected items'
+`item.folder`. Both are now fixed at their own write sites:
+
+- `removeMembership`: mirrors `item.folder` to whichever canonical
+  membership remains (via the same `FolderMembershipReconciler.winner`
+  rule), or `nil` if none does.
+- `softDelete(folder:)`: for every member item, re-mirrors `item.folder`
+  to its remaining canonical membership, or `nil` (Unfiled) if the
+  deleted folder was its only one. The item itself is never touched
+  beyond this — no cascading soft-delete, fully reachable either way.
+
+`FolderMembershipReconciler.reconcileAll`/`.preview` were generalized to
+cover this same 0-or-1-membership mirror-mismatch shape, not just the
+2+-membership collapse — one mechanism, one rule, for "make `item.folder`
+agree with canonical state" in every shape the invariant governs.
+
+The 6 pre-existing real disagreements were classified before repair: 2
+were this session's own `mdc-test`-tagged fixtures, 4 were real archive
+items — 2 stale-after-`removeMembership`-equivalent-history, 2
+stale-after-folder-deletion. All 6 repairs mirrored `item.folder` to
+exactly what canonical membership state already showed (a real active
+membership, or Unfiled) — none invented a folder outside canonical
+state. Since One Archive's own filtering already reads live membership
+(not `item.folder`), these items were already displaying correctly
+there; the fix corrects Item Detail's Folder-room initial selection,
+the one surface that still reads the legacy mirror directly.
+
+Final state, confirmed on both devices: `itemsWithMultipleActiveFolders
+= 0`, `folderMembershipDisagreements = 0`, `duplicateActiveMemberships =
+0`, `itemsWithNoKnownRecovery = 0`. The single-folder invariant,
+including full legacy-mirror agreement, now holds across the entire
+real archive.
