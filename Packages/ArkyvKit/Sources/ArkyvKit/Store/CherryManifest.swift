@@ -2,19 +2,22 @@ import Foundation
 import SwiftData
 
 #if DEBUG
-/// Recovery/Portability Foundation 01: a DEBUG-only, read-only proof that
-/// the current models contain enough stable information to represent a
-/// complete, portable archive manifest — the Phase 4 question this exists
-/// to answer. NOT a shipped export feature: no UI, no import path, no
-/// product behavior change. `Repository.fileCapture`/`updateNote`/etc. are
-/// never called from here; this only ever *reads*.
+/// Recovery/Portability Foundation 01 origin: a DEBUG-only proof that the
+/// current models contain enough stable information to represent a
+/// complete, portable archive manifest. Extended by Pre-Launch Migration
+/// Ferry 01 with a real, narrow importer and `imageData` — still DEBUG/
+/// internal-only tooling, still no UI, still not the eventual public
+/// export format (see this type's own scope note below); the difference
+/// is this is now a genuinely complete, one-time migration tool: export
+/// captures everything needed to reconstruct a Cherry independently
+/// (identity, media, crop, metadata, canonical folder relationship), and
+/// `importArchive` reconstructs it through the same field-level semantics
+/// `Repository` uses, into an isolated destination.
 ///
-/// Deliberately narrow: this proves the *shape* is representable
-/// (`Codable`, round-trips through JSON without loss) — it is not a
-/// finished export format, doesn't touch media bytes (a manifest entry
-/// references `localFilename`, matching a real future `media/` folder in
-/// the archive-package shape sketched in the Recovery/Portability
-/// Contract), and doesn't decide product UX for a future export feature.
+/// `export` proves the *shape* is representable (`Codable`, round-trips
+/// through JSON without loss) and is not the finished, eventual public
+/// export format — this remains internal migration tooling, not a
+/// shipped product feature.
 public enum CherryManifest {
     public struct Folder: Codable, Equatable {
         public var id: UUID
@@ -32,6 +35,16 @@ public enum CherryManifest {
         /// `nil` for non-media kinds (`.note`/`.text`), which is exactly
         /// the same optionality `StoredItem.localFilename` already has.
         public var localFilename: String?
+        /// Pre-Launch Migration Ferry 01: the authoritative media bytes
+        /// themselves, embedded directly — `imageData` is the declared
+        /// authoritative representation (see `StoredItem.imageData`'s own
+        /// doc comment), so a migration artifact that omits it isn't a
+        /// complete Cherry. `Codable` encodes `Data` as base64 by default;
+        /// deliberately accepted for this one-time internal migration tool
+        /// (see this file's own doc comment on export-format scope) rather
+        /// than a separate `media/` package. `nil` for non-media kinds,
+        /// matching `StoredItem.imageData`'s own optionality.
+        public var imageData: Data?
         public var aspectWidth: Double
         public var aspectHeight: Double
         /// Non-destructive crop, verbatim from `CropRegion` — see its own
@@ -88,6 +101,7 @@ public enum CherryManifest {
                     id: item.id,
                     kind: item.kindRaw,
                     localFilename: item.localFilename,
+                    imageData: item.imageData,
                     aspectWidth: item.aspectWidth,
                     aspectHeight: item.aspectHeight,
                     cropX: item.cropX,
@@ -119,6 +133,138 @@ public enum CherryManifest {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(Archive.self, from: data)
+    }
+
+    // MARK: - Import (Pre-Launch Migration Ferry 01)
+
+    public enum ImportError: Error, Equatable {
+        /// Fail-closed by design (Section 10 of the migration ferry
+        /// milestone): a general-purpose merge/idempotency engine is out
+        /// of scope for a one-time internal tool, so importing twice — or
+        /// into any store that already has content — is a hard refusal,
+        /// not an attempted merge.
+        case destinationNotEmpty(existingItemCount: Int, existingFolderCount: Int)
+        /// Two items in the SAME archive share an id — the archive itself
+        /// is malformed; this can never happen from a real `export()`
+        /// call (SwiftData ids are unique), only from a hand-edited or
+        /// corrupted artifact.
+        case duplicateItemIdentity(UUID)
+        /// An item's `folderIDs` references a folder id absent from the
+        /// archive's own `folders` array — malformed artifact.
+        case missingFolderReference(itemID: UUID, folderID: UUID)
+    }
+
+    public struct ImportSummary {
+        public var foldersImported = 0
+        public var itemsImported = 0
+        public var membershipsImported = 0
+        public var totalImageDataBytes = 0
+    }
+
+    /// Reconstructs `archive` into `context`, which must be completely
+    /// empty (Section 10: fail-closed, no merge semantics). Builds every
+    /// model object in memory first and calls `context.save()` exactly
+    /// once at the end — SwiftData/CoreData's `save()` is one atomic
+    /// commit, so this import is all-or-nothing by construction: if it
+    /// throws, nothing was persisted (the destination remains exactly as
+    /// empty as it started, trivially safe to retry), and there is no
+    /// window where a caller could observe a partially-reconstructed
+    /// archive as if it were complete.
+    ///
+    /// Deliberately does NOT go through `Repository.fileCapture` — that
+    /// method sources `imageData` by reading a `MediaStore` file, which is
+    /// exactly backwards for a migration import (the artifact's
+    /// `imageData` is the source of truth here; there is no MediaStore
+    /// file yet, nor should one be created — MediaStore stays a derived
+    /// cache, populated later, normally, on first real access). Every
+    /// other field-level rule (crop validity via `CropRegion`'s own
+    /// `init`, the "0-or-1 active membership, item.folder mirrors it"
+    /// single-folder invariant) is reproduced by hand here for exactly
+    /// this reason, matching `Repository`/`FolderMembershipReconciler`'s
+    /// own semantics rather than inventing new ones.
+    @discardableResult
+    public static func importArchive(_ archive: Archive, into context: ModelContext) throws -> ImportSummary {
+        let existingItemCount = try context.fetchCount(FetchDescriptor<StoredItem>())
+        let existingFolderCount = try context.fetchCount(FetchDescriptor<StoredFolder>())
+        guard existingItemCount == 0, existingFolderCount == 0 else {
+            throw ImportError.destinationNotEmpty(existingItemCount: existingItemCount, existingFolderCount: existingFolderCount)
+        }
+
+        var seenItemIDs = Set<UUID>()
+        for item in archive.items {
+            guard seenItemIDs.insert(item.id).inserted else {
+                throw ImportError.duplicateItemIdentity(item.id)
+            }
+        }
+        let folderIDs = Set(archive.folders.map(\.id))
+        for item in archive.items {
+            for folderID in item.folderIDs where !folderIDs.contains(folderID) {
+                throw ImportError.missingFolderReference(itemID: item.id, folderID: folderID)
+            }
+        }
+
+        var summary = ImportSummary()
+
+        var newFoldersByID: [UUID: StoredFolder] = [:]
+        for folder in archive.folders {
+            let newFolder = StoredFolder(
+                id: folder.id,
+                name: folder.name,
+                icon: FolderIcon(token: folder.iconToken),
+                sortOrder: folder.sortOrder,
+                createdAt: folder.createdAt
+            )
+            newFolder.deletedAt = folder.deletedAt
+            context.insert(newFolder)
+            newFoldersByID[folder.id] = newFolder
+            summary.foldersImported += 1
+        }
+
+        for item in archive.items {
+            let newItem = StoredItem(
+                id: item.id,
+                kind: ItemKind(rawValue: item.kind) ?? .image,
+                localFilename: item.localFilename,
+                imageData: item.imageData,
+                noteBody: item.noteBody,
+                title: item.title,
+                sourceURL: item.sourceURL,
+                tags: item.tags,
+                isFavorite: item.isFavorite,
+                aspectWidth: item.aspectWidth,
+                aspectHeight: item.aspectHeight,
+                createdAt: item.createdAt
+            )
+            newItem.updatedAt = item.updatedAt
+            newItem.deletedAt = item.deletedAt
+            newItem.cropRegion = CropRegion(x: item.cropX, y: item.cropY, width: item.cropWidth, height: item.cropHeight)
+
+            // Single-folder invariant, reproduced directly (see doc
+            // comment above for why this doesn't go through
+            // Repository/FolderMembershipReconciler): 0 folderIDs -> nil
+            // legacy mirror, Unfiled; 1 -> that membership is canonical
+            // and item.folder mirrors it. `export()` only ever writes 0
+            // or 1 entries under the now-approved invariant, but this
+            // loop tolerates more defensively rather than assuming.
+            newItem.folder = item.folderIDs.first.flatMap { newFoldersByID[$0] }
+            context.insert(newItem)
+            summary.itemsImported += 1
+            summary.totalImageDataBytes += item.imageData?.count ?? 0
+
+            for folderID in item.folderIDs {
+                guard let newFolder = newFoldersByID[folderID] else { continue }
+                context.insert(StoredFolderMembership(item: newItem, folder: newFolder, createdAt: item.createdAt))
+                summary.membershipsImported += 1
+            }
+        }
+
+        do {
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
+        return summary
     }
 }
 #endif

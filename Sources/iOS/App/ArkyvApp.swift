@@ -93,6 +93,19 @@ struct ArkyvApp: App {
                             await MultiDeviceConsistencyHarness.run(action: action, container: container)
                         }
                     }
+                    // Pre-Launch Migration Ferry 01 — export half reads the
+                    // real modelContainer (read-only, matching every other
+                    // real-data harness above); import half only ever
+                    // writes into a fresh isolated in-memory container it
+                    // creates itself. See MigrationFerry's own doc comment.
+                    if let flagIndex = CommandLine.arguments.firstIndex(of: "--arkyv-migration"),
+                       flagIndex + 1 < CommandLine.arguments.count {
+                        let action = CommandLine.arguments[flagIndex + 1]
+                        let container = modelContainer
+                        Task.detached(priority: .userInitiated) {
+                            await MigrationFerry.run(action: action, realContainer: container)
+                        }
+                    }
                     #endif
                 }
         }
