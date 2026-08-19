@@ -37,7 +37,7 @@ struct ArkyvApp: App {
                 .task {
                     // Scale Foundation 01: entirely inert unless explicitly
                     // launched with this argument (`devicectl device
-                    // process launch ... com.expatinsurance.arkyv
+                    // process launch ... com.deadwest.cherries
                     // --arkyv-bench-image-cache`) — never triggered by
                     // ordinary development or use. Deliberately NOT run
                     // from `init()`: a long synchronous stress loop before

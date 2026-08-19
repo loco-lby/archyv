@@ -33,6 +33,13 @@ enum MultiDeviceConsistencyHarness {
         print("[MDC] action=\(action)")
         do {
             switch action {
+            case "container-paths":
+                // Technical Identity Cutover 01, Section 9: read-only,
+                // paths/identifiers only — never prints Cherry contents.
+                print("[MDC] AppGroup.identifier=\(AppGroup.identifier)")
+                print("[MDC] AppGroup.containerURL=\(AppGroup.containerURL.path)")
+                print("[MDC] storeURL=\(AppGroup.containerURL.appendingPathComponent("arkyv.store").path)")
+                print("[MDC] mediaRoot=\(MediaStore.shared.root.path)")
             case "create":
                 try create(repo: repo)
             case "report":
@@ -153,7 +160,7 @@ enum MultiDeviceConsistencyHarness {
         // expected — see the "quick-exit-after-write" finding in the
         // final report. `report`/read-only actions skip the wait, since
         // they have nothing to flush.
-        if action != "report" && action != "integrity-check" {
+        if action != "report" && action != "integrity-check" && action != "container-paths" {
             print("[MDC] waiting 5s before exit to give CloudKit export a fair chance to flush...")
             try? await Task.sleep(for: .seconds(5))
         }

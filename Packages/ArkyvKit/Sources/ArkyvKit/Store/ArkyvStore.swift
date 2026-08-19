@@ -19,7 +19,11 @@ public enum ArkyvStore {
     /// store first and immediately, the same as before this milestone, so
     /// the app has no new dependency on network/iCloud availability for any
     /// existing read or write path.
-    private static let cloudKitContainerID = "iCloud.com.expatinsurance.arkyv"
+    /// Technical Identity Cutover 01: permanent Deadwest/Cherries CloudKit
+    /// container — a clean cut, no dual-container bridge, no record
+    /// migration from the legacy container. Development environment only
+    /// (Production schema not deployed by this cutover).
+    private static let cloudKitContainerID = "iCloud.com.deadwest.cherries"
 
     /// Shared on-disk container. Falls back to an in-memory store if the
     /// on-disk store can't be opened, so the UI never hard-crashes at launch.

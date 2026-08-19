@@ -1,6 +1,6 @@
 name: ScreenshotApp
 options:
-  bundleIdPrefix: com.expatinsurance.arkyv
+  bundleIdPrefix: com.deadwest.cherries
   deploymentTarget:
     iOS: "17.0"
     macOS: "14.0"
@@ -35,7 +35,7 @@ targets:
       - target: ArkyvShare
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.expatinsurance.arkyv
+        PRODUCT_BUNDLE_IDENTIFIER: com.deadwest.cherries
         PRODUCT_NAME: arkyv
         CODE_SIGN_ENTITLEMENTS: Sources/iOS/App/Arkyv.entitlements
     info:
@@ -82,7 +82,7 @@ targets:
       - package: ArkyvKit
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.expatinsurance.arkyv.Share
+        PRODUCT_BUNDLE_IDENTIFIER: com.deadwest.cherries.share
         PRODUCT_NAME: ArkyvShare
         CODE_SIGN_ENTITLEMENTS: Sources/Share/ArkyvShare.entitlements
     info:
@@ -123,7 +123,7 @@ targets:
       - package: ArkyvKit
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.expatinsurance.arkyv.mac
+        PRODUCT_BUNDLE_IDENTIFIER: com.deadwest.cherries.mac
         PRODUCT_NAME: arkyv
         CODE_SIGN_ENTITLEMENTS: Sources/macOS/ArkyvMac.entitlements
         INFOPLIST_KEY_LSUIElement: YES
