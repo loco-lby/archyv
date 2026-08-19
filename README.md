@@ -1182,3 +1182,47 @@ Final state, confirmed on both devices: `itemsWithMultipleActiveFolders
 0`, `itemsWithNoKnownRecovery = 0`. The single-folder invariant,
 including full legacy-mirror agreement, now holds across the entire
 real archive.
+
+## Release Environment Contract (Foundation 01)
+
+**CLEAN — code/configuration.** Verified that the architecture validated
+in development remains correct under actual Release configuration; no
+code changes were required.
+
+- **App/extension entitlement parity confirmed** in the compiled Release
+  binary, not just source intent: app and Share Extension embed identical
+  `com.apple.developer.icloud-container-identifiers` and
+  `com.apple.security.application-groups`.
+- **Release build succeeds** (`xcodebuild build`/`archive -configuration
+  Release`, full scheme, app + embedded extension).
+- **Existing App Group/archive survives a Release-configured install** —
+  confirmed via `databaseUUID` staying identical across install (same
+  container, not a fresh/wiped one), app launches and runs with no crash.
+- **DEBUG diagnostics correctly gated** — exhaustive audit of every `#if
+  DEBUG` site across the app, extension, and package; zero instances of
+  DEBUG-only code accidentally active in Release.
+- **Production logging/privacy hygiene clean** — every `print`/logging
+  call site in the codebase is DEBUG-gated; no unconditional production
+  logging of notes, URLs, tags, folder names, filenames, or CloudKit
+  identifiers.
+- **Media/cache architecture identical in Release** — `MediaStore`/
+  `ImageDecodeCache` contain no DEBUG conditionals; only compiler
+  optimization level differs between configurations, not behavior.
+
+**Release-blocker status:**
+- **CONFIRMED BLOCKER:** CloudKit production schema has not yet been
+  confirmed deployed. Development CloudKit auto-creates schema as the
+  app runs (already exercised all session); production does not —  it
+  requires an explicit deploy via CloudKit Dashboard before any
+  production-environment build's CloudKit sync will work. Not deployed
+  by this milestone, pending manual deployment and confirmation.
+- **UNRESOLVED UNTIL REAL ORGANIZER DISTRIBUTION:** distribution signing.
+  This environment has no local Apple Distribution certificate, but that
+  alone doesn't confirm a blocker — Xcode Organizer's real TestFlight
+  distribution workflow supports cloud-managed signing under Automatically
+  Manage Signing, which may satisfy distribution without one. Requires
+  verification through that actual workflow, not assumed from local
+  keychain state alone.
+
+Next: a real TestFlight/production-environment validation milestone,
+once the CloudKit production schema deployment above is confirmed.
