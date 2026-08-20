@@ -1528,3 +1528,63 @@ real archive migration, post-migration reconciliation, and two-device
 restore/sync validation are all closed. The permanent Cherries
 environment is now the development/daily-use authority; `arkyv` remains
 installed on both devices as a deliberate rollback copy.
+
+## URL → Cherry (Production Foundation 01)
+
+**GREEN.** "A user does not save a link, they save the thing it points
+to." `URLCherryResolver` (`Packages/ArkyvKit/Sources/ArkyvKit/Capture/URLCherryResolver.swift`)
+turns a shared URL into an ordinary image-backed `CaptureDraft` using
+Apple-native `LPMetadataProvider` — no platform-specific adapters, no
+schema changes. It feeds the exact same `Repository.fileCapture` path
+every other image capture already uses; this is not a parallel
+persistence system.
+
+**Integration point:** the one existing URL branch in
+`ShareViewController.extractDraft()` — previously always returned a
+contentless `CaptureDraft(kind: .text, title: url.host, sourceURL:
+url.absoluteString)`. Now it first attempts `URLCherryResolver.resolve`;
+on ANY failure (no network, timeout, no image, undecodable bytes) it
+falls straight through to that exact same text-only draft. Resolution
+is an enhancement, never a new failure dependency.
+
+**Original URL, not canonical URL.** `sourceURL` is always set from the
+raw incoming `URL`, never `metadata.url`/`metadata.originalURL` —
+Discovery Spike 01 found Apple's own "resolved" URL silently drops
+query context like Instagram's `?img_index=1` and YouTube's `&t=106s`.
+Covered by a dedicated test (`testResolvePreservesOriginalURLVerbatimIncludingQueryParams`).
+
+**Bounded, single timeout.** One 6s budget (`URLCherryResolver.defaultTimeout`)
+races the entire resolution attempt (metadata fetch + image download)
+against a timer via `withTaskGroup`; whichever finishes first wins, and
+the loser is cancelled. `LPMetadataProvider.cancel()` is wired through
+`withTaskCancellationHandler` so a timed-out fetch is actually torn
+down, not just abandoned. `Task.isCancelled` is checked before the
+`MediaStore.save` call specifically to close the (otherwise real) risk
+of a lost race still persisting an orphaned file after `resolve()` has
+already returned nil to a caller that moved on — this doesn't reach
+into `NSItemProvider.loadDataRepresentation`'s completion-handler-based
+API, which can't observe Swift Task cancellation, but that residual
+gap is the same class of accepted, already-documented risk as other
+cancelled-share orphaned-file cases in this codebase, not a new one.
+
+**Image validation without a full decode:** the existing
+`ImageDecoding.pixelSize(ofData:)` (header-only, `CGImageSource`-based)
+both validates the bytes actually decode as an image AND supplies
+`CaptureDraft.pixelSize` in one cheap call, regardless of source
+resolution — no giant bitmap is ever materialized just to check
+validity.
+
+**Testing:** `URLCherryResolverTests.swift` exercises success, original-URL
+preservation, title carry-through, and every failure path (fetch error,
+no imageProvider, non-image type, undecodable bytes, timeout) entirely
+against a fake `LinkMetadataFetching` and an isolated `MediaStore` — no
+network dependency. Verified via a clean iOS `xcodebuild` build
+(including the Share Extension) and careful code review; this
+environment's pre-existing `swift test`/`swift build --build-tests`
+gaps (documented earlier in this README) meant the suite could not
+also be executed via the CLI this pass.
+
+**Known V1 limitation, accepted:** Instagram's `img_index` survives in
+`sourceURL` but generic LinkPresentation only exposes a post-level
+preview image, not the specific carousel frame — deferred, as decided
+in Discovery Spike 01; no Instagram-specific resolver was built.
