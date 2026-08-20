@@ -1387,3 +1387,34 @@ intended behavior. The collision only arises from `CherryManifest.importArchive`
 normal product flow — being run against an environment SeedGate had
 already (correctly) populated. This was a one-time event specific to
 this cutover.
+
+## Pre-Sync Test Residue Cleanup (Foundation 01)
+
+**GREEN.** Removed engineering test debris that had been faithfully
+(correctly) migrated from the legacy archive, before Device B ever
+reconstructs the new environment via CloudKit.
+
+**Critical finding — a caught false positive.** The visible "Test"
+folder's 5 members looked, by name and folder alone, like an obvious
+engineering-residue candidate. Direct inspection proved otherwise:
+zero test tags, and real, varying `imageData` sizes (367KB–4.4MB) with
+real camera/screenshot dimensions (3024×4032, 1290×2796, 4284×5712) —
+nothing like this repo's stress-test harnesses, which all generate a
+fixed, tiny 35,520-byte synthetic image. Confirmed genuine Sammy
+content and left untouched. This is exactly why the cleanup required
+read-only, evidence-based proof (tags, byte sizes, dimensions, harness
+name-literal matches) before any deletion, never inference from a name
+alone.
+
+**Removed, all independently proven synthetic:** 4 empty folders (`MDC
+Folder A`, `MDC Folder B`, `MDC Collision` ×2 — zero relationships,
+exact string match to this repo's own hardcoded harness folder-name
+literals) and 5 items (all `mdc-test`-tagged, all exactly 35,520 bytes,
+all Unfiled — including the disposable `CUTOVER-TEST` item created
+during the identity cutover). Two already-soft-deleted `MDC Folder X`
+rows needed no action. Sammy's real Share Extension test Cherry was
+explicitly preserved per instruction.
+
+**Result:** `IntegrityCheck` clean on all four targets after cleanup;
+6 live folders remain (the 5 real migrated folders plus Sammy's genuine
+`Test` folder); old environment reconfirmed unchanged (84/12/101).
