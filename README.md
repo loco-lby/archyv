@@ -1588,3 +1588,50 @@ also be executed via the CLI this pass.
 `sourceURL` but generic LinkPresentation only exposes a post-level
 preview image, not the specific carousel frame — deferred, as decided
 in Discovery Spike 01; no Instagram-specific resolver was built.
+
+## URL → Cherry Physical QA Follow-Up (Foundation 01)
+
+**GREEN.** Two findings from Sammy's first physical QA pass, resolved/characterized.
+
+**Share Extension layout, root cause and fix.** A very wide representative
+image (Works in Progress's hero) displaced the drawer's X/checkmark/folder
+controls out of the visible screen bounds. The first attempted fix
+(combining `MediaThumbnail`'s two chained `.frame(maxWidth:)`/
+`.frame(maxHeight:)` calls into one) did **not** resolve it — a
+physical-device retest showed the same bleed. Flexible sizing
+(`.infinity`/`max`) is a negotiation between parent and child, and
+something in the VStack/ZStack chain was still letting an oversized
+child win that negotiation for the whole drawer. The real fix: wrap
+`ShareDrawerContent.body` in a `GeometryReader` and give every child
+(`MediaThumbnail`, the content `VStack`, the folder dropdown) the
+geometry's own concrete width/height — eliminating flexible sizing
+from the chain entirely, so there is nothing left for an unusual
+aspect ratio to exploit. Confirmed fixed live against the real Works
+in Progress share; confirmed no regression on an ordinary screenshot
+share.
+
+**Instagram carousel — empirically characterized, not built.** DEBUG-only
+instrumentation (logged to console and, since `devicectl` can't stream
+console output from an OS-launched extension process, also to a small
+local App Group file read back via a harness action) captured the real
+Share Extension input for a live Instagram carousel share:
+`providers=1`, `types=["public.url"]` only — **no image provider at
+all**. Instagram hands Cherries a bare URL with the selected slide as
+a query parameter (`?img_index=2`). Decisive proof the crop isn't
+slide-aware: two saved Cherries from the *same* Instagram post at
+different `img_index` values (2 and 4) resolved to **byte-identical**
+image data (57,328 bytes both). Since `URLCherryResolver` only
+downloads and stores bytes verbatim — no cropping logic exists in this
+codebase's URL path — the "zoomed" crop originates from Instagram's
+own server-side, post-level Open Graph image, not from Cherries. This
+matches Discovery Spike 01's predicted scenario B/C and confirms
+generic V1 genuinely cannot know which carousel slide was intended —
+still deliberately not built this milestone.
+
+**Legacy Arkyv branding, located:** `Resources/Assets.xcassets/AppIcon.appiconset/Contents.json`
+defines icon slots with **no actual image files assigned** — the
+Share Sheet row icon Sammy sees is whatever iOS is caching from an
+earlier install, not anything in the current asset catalog.
+`ArkyvMark`/`ArkyvWordmark` imagesets still exist but aren't
+referenced anywhere in the Share Extension's own code, only the main
+app's — left untouched, read-only finding for a future rebrand pass.
