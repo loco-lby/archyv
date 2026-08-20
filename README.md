@@ -1471,3 +1471,60 @@ foreground dwell over many short relaunch cycles.
 (`com.expatinsurance.arkyv`) remains installed and running on Device A,
 the migration backup file's SHA-256 is unchanged
 (`1e1bef03...ce441e`), and no Production CloudKit schema was deployed.
+
+## Permanent Environment Closeout (Foundation 01)
+
+**GREEN.** Migration/sync chapter is now CLOSED. The permanent
+`com.deadwest.cherries` environment is left in a clean everyday-use
+state, with the legacy `arkyv` environment retained intentionally as a
+rollback copy — not retired.
+
+**TWO-DEVICE-TEST-A removed.** Identity confirmed before deletion
+(`id=52B25162-4C90-400B-95E8-15DC7D5F1EAC`, `tags=["tagA","mdc-test"]`,
+`noteBody` carrying both the A-side and B-side edits) via a hardcoded,
+safety-checked harness action — never inferred from timestamp or name
+proximity alone. Soft-deleted on Device A; convergence to Device B
+confirmed (`isSoftDeleted=true`, matching `deletedAt`) after one
+undisturbed foreground dwell, applying the "long dwell over rapid
+relaunch cycling" lesson from the prior milestone. Active item count
+returned to the pre-test baseline of 80.
+
+**Manual Share Extension test Cherry identified, not deleted.**
+`id=4EB86B4C-3478-4168-8089-38A91FED21D7`, created 2026-08-19 21:55:29
+UTC, Unfiled, `sourceDevice=iOS`, `kind=screenshot`, 255,803 bytes, no
+tags/title/note. Stood out unambiguously from the legacy archive by
+`sourceDevice`: every migrated item shows `sourceDevice=unknown`
+(preserved from the legacy JSON, which predates this field's iOS-vs-
+unknown distinction); only this one item is `iOS`. Left in place per
+instruction — not tagged synthetic, so not eligible for automatic
+removal; Sammy can delete it manually if he wants to.
+
+**Final two-device baseline:** both devices converged to identical
+`IntegrityCheck` results — `isClean=true`, 87 total items (80 active / 7
+soft-deleted), 17 folders, 75 memberships, `folderDisagreements=0`,
+`duplicateActiveMemberships=0`, `itemsWithMultipleActiveFolders=0`,
+`itemsWithNoKnownRecovery=0`.
+
+**Rollback retention confirmed:** `com.expatinsurance.arkyv` installed
+and present on both devices; the migration backup JSON's SHA-256 is
+unchanged; no legacy Apple Developer resources were touched; no
+Production CloudKit schema deployed; no App Store Connect work
+performed.
+
+**Action Button follow-up (read-only audit):** the codebase registers
+no custom URL scheme and no App Intents, so the Action
+Button/Shortcuts integration is necessarily a system-level "Open App"
+selection, not a programmatic deep link this repo controls. Manual
+steps for Sammy, depending on how it's currently configured:
+- *If the Action Button is set directly to "Open App":* Settings →
+  Action Button → swipe to "Open App" → "Choose an App" → select
+  **Cherries** (now visually distinct from `arkyv`).
+- *If the Action Button runs a Shortcut containing an "Open App"
+  step:* Shortcuts app → open that shortcut → tap the app field on its
+  "Open App" action → reselect **Cherries**.
+
+**Migration chapter status: CLOSED.** Technical identity migration,
+real archive migration, post-migration reconciliation, and two-device
+restore/sync validation are all closed. The permanent Cherries
+environment is now the development/daily-use authority; `arkyv` remains
+installed on both devices as a deliberate rollback copy.
