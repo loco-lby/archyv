@@ -107,6 +107,16 @@ final class ShareViewController: UIViewController {
 
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
             if let url = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
+                // URL → Cherry Production Foundation 01: "a user does not
+                // save a link, they save the thing it points to." Any
+                // failure here (network, timeout, no image, undecodable
+                // bytes) returns nil and falls straight through to the
+                // exact same text-only draft this branch always produced
+                // — resolution is an enhancement, never a new failure
+                // dependency for a plain URL share.
+                if let resolved = await URLCherryResolver.resolve(url, sourceDevice: .iOS) {
+                    return resolved
+                }
                 return CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS)
             }
         }
