@@ -12,29 +12,40 @@ import UniformTypeIdentifiers
 /// path every other image capture already uses; this is not a parallel
 /// persistence system.
 public enum URLCherryResolver {
-    /// Single bounded budget for the whole resolution attempt (metadata
-    /// fetch + image byte download) — small and defensible for a Share
-    /// Extension's tight lifetime, not tuned per-step. Chosen empirically
-    /// from Discovery Spike 01's real-URL runs, which all completed in low
-    /// single-digit seconds; doubled for headroom without risking the
-    /// extension's own execution ceiling.
-    public static let defaultTimeout: TimeInterval = 6
+    /// Single bounded budget for the whole resolution attempt — small and
+    /// defensible for a Share Extension's tight lifetime, not tuned
+    /// per-step. Slightly larger than Production Foundation 01's original
+    /// 6s: a matched source enricher can add up to two extra network
+    /// round-trips (its own lookup, then a thumbnail fetch) before ever
+    /// falling back to the generic path, and both must still fit inside
+    /// one bounded attempt.
+    public static let defaultTimeout: TimeInterval = 8
+
+    /// Checked in order; the first enricher whose `matches(_:)` returns
+    /// `true` gets one attempt before the generic path runs. Not a
+    /// registry/plugin system — a plain, small, ordered list, matching
+    /// "approximately a handful of launch-time enrichers, not an
+    /// enterprise framework."
+    public static let defaultEnrichers: [SourceEnricher] = [YouTubeOEmbedEnricher()]
 
     /// Attempts to resolve `url` into an image-backed draft. `sourceURL` on
     /// the returned draft is always `url.absoluteString` — the *original*
     /// incoming URL, never `metadata.url`/`metadata.originalURL` — so
     /// query-string context a generic "canonical URL" would silently drop
-    /// (Instagram's `img_index`, YouTube's `t=`) survives untouched.
+    /// (Instagram's `img_index`, YouTube's `t=`) survives untouched. This
+    /// also holds for enriched drafts — `EnrichedLinkContent` only ever
+    /// supplies a title/image, never a replacement URL.
     public static func resolve(
         _ url: URL,
         sourceDevice: SourcePlatform,
         fetcher: LinkMetadataFetching = LPMetadataProvider(),
         mediaStore: MediaStore = .shared,
+        enrichers: [SourceEnricher] = defaultEnrichers,
         timeout: TimeInterval = defaultTimeout
     ) async -> CaptureDraft? {
         await withTaskGroup(of: CaptureDraft?.self) { group in
             group.addTask {
-                await attemptResolve(url, sourceDevice: sourceDevice, fetcher: fetcher, mediaStore: mediaStore)
+                await attemptResolve(url, sourceDevice: sourceDevice, fetcher: fetcher, mediaStore: mediaStore, enrichers: enrichers)
             }
             group.addTask {
                 try? await Task.sleep(for: .seconds(timeout))
@@ -48,6 +59,80 @@ public enum URLCherryResolver {
     }
 
     private static func attemptResolve(
+        _ url: URL,
+        sourceDevice: SourcePlatform,
+        fetcher: LinkMetadataFetching,
+        mediaStore: MediaStore,
+        enrichers: [SourceEnricher]
+    ) async -> CaptureDraft? {
+        if let enricher = enrichers.first(where: { $0.matches(url) }) {
+            if let enrichedDraft = await attemptEnrichedResolve(url, sourceDevice: sourceDevice, mediaStore: mediaStore, enricher: enricher) {
+                return enrichedDraft
+            }
+            debugLog("enrichment unavailable/failed for \(url.absoluteString) — falling back to generic")
+        }
+        return await attemptGenericResolve(url, sourceDevice: sourceDevice, fetcher: fetcher, mediaStore: mediaStore)
+    }
+
+    /// A matched enricher gets exactly one attempt; ANY failure (thrown
+    /// error, non-200 thumbnail fetch, undecodable bytes, a save
+    /// failure) returns `nil` here so the caller falls through to the
+    /// unchanged generic path below — never a hard failure for the whole
+    /// resolution just because one source's enrichment didn't work this
+    /// time.
+    private static func attemptEnrichedResolve(
+        _ url: URL,
+        sourceDevice: SourcePlatform,
+        mediaStore: MediaStore,
+        enricher: SourceEnricher
+    ) async -> CaptureDraft? {
+        let enriched: EnrichedLinkContent
+        do {
+            enriched = try await enricher.enrich(url)
+        } catch {
+            debugLog("enricher threw for \(url.absoluteString): \(error)")
+            return nil
+        }
+        guard !Task.isCancelled else { return nil }
+
+        let data: Data
+        do {
+            let (fetchedData, response) = try await URLSession.shared.data(from: enriched.imageURL)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                debugLog("enriched image fetch bad response for \(url.absoluteString)")
+                return nil
+            }
+            data = fetchedData
+        } catch {
+            debugLog("enriched image fetch failed for \(url.absoluteString): \(error)")
+            return nil
+        }
+        guard !Task.isCancelled else { return nil }
+
+        guard let pixelSize = ImageDecoding.pixelSize(ofData: data) else {
+            debugLog("enriched image undecodable for \(url.absoluteString)")
+            return nil
+        }
+        guard !Task.isCancelled else { return nil }
+
+        let ext = enriched.imageURL.pathExtension.isEmpty ? "jpg" : enriched.imageURL.pathExtension
+        guard let filename = try? mediaStore.save(data: data, ext: ext) else {
+            debugLog("MediaStore save failed for enriched \(url.absoluteString)")
+            return nil
+        }
+
+        debugLog("enriched-resolved \(url.absoluteString) -> \(data.count) bytes, title=\(enriched.title ?? "nil")")
+        return CaptureDraft(
+            kind: .image,
+            localFilename: filename,
+            pixelSize: pixelSize,
+            title: enriched.title,
+            sourceURL: url.absoluteString,
+            sourceDevice: sourceDevice
+        )
+    }
+
+    private static func attemptGenericResolve(
         _ url: URL,
         sourceDevice: SourcePlatform,
         fetcher: LinkMetadataFetching,

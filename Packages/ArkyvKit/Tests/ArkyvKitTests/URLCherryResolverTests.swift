@@ -152,6 +152,41 @@ final class URLCherryResolverTests: XCTestCase {
         let filesWritten = (try? FileManager.default.contentsOfDirectory(atPath: root.path).filter { !$0.hasPrefix(".") }) ?? []
         XCTAssertTrue(filesWritten.isEmpty, "a timed-out resolution must never persist a file")
     }
+
+    // MARK: - Source enricher fallback (Priority Source Intelligence 01)
+
+    /// A matched enricher that always throws must never prevent the
+    /// unchanged generic path from still resolving the Cherry — "no
+    /// source-specific failure may prevent saving a Cherry."
+    func testThrowingEnricherFallsBackToGenericResolution() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "Generic Title", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let (mediaStore, root) = makeIsolatedMediaStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let enricher = FakeEnricher(matchesResult: true, result: .failure(FakeEnricher.Error.boom))
+
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, enrichers: [enricher])
+
+        XCTAssertNotNil(draft, "generic resolution must still succeed after enrichment fails")
+        XCTAssertEqual(draft?.title, "Generic Title")
+    }
+
+    /// An enricher whose `matches(_:)` returns `false` must never be
+    /// invoked at all — the generic path runs directly.
+    func testNonMatchingEnricherIsNeverCalled() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "Generic Title", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let (mediaStore, root) = makeIsolatedMediaStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let enricher = FakeEnricher(matchesResult: false, result: .failure(FakeEnricher.Error.boom))
+
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, enrichers: [enricher])
+
+        XCTAssertFalse(enricher.enrichWasCalled, "a non-matching enricher must never have enrich(_:) invoked")
+        XCTAssertEqual(draft?.title, "Generic Title")
+    }
 }
 
 // MARK: - Test doubles
@@ -192,5 +227,30 @@ private extension NSLock {
     func withLock<T>(_ body: () -> T) -> T {
         lock(); defer { unlock() }
         return body()
+    }
+}
+
+private final class FakeEnricher: SourceEnricher, @unchecked Sendable {
+    enum Error: Swift.Error { case boom }
+
+    private let matchesResult: Bool
+    private let result: Result<EnrichedLinkContent, Swift.Error>
+    private let lock = NSLock()
+    private var _enrichWasCalled = false
+    var enrichWasCalled: Bool { lock.withLock { _enrichWasCalled } }
+
+    init(matchesResult: Bool, result: Result<EnrichedLinkContent, Swift.Error>) {
+        self.matchesResult = matchesResult
+        self.result = result
+    }
+
+    func matches(_ url: URL) -> Bool { matchesResult }
+
+    func enrich(_ url: URL) async throws -> EnrichedLinkContent {
+        lock.withLock { _enrichWasCalled = true }
+        switch result {
+        case .success(let content): return content
+        case .failure(let error): throw error
+        }
     }
 }
