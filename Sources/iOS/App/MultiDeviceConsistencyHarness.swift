@@ -128,6 +128,60 @@ enum MultiDeviceConsistencyHarness {
                     try repo.softDelete(folder)
                     print("[MDC] deleted seeded duplicate id=\(id) name=\(folder.name)")
                 }
+            case "delete-proven-test-residue":
+                // Pre-Sync Test Residue Cleanup 01: MUTATING. Hardcoded,
+                // one-time list — proven via audit-test-residue: every
+                // folder is a zero-relationship exact match to this
+                // harness's own hardcoded name literals; every item is
+                // mdc-test-tagged, exactly 35520 bytes (this harness's
+                // synthetic pink JPEG), Unfiled. Explicitly does NOT
+                // include the "Test" folder or its members — confirmed
+                // real user content (varying multi-hundred-KB/multi-MB
+                // sizes, real camera/screenshot dimensions, zero test
+                // tags) — nor the two already-soft-deleted "MDC Folder X"
+                // rows, which need no further action.
+                let residueFolderIDs: [UUID] = [
+                    UUID(uuidString: "44135517-F45B-4D6D-98EF-33F00731E834")!, // MDC Folder A
+                    UUID(uuidString: "AEC87555-F949-4FA2-94C3-22FD2BF3CFA0")!, // MDC Folder B
+                    UUID(uuidString: "8355FF8A-36E7-4C3F-A7BA-53FE24421777")!, // MDC Collision
+                    UUID(uuidString: "AA5D7891-C372-4CF8-9B37-1332C1A198EC")!, // MDC Collision
+                ]
+                let residueItemIDs: [UUID] = [
+                    UUID(uuidString: "03B19185-3271-48E2-9158-F0897B8BC63C")!,
+                    UUID(uuidString: "33A146EA-B6A3-4493-BF9B-23360B359EC6")!,
+                    UUID(uuidString: "104B83AC-AF02-4359-8753-9B985BAE1BF9")!,
+                    UUID(uuidString: "943BD6D9-1197-450E-866A-E852C3496854")!,
+                    UUID(uuidString: "DB668520-A9A8-4B60-9229-69F47127AC1B")!, // CUTOVER-TEST item
+                ]
+                let allFolders = try repo.folders(includingDeleted: true)
+                for id in residueFolderIDs {
+                    guard let folder = allFolders.first(where: { $0.id == id }) else {
+                        print("[MDC] SKIP folder: \(id) not found"); continue
+                    }
+                    guard folder.referenceCount == 0 else {
+                        print("[MDC] REFUSING to delete folder \(id) (\(folder.name)) — referenceCount=\(folder.referenceCount)"); continue
+                    }
+                    try repo.softDelete(folder)
+                    print("[MDC] deleted residue folder id=\(id) name=\(folder.name)")
+                }
+                let allItems = try repo.context.fetch(FetchDescriptor<StoredItem>())
+                for id in residueItemIDs {
+                    guard let item = allItems.first(where: { $0.id == id }) else {
+                        print("[MDC] SKIP item: \(id) not found"); continue
+                    }
+                    guard item.tags.contains(testTag), item.imageData?.count == 35520 else {
+                        print("[MDC] REFUSING to delete item \(id) — safety check failed: tags=\(item.tags) bytes=\(item.imageData?.count ?? -1)"); continue
+                    }
+                    try repo.softDelete(item)
+                    print("[MDC] deleted residue item id=\(id)")
+                }
+            case "audit-test-residue":
+                // Pre-Sync Test Residue Cleanup 01: READ-ONLY. Full detail
+                // on every mdc-test-tagged item (regardless of which
+                // folder) and every member of any folder named "Test" or
+                // prefixed "MDC" — including soft-deleted rows, for a
+                // complete picture before any classification/deletion.
+                try auditTestResidue(repo: repo)
             case "list-all-folders":
                 // Post-Migration Folder Reconciliation 01: READ-ONLY. Full
                 // detail on every StoredFolder, including soft-deleted —
@@ -194,7 +248,7 @@ enum MultiDeviceConsistencyHarness {
         // expected — see the "quick-exit-after-write" finding in the
         // final report. `report`/read-only actions skip the wait, since
         // they have nothing to flush.
-        if action != "report" && action != "integrity-check" && action != "container-paths" && action != "list-all-folders" {
+        if action != "report" && action != "integrity-check" && action != "container-paths" && action != "list-all-folders" && action != "audit-test-residue" {
             print("[MDC] waiting 5s before exit to give CloudKit export a fair chance to flush...")
             try? await Task.sleep(for: .seconds(5))
         }
@@ -370,6 +424,40 @@ enum MultiDeviceConsistencyHarness {
             print("[MDC]   activeMemberships=\(activeMemberships.count) totalMemberships=\(membershipsForFolder.count) legacyItemFolderPointers=\(legacyPointerCount)")
         }
         print("[MDC] --- end list-all-folders ---")
+    }
+
+    // MARK: - Pre-Sync Test Residue Cleanup 01
+
+    /// READ-ONLY. Full detail on every `mdc-test`-tagged item (any
+    /// folder, including soft-deleted) and every member — tagged or not
+    /// — of any folder named "Test" or prefixed "MDC", so a folder with
+    /// unexpected real content is caught rather than assumed empty.
+    private static func auditTestResidue(repo: Repository) throws {
+        let allItems = try repo.context.fetch(FetchDescriptor<StoredItem>())
+        let allFolders = try repo.folders(includingDeleted: true)
+        let allMemberships = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>())
+
+        let taggedItems = allItems.filter { $0.tags.contains(testTag) }
+        print("[MDC] --- audit: \(taggedItems.count) mdc-test-tagged item(s) ---")
+        for item in taggedItems.sorted(by: { $0.createdAt < $1.createdAt }) {
+            let memberships = (try? repo.folders(for: item).map(\.name)) ?? []
+            print("[MDC] item id=\(item.id) legacyFolder=\(item.folder?.name ?? "Unfiled") memberships=\(memberships)")
+            print("[MDC]   tags=\(item.tags) title=\(item.title ?? "nil") noteBody=\(item.noteBody ?? "nil")")
+            print("[MDC]   hasImageData=\(item.imageData != nil) imageDataBytes=\(item.imageData?.count ?? -1) localFilename=\(item.localFilename ?? "nil")")
+            print("[MDC]   isSoftDeleted=\(item.isSoftDeleted) createdAt=\(item.createdAt)")
+        }
+
+        let suspectFolders = allFolders.filter { $0.name == "Test" || $0.name.hasPrefix("MDC") }
+        print("[MDC] --- audit: \(suspectFolders.count) suspect folder(s) (name==Test or prefix MDC) ---")
+        for folder in suspectFolders.sorted(by: { $0.createdAt < $1.createdAt }) {
+            let members = allMemberships.filter { $0.folder?.id == folder.id && !$0.isSoftDeleted }
+            print("[MDC] folder id=\(folder.id) name=\"\(folder.name)\" isSoftDeleted=\(folder.isSoftDeleted) createdAt=\(folder.createdAt) activeMembers=\(members.count)")
+            for membership in members {
+                guard let item = membership.item else { continue }
+                print("[MDC]   member item id=\(item.id) tags=\(item.tags) isMDCTagged=\(item.tags.contains(testTag)) title=\(item.title ?? "nil") createdAt=\(item.createdAt) hasImageData=\(item.imageData != nil)")
+            }
+        }
+        print("[MDC] --- end audit ---")
     }
 }
 
