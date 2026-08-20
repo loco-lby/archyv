@@ -1925,3 +1925,72 @@ handling already degrades gracefully to zero extra candidates.
 Deliberately not addressed this milestone — bypassing it would require
 browser automation/anti-detection techniques out of scope; reconnoiter
 separately before deciding whether it's worth pursuing at all.
+
+## One Archive Bottom Scroll / Safe Area (Foundation 01)
+
+**GREEN**, after diagnosing through two false starts and one
+self-introduced regression — a genuinely stubborn bug that a physical-
+device screen recording, then a live diagnostic marker, were what
+actually cracked open.
+
+**The real root cause was inside `MasonryGrid`, not the dock overlay.**
+`MasonryGrid` has to give its own content an explicit `.frame(height:)`
+(a `ScrollView` offers unbounded height, so an inner layout pass would
+otherwise expand to fill that) — computed from a `totalHeight()`
+estimate that used a **hardcoded `nominalColumnWidth: CGFloat = 179`**,
+entirely separate from the *real* column width an internal
+`GeometryReader` measured for actual layout. Whenever those two
+diverged — true on the real device tested — the reserved frame fell
+short of the grid's true rendered height, silently clipping real
+content beyond what `ScrollView` believed was scrollable. **No amount
+of clearance appended after `MasonryGrid` could ever fix this**, since
+the overflow happened *inside* its own under-reserved bounds — which is
+exactly why two earlier attempts (a `safeAreaInset(edge: .bottom)`, then
+correctly-computed direct content padding) both had zero visible effect
+on physical-device QA, even surviving a full clean rebuild + device
+uninstall/reinstall to rule out caching.
+
+**Found via a disposable, DEBUG-only diagnostic**, not further guessing:
+replacing the invisible clearance with a bright, labeled `Rectangle`
+showing the exact computed value. The screenshot showed the marker
+appearing only under the masonry's *shorter* column, while the *taller*
+column's real content extended past it, confirming the overflow
+directly.
+
+**Fix:** `MasonryGrid` now takes `availableWidth` as an explicit
+parameter from its caller (which already measures it via its own
+`GeometryReader`, for the safe-area work below) and uses that one real
+value for *both* the actual per-column layout and the height estimate —
+structurally unable to diverge again, not just less likely to.
+
+**Fixing the estimate then caused a new regression** — a large empty
+region before the first row at scroll offset 0. A bare `.frame(height:)`
+defaults to *centering* its content within that height; this was
+invisible while the estimate underestimated (content simply clipped at
+the bottom — no gap), but once accurate, any small remaining difference
+from the HStack's true natural height pushed content down by half the
+difference instead of clipping it. Fixed with explicit
+`.frame(height: totalHeight(), alignment: .top)` — the mathematically
+correct contract ("the reserved frame's origin should always be where
+content starts"), not a compensating offset.
+
+**Bottom clearance itself** (`ArkyvFloatingDock`, the shared constant
+`RootView` and `ArchiveView` both read — diameter, clearance, total
+footprint — plus the device's own real safe-area-bottom inset, read via
+`GeometryReader`, plus one spacing token of breathing room) was correct
+from early in this milestone; it just had nothing valid to attach to
+until the height bug above was fixed. Not gated on populated content —
+empty/short Archives get the same small, correct clearance, confirmed
+not to balloon into excessive blank scroll space.
+
+**Verified on Device A across all required positions:** fresh open/top
+of All (first row immediately below the folder strip, zero phantom
+space), mid-scroll (no jumps/gaps), absolute bottom (final Cherry fully
+clears the dock, comfortable breathing room, normal rubber-band after).
+Short-folder and floating-dock-interaction regressions both confirmed
+normal. `MasonryGrid` lives in the app target, which has no XCTest
+target configured (all this session's automated tests target the
+`ArkyvKit` package) — verification here is physical-device QA across
+five iterations plus code review, not an automated layout-contract
+test; adding a new app-level test target was judged out of scope for
+this narrow fix.
