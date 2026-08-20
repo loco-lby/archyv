@@ -131,14 +131,37 @@ struct ArchiveView: View {
     }
 
     var body: some View {
-        ScrollView {
-            if searching {
-                searchField
-            }
-            if displayedItems.isEmpty {
-                emptyState
-            } else {
-                MasonryGrid(items: displayedItems, columns: 2, spacing: 8) { item in
+        // One Archive Bottom Scroll / Safe Area 01: `MasonryGrid` reports
+        // a FIXED, self-computed height via its own `.frame(height:
+        // totalHeight())` — this `ScrollView`'s total scrollable content
+        // height is exactly that number plus whatever padding is applied
+        // directly to the content itself. A `safeAreaInset` on the
+        // `ScrollView` was tried first and had NO effect at all on
+        // physical-device QA — confirming this hierarchy doesn't treat it
+        // as additional scrollable room the way a simpler, unnested
+        // ScrollView would. Reverted to the mechanism that was already
+        // structurally correct (content-level padding, which genuinely
+        // adds to `MasonryGrid`'s reported size) — the ORIGINAL bug was
+        // never the mechanism, only the hardcoded `96`'s magnitude:
+        // it silently assumed the device's own bottom safe area was
+        // "free" on top of it, which this hierarchy does not confirm.
+        // This `GeometryReader` reads the real value directly rather than
+        // assuming, so the total is unambiguously correct regardless of
+        // device/orientation — no iPhone-model-specific magic number.
+        GeometryReader { geometry in
+            ScrollView {
+                if searching {
+                    searchField
+                }
+                if displayedItems.isEmpty {
+                    // No dock-clearance padding here — an empty/near-
+                    // empty Archive has no "final Cherry" that needs to
+                    // clear the dock, and Section 7 explicitly warns
+                    // against a bizarre giant empty scrolling region for
+                    // short content.
+                    emptyState
+                } else {
+                    MasonryGrid(items: displayedItems, columns: 2, spacing: 8) { item in
                     // Full-cell Button + manual append, not
                     // NavigationLink(value: item) — don't put a live
                     // SwiftData model in the NavigationPath (see
@@ -184,38 +207,27 @@ struct ArchiveView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
+                // The final row's real, direct clearance: the floating
+                // dock's own footprint (`ArkyvFloatingDock.totalHeight` —
+                // the SAME shared constant `RootView` positions the dock
+                // from, so the two can never drift apart), the device's
+                // OWN real bottom safe-area inset (read directly, not
+                // assumed to already be "free"), and one spacing token of
+                // intentional Cherries breathing room on top.
+                .padding(.bottom, bottomScrollClearance(safeAreaBottom: geometry.safeAreaInsets.bottom))
+                }
             }
-        }
-        // One Archive should read as an open visual field, not a utility
-        // scroll container — no persistent gutter/indicator on the right
-        // edge. Not replaced with anything; a future transient
-        // during-scroll-only indicator is a separate, later experiment.
-        .scrollIndicators(.hidden)
-        .background(ArkyvColor.canvas)
-        .safeAreaInset(edge: .top) {
-            topBar
-        }
-        // One Archive Bottom Scroll / Safe Area 01: the floating root dock
-        // (`RootView.floatingBottomOverlay`) is a plain ZStack overlay —
-        // it contributes NOTHING to this ScrollView's own layout or scroll
-        // extent. The scroll view's natural stopping point already
-        // respects the device's own bottom safe area on its own; this
-        // `safeAreaInset` adds the dock's real footprint
-        // (`ArkyvFloatingDock.totalHeight` — the SAME shared constant
-        // `RootView` positions the dock from, so the two can never drift
-        // apart) plus one spacing token of intentional breathing room, as
-        // genuinely EXTRA scrollable room — not a visible bar, not
-        // reserved layout space that pushes content up, just distance the
-        // final row can travel through so it can rise completely clear of
-        // the dock rather than stopping just short of it (the previous,
-        // unrelated hardcoded `96` undershot the dock's actual height +
-        // clearance by design-guesswork, not measurement). Applied at the
-        // `ScrollView` level, not conditionally on `displayedItems` being
-        // non-empty, so short/empty Archives get the exact same modest,
-        // correct clearance — never "hundreds of points" of blank space,
-        // just the dock's own real, small footprint.
-        .safeAreaInset(edge: .bottom) {
-            Color.clear.frame(height: ArkyvFloatingDock.totalHeight + ArkyvSpacing.lg)
+            // One Archive should read as an open visual field, not a
+            // utility scroll container — no persistent gutter/indicator
+            // on the right edge. Not replaced with anything; a future
+            // transient during-scroll-only indicator is a separate, later
+            // experiment.
+            .scrollIndicators(.hidden)
+            .background(ArkyvColor.canvas)
+            .safeAreaInset(edge: .top) {
+                topBar
+            }
+            .ignoresSafeArea(edges: .bottom)
         }
         .navigationDestination(for: ItemRoute.self) { route in
             if let item = resolveItem(route.itemID) {
@@ -237,6 +249,17 @@ struct ArchiveView: View {
             OptionTwoValidationLog.observeNewItems(newValue, seen: &optionTwoValidationSeenIDs)
         }
         #endif
+    }
+
+    /// One Archive Bottom Scroll / Safe Area 01: the exact bottom
+    /// clearance the masonry content needs so its final row can rise
+    /// completely clear of the floating dock. `safeAreaBottom` is the
+    /// device's own real inset (read via `GeometryReader`, never
+    /// hardcoded per iPhone model) — added explicitly because the
+    /// `ScrollView` above is deliberately marked `.ignoresSafeArea
+    /// (edges: .bottom)`, so nothing else accounts for it automatically.
+    private func bottomScrollClearance(safeAreaBottom: CGFloat) -> CGFloat {
+        safeAreaBottom + ArkyvFloatingDock.totalHeight + ArkyvSpacing.lg
     }
 
     /// Resolves an `ItemRoute` back to its live `StoredItem` by `id`, from
