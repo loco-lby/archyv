@@ -608,14 +608,18 @@ private struct ShareDrawerContent: View {
     }
 
     /// Each candidate slot (active or neighbor) occupies this fraction
-    /// of the available width. Reduced from an earlier pass's 0.74 and
-    /// with tighter inter-item spacing (see `candidateSpacing`) after
-    /// physical-device feedback that neighbors, while visible, still
-    /// read as spatially detached rather than one continuous selector —
-    /// still leaves both neighbors genuinely, meaningfully visible at
-    /// the edges, just closer together.
-    private static let activeSlotFraction: CGFloat = 0.78
-    private static let candidateSpacing: CGFloat = 6
+    /// of the available width. Physical-device feedback across three
+    /// passes: 0.74, then 0.78, both still read as a sliver rather than
+    /// "there's another photo right there." At 0.68 (with an 8pt gap),
+    /// roughly 20% of a neighbor's OWN width is visible within the
+    /// container — solved directly from the target geometry (visible
+    /// peek = (containerWidth − slotWidth)/2 − spacing ≈ 0.20 ×
+    /// slotWidth), matching the requested "~15–25% of the adjacent
+    /// candidate visibly entering the viewport." The active slot still
+    /// occupies more than 2/3 of the width, so it stays unambiguously
+    /// dominant.
+    private static let activeSlotFraction: CGFloat = 0.68
+    private static let candidateSpacing: CGFloat = 8
     /// The carousel area itself must stay a fixed, concrete number for
     /// any given active candidate (never `.infinity`/flexible) — these
     /// are the bounds that number is clamped within, so one extreme
