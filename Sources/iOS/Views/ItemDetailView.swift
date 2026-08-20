@@ -23,6 +23,7 @@ struct ItemDetailView: View {
     @Bindable var item: StoredItem
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
+    @Environment(\.openURL) private var openURLAction
 
     /// Which sideroom (if any) is currently presented.
     private enum EditingRoom: Identifiable {
@@ -369,17 +370,26 @@ struct ItemDetailView: View {
     @ViewBuilder
     private var linkContextBlock: some View {
         if let domain = LinkCherryContext.displayDomain(sourceURL: item.sourceURL) {
-            Button {
-                activeRoom = .source
-            } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    if let title = LinkCherryContext.displayTitle(title: item.title, sourceURL: item.sourceURL) {
-                        Text(title)
-                            .font(ArkyvFont.publicSans(size: 15, weight: .semibold))
-                            .foregroundStyle(ArkyvColor.textPrimary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
+            VStack(alignment: .leading, spacing: 3) {
+                if let title = LinkCherryContext.displayTitle(title: item.title, sourceURL: item.sourceURL) {
+                    Text(title)
+                        .font(ArkyvFont.publicSans(size: 15, weight: .semibold))
+                        .foregroundStyle(ArkyvColor.textPrimary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                // Link Cherry Ingestion + Source Semantics 01, Section 5:
+                // the domain/host line is its own separate action — it
+                // opens the original webpage immediately, exactly like
+                // SourceEditorView's own "Open Source" button, NOT the
+                // Source room. The Source chip below (`metadataChip`)
+                // still opens that room unchanged; these are two
+                // distinct, deliberately non-overlapping affordances.
+                Button {
+                    if let sourceURL = item.sourceURL, let url = URL(string: sourceURL) {
+                        openURLAction(url)
                     }
+                } label: {
                     HStack(spacing: 4) {
                         Text(domain)
                         Image(systemName: "arrow.up.right")
@@ -388,13 +398,13 @@ struct ItemDetailView: View {
                     .font(ArkyvFont.publicSans(size: 13))
                     .foregroundStyle(ArkyvColor.textSecondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.plain)
+                .accessibilityLabel(domain)
+                .accessibilityHint("Opens the original webpage.")
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Self.contentHorizontalInset)
             .padding(.top, 12)
-            .accessibilityElement(children: .combine)
-            .accessibilityHint("Opens the Source editor.")
         }
     }
 

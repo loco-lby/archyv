@@ -111,25 +111,41 @@ final class ShareViewController: UIViewController {
 
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
             if let url = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
-                // URL → Cherry Production Foundation 01: "a user does not
-                // save a link, they save the thing it points to." Any
-                // failure here (network, timeout, no image, undecodable
-                // bytes) returns nil and falls straight through to the
-                // exact same text-only draft this branch always produced
-                // — resolution is an enhancement, never a new failure
-                // dependency for a plain URL share.
-                if let resolved = await URLCherryResolver.resolve(url, sourceDevice: .iOS) {
-                    return resolved
-                }
-                return CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS)
+                return await urlDraft(for: url)
             }
         }
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
             if let text = try? await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String {
+                // Link Cherry Ingestion + Source Semantics 01: some apps'
+                // native Share Sheet (confirmed for YouTube) hand this
+                // extension the link as plain text rather than a
+                // URL-typed attachment — a bare URL with nothing else in
+                // the payload is treated exactly as if it HAD arrived
+                // URL-typed. Any surrounding text falls through to the
+                // existing note behavior unchanged, below.
+                if let url = PlainTextURLRecognizer.recognizedURL(from: text) {
+                    return await urlDraft(for: url)
+                }
                 return CaptureDraft(kind: .note, noteBody: text, sourceDevice: .iOS)
             }
         }
         return CaptureDraft(kind: .note, sourceDevice: .iOS)
+    }
+
+    /// URL → Cherry Production Foundation 01: "a user does not save a
+    /// link, they save the thing it points to." Any failure here (no
+    /// network, timeout, no image, undecodable bytes) returns the exact
+    /// same text-only draft this codebase has always produced for a bare
+    /// URL — resolution is an enhancement, never a new failure
+    /// dependency. Shared by both ways a share can be recognized as "a
+    /// URL" — a URL-typed provider, or plain text that's exactly one URL
+    /// — so a plain-text URL share is behaviorally identical to a
+    /// URL-typed one from this point on.
+    private func urlDraft(for url: URL) async -> CaptureDraft {
+        if let resolved = await URLCherryResolver.resolve(url, sourceDevice: .iOS) {
+            return resolved
+        }
+        return CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS)
     }
 
     #if DEBUG
