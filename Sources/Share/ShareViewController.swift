@@ -373,10 +373,18 @@ private struct ShareDrawerContent: View {
     /// fetch for one the user has already moved past, rather than
     /// letting fetches pile up.
     @State private var materializeTask: Task<Void, Never>?
+    /// Bounded background prefetch of the next couple of candidates —
+    /// cancelled alongside `materializeTask` on cancel/save so nothing
+    /// keeps fetching (and potentially writing to `MediaStore`) after
+    /// the drawer is gone.
+    @State private var prefetchTask: Task<Void, Never>?
     /// Index 0 by default — "if the user never swipes, save candidate 0
     /// exactly as today." Changing folder/note or opening/closing the
     /// folder dropdown never touches this.
     @State private var selectedCandidateIndex = 0
+    /// Mirrors `selectedCandidateIndex` for `ScrollView`'s own
+    /// `.scrollPosition(id:)` binding, which requires an `Optional`.
+    @State private var scrollPositionID: Int?
     @State private var note = ""
     @State private var showingPicker = false
     /// Chosen in the dropdown (see `folderPanel`'s row actions), not yet
@@ -484,40 +492,81 @@ private struct ShareDrawerContent: View {
             loadFailed = (result == nil)
             if case .candidates(let resolved) = result, let first = resolved.candidates.first {
                 await materialize(candidate: first, resolved: resolved)
+                // Visual Picker 01 physical QA: swiping to an unfetched
+                // candidate showed a visibly-loading placeholder — bounded
+                // background prefetch of the next couple of candidates
+                // (never all of them; `materialize`'s own dedup means
+                // this never duplicates whatever swiping itself already
+                // triggers) makes the common case (swiping to a nearby
+                // candidate shortly after the primary loads) feel ready
+                // rather than caught mid-fetch.
+                prefetchTask = Task {
+                    for candidate in resolved.candidates.dropFirst().prefix(2) {
+                        guard !Task.isCancelled else { return }
+                        await materialize(candidate: candidate, resolved: resolved)
+                    }
+                }
             }
         }
     }
 
-    // MARK: Preview — single image (unchanged) or a paged candidate swiper
+    // MARK: Preview — single image (unchanged) or a peeking candidate swiper
 
-    /// Link Cherry Visual Picker 01: identical box either way (the same
-    /// `width`/360-height frame the geometry fix already established),
-    /// so no candidate's aspect ratio can affect layout — only WHICH
-    /// view fills that box changes. A single candidate/draft renders
-    /// exactly as before: no `TabView`, no dots, no picker machinery at
-    /// all. Multiple candidates get native horizontal paging with a
-    /// small, quiet page-dot row beneath — shown ONLY when there's
-    /// genuinely a choice to make.
+    /// Physical QA feedback on the picker's first pass, in order:
+    /// (1) dots alone didn't make it obvious a swipe was even possible —
+    /// (2) some candidates showed inconsistent/awkward crops — (3)
+    /// swiping to an unfetched candidate felt visibly unfinished. This
+    /// addresses all three: a `ScrollView`/`.viewAligned` "peek" layout
+    /// (each page narrower than the box, so the next candidate is
+    /// genuinely, physically visible at the trailing edge — not just
+    /// implied by a dot row) makes "there is another image, swipe"
+    /// spatially obvious without any added chrome; `.fit` (not `.fill`)
+    /// for candidate previews specifically shows each candidate's whole
+    /// frame rather than an inconsistent crop-to-fill, since candidates
+    /// are far more likely to vary wildly in aspect ratio than a single
+    /// already-chosen representative image is (the single-image path
+    /// below is completely untouched — still `MediaThumbnail`'s
+    /// existing `.fill` behavior); the bounded prefetch above closes
+    /// most of the "visibly loading" gap. Still the identical
+    /// `width`/360-height fixed box either way, so no candidate's aspect
+    /// ratio can affect drawer layout.
     @ViewBuilder
     private func previewArea(width: CGFloat) -> some View {
         if candidates.count > 1 {
             VStack(spacing: 10) {
-                TabView(selection: $selectedCandidateIndex) {
-                    ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
-                        candidatePreview(candidate)
-                            .tag(index)
+                let pageWidth = width - Self.candidatePeekWidth
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: Self.candidateSpacing) {
+                        ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                            candidatePreview(candidate)
+                                .frame(width: pageWidth, height: 360)
+                                .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+                                // The faint "ghost" treatment for every
+                                // page but the selected one — combined
+                                // with it being physically, partially
+                                // visible at the trailing edge (the
+                                // whole point of a narrower-than-box
+                                // page width), this is what makes "swipe
+                                // for another image" immediately legible
+                                // without a caption or arrow.
+                                .opacity(index == selectedCandidateIndex ? 1 : 0.45)
+                                .id(index)
+                        }
                     }
+                    .scrollTargetLayout()
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(width: width, height: 360)
-                .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
-                .onChange(of: selectedCandidateIndex) { _, newIndex in
-                    guard candidates.indices.contains(newIndex) else { return }
+                .scrollTargetBehavior(.viewAligned)
+                .scrollPosition(id: $scrollPositionID)
+                .onChange(of: scrollPositionID) { _, newIndex in
+                    guard let newIndex, candidates.indices.contains(newIndex) else { return }
+                    selectedCandidateIndex = newIndex
                     let candidate = candidates[newIndex]
                     guard case .candidates(let resolved) = resolution else { return }
                     materializeTask?.cancel()
                     materializeTask = Task { await materialize(candidate: candidate, resolved: resolved) }
                 }
+                .onAppear { scrollPositionID = selectedCandidateIndex }
 
                 HStack(spacing: 6) {
                     ForEach(candidates.indices, id: \.self) { index in
@@ -538,10 +587,20 @@ private struct ShareDrawerContent: View {
         }
     }
 
+    /// How much of the neighboring candidate peeks in at the trailing
+    /// edge of the box — large enough to be unmistakably "there's more
+    /// here," small enough that the current candidate still reads as
+    /// the primary subject, not a cramped thumbnail strip.
+    private static let candidatePeekWidth: CGFloat = 32
+    private static let candidateSpacing: CGFloat = 10
+
     @ViewBuilder
     private func candidatePreview(_ candidate: ResolvedImageCandidate) -> some View {
         if let filename = materialized[candidate.id]?.localFilename {
-            MediaThumbnail(filename: filename)
+            // `.fit`, not `.fill` — see this method's caller's doc
+            // comment for why the candidate swiper specifically avoids
+            // MediaThumbnail's crop-to-fill behavior.
+            MediaThumbnail(filename: filename, contentMode: .fit)
         } else {
             ArkyvColor.surface
                 .overlay {
@@ -755,6 +814,8 @@ private struct ShareDrawerContent: View {
                 try Repository(context: context).fileCapture(draftToSave, folders: [])
             }
             didSave = true
+            materializeTask?.cancel()
+            prefetchTask?.cancel()
             deleteUnselectedMaterializedCandidates(keeping: draftToSave.localFilename)
             onDone()
         } catch {
@@ -775,6 +836,7 @@ private struct ShareDrawerContent: View {
     /// as to one where a different candidate ended up selected.
     private func cancelAndCleanUp() {
         materializeTask?.cancel()
+        prefetchTask?.cancel()
         if !didSave {
             if case .single(let draft) = resolution, let filename = draft.localFilename {
                 MediaStore.shared.delete(filename: filename)
@@ -813,6 +875,15 @@ private struct ShareDrawerContent: View {
 /// nothing to reuse a cache entry for).
 private struct MediaThumbnail: View {
     let filename: String
+    /// Link Cherry Visual Picker 01: `.fill` (the original, unchanged
+    /// default) crop-to-fills the frame — right for a single already-
+    /// chosen representative image. The candidate swiper passes `.fit`
+    /// instead: candidates are far more likely to vary wildly in aspect
+    /// ratio than one resolved image is, and physical-device QA found
+    /// `.fill`'s crop looked inconsistent/awkward across candidates —
+    /// `.fit` shows each candidate's whole frame, letterboxed if needed,
+    /// consistently regardless of source shape.
+    var contentMode: ContentMode = .fill
     @State private var image: UIImage?
 
     /// Generous for a 360pt-tall preview even at 3x, without paying for
@@ -822,7 +893,16 @@ private struct MediaThumbnail: View {
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image).resizable().scaledToFill()
+                // `.background` matters specifically for `.fit`: unlike
+                // `.fill` (which always covers the whole frame), a
+                // letterboxed `.fit` image leaves part of the frame
+                // empty, which would otherwise show the drawer's raw
+                // dark canvas through — a neutral surface fill instead
+                // reads as one consistent card regardless of a
+                // candidate's aspect ratio.
+                Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(ArkyvColor.surface)
             } else {
                 ArkyvColor.surface
             }
