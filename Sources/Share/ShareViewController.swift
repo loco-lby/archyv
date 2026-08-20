@@ -360,23 +360,25 @@ private struct ShareDrawerContent: View {
     /// complete single draft or an unmaterialized candidate list — see
     /// `ShareDraftResolution`'s own doc comment.
     @State private var resolution: ShareDraftResolution?
-    /// Every candidate actually fetched+`MediaStore`-saved so far, keyed
-    /// by `ResolvedImageCandidate.id`. Candidates the user never swipes
-    /// to are never added here at all; candidates added here but not
-    /// ultimately selected are deleted from `MediaStore` in
-    /// `cancelAndCleanUp`/`confirmSave` — "unselected candidates are NOT
-    /// permanently archived."
-    @State private var materialized: [String: CaptureDraft] = [:]
-    @State private var materializing: Set<String> = []
-    /// The currently-materializing candidate's task, so rapidly swiping
-    /// past several unfetched candidates cancels the stale in-flight
-    /// fetch for one the user has already moved past, rather than
-    /// letting fetches pile up.
-    @State private var materializeTask: Task<Void, Never>?
-    /// Bounded background prefetch of the next couple of candidates —
-    /// cancelled alongside `materializeTask` on cancel/save so nothing
-    /// keeps fetching (and potentially writing to `MediaStore`) after
-    /// the drawer is gone.
+    /// Interaction refinement pass: lightweight, downsampled, in-memory-
+    /// only preview images, keyed by `ResolvedImageCandidate.id` — NEVER
+    /// written to `MediaStore`. This is deliberately separate from
+    /// archival materialization (which now happens exactly once, for
+    /// whichever candidate is selected, at save time — see
+    /// `resolveDraftForSaving`): "a blank/loading candidate should never
+    /// be a swipeable page," so the carousel's visible/scrollable set is
+    /// built from THIS dictionary's keys, not the full candidate list —
+    /// a candidate simply isn't present to swipe onto until its preview
+    /// has actually finished decoding.
+    @State private var previewImages: [String: UIImage] = [:]
+    @State private var previewFetching: Set<String> = []
+    /// Bounded background prefetch of every remaining candidate's
+    /// PREVIEW (lightweight only — see `previewImages`) — cancelled on
+    /// cancel/save so nothing keeps fetching after the drawer is gone.
+    /// There is no separate on-demand/on-swipe fetch trigger: the
+    /// carousel only ever shows candidates this prefetch has already
+    /// finished (see `readyCandidates`), so swiping itself never needs
+    /// to kick off a fetch.
     @State private var prefetchTask: Task<Void, Never>?
     /// Index 0 by default — "if the user never swipes, save candidate 0
     /// exactly as today." Changing folder/note or opening/closing the
@@ -419,30 +421,30 @@ private struct ShareDrawerContent: View {
         return []
     }
 
-    /// The draft that would actually be saved right now: the single
-    /// complete draft directly, or — for a candidate list — the
-    /// currently-selected candidate's draft ONLY once it has actually
-    /// been materialized (downloaded + saved). While a selected
-    /// candidate is still fetching, this is `nil`, which correctly keeps
-    /// ✓ disabled via `isReady` below — the same "Preparing…" gate the
-    /// initial load has always used, reused for a mid-swipe fetch too.
-    private var currentDraft: CaptureDraft? {
-        switch resolution {
-        case .single(let draft):
-            return draft
-        case .candidates:
-            guard candidates.indices.contains(selectedCandidateIndex) else { return nil }
-            return materialized[candidates[selectedCandidateIndex].id]
-        case nil:
-            return nil
-        }
+    /// The `.single` case's already-complete draft — unused for
+    /// `.candidates`, where nothing is archivally ready until save time
+    /// (see `resolveDraftForSaving`).
+    private var singleDraft: CaptureDraft? {
+        if case .single(let draft) = resolution { return draft }
+        return nil
     }
 
     /// The attachment genuinely can take a perceptible moment to load
     /// (Photos library fetch, a large remote image) — unlike the Action
     /// Button flow's near-instant local read, this is a real wait worth
-    /// showing, not a same-frame technical gate.
-    private var isReady: Bool { currentDraft != nil }
+    /// showing, not a same-frame technical gate. For a candidate list,
+    /// "ready" means the SELECTED candidate's lightweight preview has
+    /// finished decoding — not that it's been archivally saved, which
+    /// only happens once, at save time.
+    private var isReady: Bool {
+        switch resolution {
+        case .single: return true
+        case .candidates:
+            guard candidates.indices.contains(selectedCandidateIndex) else { return false }
+            return previewImages[candidates[selectedCandidateIndex].id] != nil
+        case nil: return false
+        }
+    }
 
     var body: some View {
         // URL → Cherry Physical QA Follow-Up 01: a very wide representative
@@ -491,19 +493,22 @@ private struct ShareDrawerContent: View {
             resolution = result
             loadFailed = (result == nil)
             if case .candidates(let resolved) = result, let first = resolved.candidates.first {
-                await materialize(candidate: first, resolved: resolved)
-                // Visual Picker 01 physical QA: swiping to an unfetched
-                // candidate showed a visibly-loading placeholder — bounded
-                // background prefetch of the next couple of candidates
-                // (never all of them; `materialize`'s own dedup means
-                // this never duplicates whatever swiping itself already
-                // triggers) makes the common case (swiping to a nearby
-                // candidate shortly after the primary loads) feel ready
-                // rather than caught mid-fetch.
+                await fetchPreview(candidate: first)
+                // Interaction refinement: "a blank/loading candidate
+                // should never be a swipeable page" — this prefetches
+                // EVERY remaining candidate's lightweight preview (never
+                // all of them at full archival resolution; see
+                // `fetchPreview`), sequentially and boundedly (the
+                // candidate count itself is already capped), so by the
+                // time a user could plausibly swipe to one, it has
+                // almost always already finished. `previewArea` only
+                // ever renders/allows scrolling to candidates already
+                // present in `previewImages` — never a placeholder mid-
+                // gesture.
                 prefetchTask = Task {
-                    for candidate in resolved.candidates.dropFirst().prefix(2) {
+                    for candidate in resolved.candidates.dropFirst() {
                         guard !Task.isCancelled else { return }
-                        await materialize(candidate: candidate, resolved: resolved)
+                        await fetchPreview(candidate: candidate)
                     }
                 }
             }
@@ -517,31 +522,30 @@ private struct ShareDrawerContent: View {
     /// forced into a Cherries-imposed box. The ACTIVE candidate's own
     /// aspect ratio drives this whole area's height (clamped to a usable
     /// range); every candidate is shown via `.aspectRatio(_, contentMode:
-    /// .fit)` within its slot, so it always renders its true, complete
-    /// composition — a very tall or very wide source simply gets more or
-    /// less letterboxing, never a crop. Neighbors sit at reduced scale/
-    /// opacity, genuinely visible (not a sliver) on both sides where they
-    /// exist, so the horizontal choice is obvious before the user
-    /// touches the screen — dots remain only as a secondary position
-    /// indicator. `width` is still the one fixed, concrete number
-    /// everything is built from (from the geometry fix) — only the
-    /// carousel's OWN height varies, animated with `ArkyvMotion.settle`,
-    /// the same calm "fast hands, settle here" token the Folder
-    /// selector's own selection state already uses; X/✓/folder/note stay
-    /// pinned via the surrounding `VStack`'s `Spacer`s absorbing the
-    /// difference, exactly as they already did when the single-image
-    /// path's height was fixed.
+    /// .fit)` using its own real dimensions, so it always renders its
+    /// true, complete composition — a very tall or very wide source
+    /// simply gets more or less letterboxing, never a crop. Only
+    /// candidates present in `previewImages` are ever rendered/
+    /// reachable — a not-yet-ready candidate simply isn't part of the
+    /// scrollable strip yet, so a swipe can never land on a blank frame.
+    /// `width` is still the one fixed, concrete number everything is
+    /// built from (from the geometry fix) — only the carousel's OWN
+    /// height varies, animated with `ArkyvMotion.settle`, the same calm
+    /// "fast hands, settle here" token the Folder selector's own
+    /// selection state already uses; X/✓/folder/note stay pinned via the
+    /// surrounding `VStack`'s `Spacer`s absorbing the difference.
     @ViewBuilder
     private func previewArea(width: CGFloat) -> some View {
-        if candidates.count > 1 {
+        let ready = readyCandidates
+        if candidates.count > 1, !ready.isEmpty {
             let slotWidth = width * Self.activeSlotFraction
             let height = carouselHeight(forWidth: slotWidth)
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: Self.candidateSpacing) {
-                        ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
-                            candidateSlot(candidate, isActive: index == selectedCandidateIndex, slotWidth: slotWidth, height: height)
-                                .id(index)
+                        ForEach(ready, id: \.offset) { entry in
+                            candidateSlot(entry.element, isActive: entry.offset == selectedCandidateIndex, slotWidth: slotWidth, height: height)
+                                .id(entry.offset)
                         }
                     }
                     .scrollTargetLayout()
@@ -553,25 +557,31 @@ private struct ShareDrawerContent: View {
                 .onChange(of: scrollPositionID) { _, newIndex in
                     guard let newIndex, candidates.indices.contains(newIndex) else { return }
                     withAnimation(ArkyvMotion.settle) { selectedCandidateIndex = newIndex }
-                    let candidate = candidates[newIndex]
-                    guard case .candidates(let resolved) = resolution else { return }
-                    materializeTask?.cancel()
-                    materializeTask = Task { await materialize(candidate: candidate, resolved: resolved) }
                 }
                 .onAppear { scrollPositionID = selectedCandidateIndex }
                 .animation(ArkyvMotion.settle, value: height)
 
-                HStack(spacing: 6) {
-                    ForEach(candidates.indices, id: \.self) { index in
-                        Circle()
-                            .fill(ArkyvColor.textPrimary)
-                            .opacity(index == selectedCandidateIndex ? 1 : 0.25)
-                            .frame(width: 5, height: 5)
-                    }
+                // Interaction refinement, Section 3: "make it clear this
+                // is a selection, not a gallery." One restrained
+                // semantic cue — "Choose image" + a precise "N of M"
+                // position — replaces the prior plain dot row entirely,
+                // since dots and an exact count would just be two
+                // indicators saying the same thing. The visual hierarchy
+                // (centered/full-opacity = selected) still does the
+                // primary work; this just removes any ambiguity about
+                // WHAT the swiping is for.
+                VStack(spacing: 1) {
+                    Text("Choose image")
+                        .font(ArkyvFont.publicSans(size: 11, weight: .semibold))
+                        .tracking(1)
+                        .foregroundStyle(ArkyvColor.textSecondary)
+                    Text("\(selectedCandidateIndex + 1) of \(candidates.count)")
+                        .font(ArkyvFont.publicSans(size: 10))
+                        .foregroundStyle(ArkyvColor.subdued)
                 }
             }
             .padding(.horizontal, 20)
-        } else if let filename = currentDraft?.localFilename {
+        } else if let filename = singleDraft?.localFilename {
             MediaThumbnail(filename: filename)
                 .frame(width: width, height: 360)
                 .clipped()
@@ -580,13 +590,24 @@ private struct ShareDrawerContent: View {
         }
     }
 
+    /// `candidates`, filtered to those with a ready preview — the
+    /// carousel's actual visible/scrollable set — paired with their
+    /// ORIGINAL index (`selectedCandidateIndex`/`scrollPositionID`, and
+    /// the final `resolveDraftForSaving` lookup, all key off the
+    /// original candidate list, not this filtered view).
+    private var readyCandidates: [(offset: Int, element: ResolvedImageCandidate)] {
+        Array(candidates.enumerated()).filter { previewImages[$0.element.id] != nil }
+    }
+
     /// Each candidate slot (active or neighbor) occupies this fraction
-    /// of the available width — large enough that the active candidate
-    /// reads as the primary subject, small enough that BOTH neighbors
-    /// (where they exist) are genuinely, meaningfully visible at the
-    /// edges rather than a sliver.
-    private static let activeSlotFraction: CGFloat = 0.74
-    private static let candidateSpacing: CGFloat = 14
+    /// of the available width. Reduced from an earlier pass's 0.74 and
+    /// with tighter inter-item spacing (see `candidateSpacing`) after
+    /// physical-device feedback that neighbors, while visible, still
+    /// read as spatially detached rather than one continuous selector —
+    /// still leaves both neighbors genuinely, meaningfully visible at
+    /// the edges, just closer together.
+    private static let activeSlotFraction: CGFloat = 0.78
+    private static let candidateSpacing: CGFloat = 6
     /// The carousel area itself must stay a fixed, concrete number for
     /// any given active candidate (never `.infinity`/flexible) — these
     /// are the bounds that number is clamped within, so one extreme
@@ -599,40 +620,35 @@ private struct ShareDrawerContent: View {
     private static let carouselMaxHeight: CGFloat = 420
     private static let carouselFallbackHeight: CGFloat = 360
 
-    /// The active candidate's true aspect ratio, if known yet (it always
-    /// is almost immediately — candidate 0 is materialized eagerly, and
-    /// `onChange` above kicks off materializing whatever becomes active)
-    /// — `carouselFallbackHeight` covers the brief window before a
-    /// freshly-selected, not-yet-materialized candidate's real
-    /// dimensions are known.
+    /// The active candidate's true aspect ratio, read directly from its
+    /// already-decoded preview `UIImage.size` — always known by the time
+    /// this is called, since only ready (preview-loaded) candidates are
+    /// ever selectable. `carouselFallbackHeight` is a defensive-only
+    /// fallback for the single instant before the very first preview
+    /// resolves.
     private func carouselHeight(forWidth slotWidth: CGFloat) -> CGFloat {
         guard candidates.indices.contains(selectedCandidateIndex),
-              let pixelSize = materialized[candidates[selectedCandidateIndex].id]?.pixelSize,
-              pixelSize.width > 0, pixelSize.height > 0 else {
+              let image = previewImages[candidates[selectedCandidateIndex].id],
+              image.size.width > 0, image.size.height > 0 else {
             return Self.carouselFallbackHeight
         }
-        let raw = slotWidth * pixelSize.height / pixelSize.width
+        let raw = slotWidth * image.size.height / image.size.width
         return min(max(raw, Self.carouselMinHeight), Self.carouselMaxHeight)
     }
 
     @ViewBuilder
     private func candidateSlot(_ candidate: ResolvedImageCandidate, isActive: Bool, slotWidth: CGFloat, height: CGFloat) -> some View {
         Group {
-            if let draft = materialized[candidate.id], let filename = draft.localFilename,
-               let pixelSize = draft.pixelSize, pixelSize.height > 0 {
-                // `.fit`, never `.fill` — see this method's caller's doc
-                // comment. `draft.pixelSize` (already known once
-                // materialized) drives the true aspect ratio directly,
-                // rather than waiting on the image to decode.
-                MediaThumbnail(filename: filename, contentMode: .fit)
-                    .aspectRatio(pixelSize.width / pixelSize.height, contentMode: .fit)
+            if let image = previewImages[candidate.id] {
+                // `.fit`, never `.fill` — the candidate's own decoded
+                // size drives its true aspect ratio directly.
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(image.size.width / max(image.size.height, 1), contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(ArkyvColor.surface)
             } else {
                 ArkyvColor.surface
-                    .overlay {
-                        if materializing.contains(candidate.id) {
-                            ProgressView().tint(ArkyvColor.textPrimary)
-                        }
-                    }
             }
         }
         .frame(width: slotWidth, height: height)
@@ -641,26 +657,46 @@ private struct ShareDrawerContent: View {
         // clearly subordinate, clearly swipeable" signal — combined
         // with genuinely being partially visible at the box's own edge
         // (the point of `activeSlotFraction` < 1), this is legible
-        // before the user ever touches the screen.
+        // before the user ever touches the screen. The active slot
+        // remains the ONLY one at full presence — "obviously the one ✓
+        // will commit" — with no badge/checkmark drawn over the image
+        // itself, keeping it visually clean.
         .scaleEffect(isActive ? 1 : 0.86)
         .opacity(isActive ? 1 : 0.4)
     }
 
-    /// Downloads + `MediaStore`-saves one candidate, guarded against
-    /// re-fetching one already materialized or already in flight.
-    private func materialize(candidate: ResolvedImageCandidate, resolved: ResolvedURLCherry) async {
-        guard materialized[candidate.id] == nil, !materializing.contains(candidate.id) else { return }
-        materializing.insert(candidate.id)
-        let draft = await URLCherryResolver.materializeCandidate(
-            candidate, title: resolved.title, sourceURL: resolved.sourceURL, sourceDevice: .iOS
-        )
+    /// Downloads (or, for the primary candidate, decodes bytes already
+    /// in hand — see `ResolvedImageCandidate.Source.bytes`) and decodes
+    /// a lightweight, downsampled preview — NEVER written to
+    /// `MediaStore`, NEVER the full archival fetch. Guarded against
+    /// re-fetching one already ready or already in flight.
+    private static let previewMaxPixelSize: CGFloat = 700
+
+    private func fetchPreview(candidate: ResolvedImageCandidate) async {
+        guard previewImages[candidate.id] == nil, !previewFetching.contains(candidate.id) else { return }
+        previewFetching.insert(candidate.id)
+        let data: Data?
+        switch candidate.source {
+        case .bytes(let existingData, _):
+            data = existingData
+        case .url(let url):
+            data = try? await URLSession.shared.data(from: url).0
+        }
         guard !Task.isCancelled else {
-            materializing.remove(candidate.id)
+            previewFetching.remove(candidate.id)
             return
         }
-        materializing.remove(candidate.id)
-        if let draft {
-            materialized[candidate.id] = draft
+        let targetSize = Self.previewMaxPixelSize
+        let decoded = await Task.detached(priority: .userInitiated) {
+            data.flatMap { ImageDecoding.decode($0, maxPixelSize: targetSize) }
+        }.value
+        guard !Task.isCancelled else {
+            previewFetching.remove(candidate.id)
+            return
+        }
+        previewFetching.remove(candidate.id)
+        if let decoded {
+            previewImages[candidate.id] = decoded
         }
     }
 
@@ -821,41 +857,64 @@ private struct ShareDrawerContent: View {
 
     // MARK: Save
 
-    /// ✓ IS the save — the one existing `Repository.fileCapture` call,
-    /// unchanged from before this restyle, just no longer triggered by
-    /// tapping a folder row directly. `selectedFolder == nil` files with
-    /// no `folders:` argument at all — the existing, already-canonical
-    /// Unfiled shape. Dismisses (`onDone`, which calls
-    /// `extensionContext.completeRequest`) immediately on success; a
-    /// failed write leaves the user free to just try again. Link Cherry
-    /// Visual Picker 01: `currentDraft` is the currently-selected
-    /// candidate's already-materialized draft (or the plain single
-    /// draft) — `isReady`/the ✓ button's own `isEnabled` already keep
-    /// this from ever firing before that candidate has finished
-    /// downloading, so this stays fully synchronous, exactly as before.
-    /// After a successful save, every OTHER materialized candidate is
-    /// deleted from `MediaStore` — only the selected visual's bytes ever
-    /// remain referenced by anything.
+    /// ✓ IS the save — the one existing `Repository.fileCapture` call.
+    /// Link Cherry Visual Picker 01 interaction refinement: the carousel
+    /// now operates entirely on lightweight, non-archival preview images
+    /// (see `previewImages`) — nothing reaches `MediaStore` for ANY
+    /// candidate until this exact moment, when whichever one is selected
+    /// gets its one, real, full-fidelity archival fetch via
+    /// `URLCherryResolver.materializeCandidate`. This is why confirmSave
+    /// is async now (it wasn't before): for the `.single` case it
+    /// resolves instantly (the draft is already complete, as always);
+    /// for a multi-candidate selection it awaits that one archival
+    /// fetch. `isReady`/the ✓ button's `isEnabled` only require the
+    /// selected candidate's lightweight PREVIEW to be ready, not this —
+    /// the button disables again (`isSaving`) for the brief window this
+    /// final fetch takes, exactly like any other save.
     private func confirmSave() {
-        guard var draftToSave = currentDraft, isReady, !isSaving else { return }
+        guard isReady, !isSaving else { return }
         isSaving = true
         saveError = false
-        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { draftToSave.noteBody = trimmed }
-        do {
-            if let selectedFolder {
-                try Repository(context: context).fileCapture(draftToSave, into: selectedFolder)
-            } else {
-                try Repository(context: context).fileCapture(draftToSave, folders: [])
+        Task {
+            guard let finalDraft = await resolveDraftForSaving() else {
+                isSaving = false
+                saveError = true
+                return
             }
-            didSave = true
-            materializeTask?.cancel()
-            prefetchTask?.cancel()
-            deleteUnselectedMaterializedCandidates(keeping: draftToSave.localFilename)
-            onDone()
-        } catch {
-            isSaving = false
-            saveError = true
+            var draftToSave = finalDraft
+            let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { draftToSave.noteBody = trimmed }
+            do {
+                if let selectedFolder {
+                    try Repository(context: context).fileCapture(draftToSave, into: selectedFolder)
+                } else {
+                    try Repository(context: context).fileCapture(draftToSave, folders: [])
+                }
+                didSave = true
+                prefetchTask?.cancel()
+                onDone()
+            } catch {
+                isSaving = false
+                saveError = true
+            }
+        }
+    }
+
+    /// The `.single` case's draft is already complete — no archival
+    /// fetch needed, matches every non-picker share exactly as before.
+    /// The `.candidates` case performs the ONE real archival fetch, for
+    /// the currently-selected candidate only.
+    private func resolveDraftForSaving() async -> CaptureDraft? {
+        switch resolution {
+        case .single(let draft):
+            return draft
+        case .candidates(let resolved):
+            guard candidates.indices.contains(selectedCandidateIndex) else { return nil }
+            return await URLCherryResolver.materializeCandidate(
+                candidates[selectedCandidateIndex], title: resolved.title, sourceURL: resolved.sourceURL, sourceDevice: .iOS
+            )
+        case nil:
+            return nil
         }
     }
 
@@ -864,32 +923,19 @@ private struct ShareDrawerContent: View {
     /// `ScreenshotCaptureFlowView`'s cancel paths. `didSave` (set only
     /// after a successful `fileCapture` in `confirmSave`) is the guard
     /// that keeps this from ever deleting a file a just-saved
-    /// `StoredItem` now depends on. Link Cherry Visual Picker 01: also
-    /// cancels any still-in-flight candidate fetch and reclaims every
-    /// candidate materialized so far — "unselected candidates are NOT
-    /// permanently archived" applies just as much to a cancelled share
-    /// as to one where a different candidate ended up selected.
+    /// `StoredItem` now depends on. Link Cherry Visual Picker 01: since
+    /// candidate previews are pure in-memory `UIImage`s now — never
+    /// written to `MediaStore` at all — there is nothing left to reclaim
+    /// for the candidates path; only the `.single` case (and, if the
+    /// user was mid-save, whatever `resolveDraftForSaving` may have just
+    /// written) can have a real staged file, exactly like before this
+    /// milestone existed.
     private func cancelAndCleanUp() {
-        materializeTask?.cancel()
         prefetchTask?.cancel()
-        if !didSave {
-            if case .single(let draft) = resolution, let filename = draft.localFilename {
-                MediaStore.shared.delete(filename: filename)
-            }
-            deleteUnselectedMaterializedCandidates(keeping: nil)
-        }
-        onCancel()
-    }
-
-    /// Deletes every materialized candidate's `MediaStore` file except
-    /// `keptFilename` (the one that just became `StoredItem.localFilename`,
-    /// or `nil` on a full cancel where nothing is kept).
-    private func deleteUnselectedMaterializedCandidates(keeping keptFilename: String?) {
-        for draft in materialized.values {
-            guard let filename = draft.localFilename, filename != keptFilename else { continue }
+        if !didSave, case .single(let draft) = resolution, let filename = draft.localFilename {
             MediaStore.shared.delete(filename: filename)
         }
-        materialized.removeAll()
+        onCancel()
     }
 }
 
