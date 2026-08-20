@@ -1674,3 +1674,86 @@ pickers already routed every write through the same single-folder
 membership machinery; `IntegrityCheck` remained clean
 (`duplicateActiveMemberships=0`, `itemsWithMultipleActiveFolders=0`,
 `folderMembershipDisagreements=0`) throughout.
+
+## Link Cherry Ingestion + Source Semantics (Foundation 01)
+
+**GREEN.** Three narrow follow-ups from real Link Cherry use.
+
+**YouTube/plain-text ingestion, fixed generically.** YouTube's native
+Share Sheet hands the extension the link as `public.plain-text`, not a
+`public.url`-typed attachment — confirmed via the DEBUG `ShareDiag`
+instrumentation, which showed a real captured YouTube share with
+`types=["public.plain-text"]` only. `PlainTextURLRecognizer` (pure,
+`ArkyvKit`) recognizes a plain-text payload as a URL share only when
+the trimmed text is *exactly* one `http`/`https` URL with a host —
+"Check this out https://…" still falls through to ordinary note
+behavior unchanged. Wired into `ShareViewController`'s existing
+plain-text branch; a recognized URL now reaches the exact same
+`URLCherryResolver` path a URL-typed share always used. Confirmed live
+on Device A: a real YouTube share now produces an image-backed Cherry
+with a resolved thumbnail, and `sourceURL` preserves the original URL
+verbatim (confirmed with a real `is=` tracking query parameter surviving
+intact; `&t=` timestamp preservation confirmed at the unit-test level —
+the same, unmodified preservation mechanism, not separately re-tested
+live this round).
+
+**Domain tap now opens the page directly.** Item Detail's Link Cherry
+context previously routed the domain line into the same Source-room
+`activeRoom = .source` action as the "Source" chip. It now calls
+`openURL` directly (the same mechanism `SourceEditorView`'s own "Open
+Source" button already uses) — confirmed live: tapping `studio2am.co`
+opens Safari immediately, and the separate Source chip still opens the
+Source room exactly as before.
+
+**Source-room metadata audit (read-only, no fields added).** Re-ran
+Discovery Spike 01's harness with `Mirror` reflection against
+`LPLinkMetadata` for all six real reference URLs. Findings that
+correct the starting hypothesis:
+- **`description`/`site name` are not exposed by Apple's public API at
+  all** for any of the six sources — `title` is the only text field
+  `LPLinkMetadata` genuinely offers. (`responds(to:)` reports `true`
+  for private selectors named `description`/`summary`, but that's
+  almost certainly `NSObject`'s own generic debug-description method,
+  not page content — not something to build on.)
+- **`title` is not unconditionally trustworthy** — 2 of 6 real sources
+  (Pinterest's 118-character keyword-stuffed title, Instagram's
+  generic "Documented on Instagram" template) are unusable, already
+  correctly filtered by `LinkCherryContext`. YouTube's title ("Max
+  Kent," the channel name) *passes* the existing generic filter and
+  displays despite not describing the specific video — accepted,
+  disclosed limitation, no YouTube-specific correction built.
+- **Resolved/canonical URL differs meaningfully from the original in
+  exactly 1 of 6 cases** (Darc Sport drops a `/collections/forever/`
+  listing-context path segment) — a genuine but occasional nicety, not
+  something to rely on.
+- **Source-specific query context is genuinely useful in 2 of 6
+  cases** — Instagram's `img_index` and YouTube's `t=`, both preserved
+  only in the *original* URL, never the resolved one.
+- **`videoProvider`/`remoteVideoURL` were both `nil`** for the YouTube
+  URL even though it's a video — no embedded video metadata is
+  reliably available via this API in this context.
+- Favicon/icon, MIME types, provider identifiers, and image dimensions
+  are confirmed low-value/technical, as hypothesized.
+
+**Recommended Source-room hierarchy (not built yet):**
+- **Always useful:** domain/host, original URL, saved date
+  (`StoredItem.createdAt` — confirmed semantically correct for "Saved
+  on [date]," including for migrated items, whose `createdAt` is their
+  original legacy capture date, not the migration event; no new field
+  needed).
+- **Useful when present:** title (only once past the existing quality
+  filter — not unconditional), canonical URL (only when it visibly
+  differs), source-specific query context.
+- **Low-value/noise:** favicon/icon, MIME types, provider identifiers,
+  image dimensions, other technical metadata.
+- **Not available via reliable public API:** description, site name,
+  video/embedded-playback metadata — dropped from the hierarchy
+  entirely rather than marked merely "unreliable."
+
+**URL state/variant reconnaissance (for the upcoming multi-image
+milestone):** the one real Darc Sport `sourceURL` captured so far
+carries no variant/colorway query parameter — inconclusive on whether
+a variant-specific share would encode one, since this URL was a
+canonical product page, not necessarily one with an explicit variant
+selected. Needs a fresh test share with a variant actively chosen
+before that milestone can rely on this.
