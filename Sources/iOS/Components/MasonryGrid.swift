@@ -69,7 +69,22 @@ struct MasonryGrid<Item: Identifiable, Content: View>: View {
                 }
             }
         }
-        .frame(height: totalHeight())
+        // One Archive Bottom Scroll / Safe Area 01 follow-up: a bare
+        // `.frame(height:)` defaults to CENTERING its content within that
+        // height — invisible while the estimate underestimated (the old
+        // bug: content simply clipped at the bottom, no visible gap,
+        // since the natural content was already taller than the frame).
+        // Once `totalHeight()` became accurate (this milestone's own
+        // fix), any small remaining over-estimate versus the HStack's
+        // real natural height — from `max(aspect(item), 0.2)`'s clamping
+        // or ordinary floating-point drift between this estimate and
+        // SwiftUI's own real layout pass — now pushes content DOWN by
+        // half that difference instead of clipping it, which is exactly
+        // the "huge empty region before the first row" regression.
+        // Explicit top alignment is the mathematically correct fix, not
+        // a magic offset: the reserved frame's origin should always BE
+        // where content starts.
+        .frame(height: totalHeight(), alignment: .top)
     }
 
     /// Greedy shortest-column distribution.
