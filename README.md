@@ -1343,3 +1343,47 @@ default-seeded).
 
 Next: two-device restore/sync validation, once Device A's migrated
 archive is reviewed.
+
+## Post-Migration Folder Reconciliation (Foundation 01)
+
+**GREEN.** Sammy's physical-device sanity pass caught 5 duplicate folder
+names (Deadwest, Cool Shit, Recipes, Japan 2026, Inspiration) — each
+pair one populated, one empty.
+
+**Root cause:** `SeedGate`'s 5 hardcoded default folder names (see
+`SeedGate.swift`) are, not coincidentally, Sammy's own real folder
+names — chosen as personally meaningful example defaults. When the new
+`com.deadwest.cherries` identity first launched (genuinely empty App
+Group + CloudKit container), SeedGate correctly did its designed job
+after 90 seconds of observing an empty, iCloud-present store — exactly
+the heuristic it uses to tell "brand-new user" apart from "existing
+user whose CloudKit import hasn't landed yet." The later, deliberate
+`Real Archive Import 01` then reconstructed the same-named originals
+with their own preserved stable identities, producing the 5 collisions.
+Not a bug in SeedGate — a one-time interaction between correct default
+seeding and a manual JSON-based restore, a combination normal use
+(fresh install + ordinary CloudKit sync, or a genuinely new user) never
+produces.
+
+**Proof before deletion** — four independent signals agreed exactly for
+all 5 pairs: migration-manifest presence (kept ids present, deleted ids
+absent), `dirty` flag (seeded `false`, imported `true` — `SeedGate`
+explicitly clears it, `importArchive` never touches it), active
+membership count (seeded 0, imported >0), and `createdAt` (all 5 deleted
+rows share the identical SeedGate bulk-seed timestamp). Deleted via
+`Repository.softDelete(folder:)`, the established path — no hand-edited
+store, no items moved, no populated folder touched.
+
+**Verified after:** `itemCount` unchanged (86), imported legacy payload
+unaffected (imageData/crops/tags/notes/sourceURL/favorites/timestamps/
+soft-delete state all untouched), `IntegrityCheck` clean on all four
+targets, exactly one live folder per name. Old environment reconfirmed
+unchanged (84/12/101).
+
+**Seeding behavior:** no production code change needed. `SeedGate`
+seeding brand-new users their 5 example folders remains correct,
+intended behavior. The collision only arises from `CherryManifest.importArchive`
+— a DEBUG-only, manually-triggered, one-time migration tool, not a
+normal product flow — being run against an environment SeedGate had
+already (correctly) populated. This was a one-time event specific to
+this cutover.
