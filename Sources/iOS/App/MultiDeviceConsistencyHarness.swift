@@ -101,6 +101,40 @@ enum MultiDeviceConsistencyHarness {
                 }
             case "batch-edit":
                 try batchEdit(repo: repo)
+            case "delete-proven-empty-seed-duplicates":
+                // Post-Migration Folder Reconciliation 01: MUTATING.
+                // Hardcoded, one-time list — proven via list-all-folders
+                // (dirty=false, zero memberships/pointers) and cross-checked
+                // against the migration manifest (absent) before this ran.
+                // Deliberately NOT a general dedup tool — see this
+                // milestone's own scope note.
+                let seedDuplicateIDs: [UUID] = [
+                    UUID(uuidString: "5CC899B6-79C1-46A3-A9F4-783D3DF184FC")!, // Cool Shit (seeded)
+                    UUID(uuidString: "431CD4F1-BD44-477E-BD28-DF4E898C2C2F")!, // Deadwest (seeded)
+                    UUID(uuidString: "929F2869-55F9-48FB-A3F0-2FD8DF774C9C")!, // Inspiration (seeded)
+                    UUID(uuidString: "BCCD76CD-A9AC-4EEC-9ECF-F679433B29CA")!, // Japan 2026 (seeded)
+                    UUID(uuidString: "BED2C1BD-5527-4474-B98B-1B6670336747")!, // Recipes (seeded)
+                ]
+                let allFolders = try repo.folders(includingDeleted: true)
+                for id in seedDuplicateIDs {
+                    guard let folder = allFolders.first(where: { $0.id == id }) else {
+                        print("[MDC] SKIP: folder \(id) not found")
+                        continue
+                    }
+                    guard !folder.dirty, folder.referenceCount == 0 else {
+                        print("[MDC] REFUSING to delete \(id) (\(folder.name)) — safety check failed: dirty=\(folder.dirty) referenceCount=\(folder.referenceCount)")
+                        continue
+                    }
+                    try repo.softDelete(folder)
+                    print("[MDC] deleted seeded duplicate id=\(id) name=\(folder.name)")
+                }
+            case "list-all-folders":
+                // Post-Migration Folder Reconciliation 01: READ-ONLY. Full
+                // detail on every StoredFolder, including soft-deleted —
+                // enough to distinguish SeedGate defaults (dirty=false,
+                // never touched by importArchive) from imported legacy
+                // folders (dirty=true) without inferring from name alone.
+                try listAllFolders(repo: repo)
             case "integrity-check":
                 let checkReport = IntegrityCheck.run(context: context)
                 print("[MDC] IntegrityCheck: isClean=\(checkReport.isClean) itemCount=\(checkReport.itemCount) folderCount=\(checkReport.folderCount) membershipCount=\(checkReport.membershipCount) missingMedia=\(checkReport.itemsWithMissingMedia.count) noKnownRecovery=\(checkReport.itemsWithNoKnownRecovery.count) orphanedMedia=\(checkReport.orphanedMediaFilenames.count) folderDisagreements=\(checkReport.folderMembershipDisagreements.count) duplicateMemberships=\(checkReport.duplicateActiveMemberships.count) multiFolderItems=\(checkReport.itemsWithMultipleActiveFolders.count)")
@@ -160,7 +194,7 @@ enum MultiDeviceConsistencyHarness {
         // expected — see the "quick-exit-after-write" finding in the
         // final report. `report`/read-only actions skip the wait, since
         // they have nothing to flush.
-        if action != "report" && action != "integrity-check" && action != "container-paths" {
+        if action != "report" && action != "integrity-check" && action != "container-paths" && action != "list-all-folders" {
             print("[MDC] waiting 5s before exit to give CloudKit export a fair chance to flush...")
             try? await Task.sleep(for: .seconds(5))
         }
@@ -311,6 +345,31 @@ enum MultiDeviceConsistencyHarness {
             print("[MDC] folder id=\(folder.id) name=\(folder.name) isSoftDeleted=\(folder.isSoftDeleted) referenceCount=\(folder.referenceCount)")
         }
         print("[MDC] --- end report ---")
+    }
+
+    // MARK: - Post-Migration Folder Reconciliation 01
+
+    /// READ-ONLY. Every `StoredFolder` (including soft-deleted), with
+    /// enough detail to distinguish a SeedGate default from an imported
+    /// legacy folder without inferring from name alone: `dirty` (SeedGate
+    /// explicitly sets `false`; `importArchive` never touches it, so it
+    /// stays at the constructor default `true`), active/total membership
+    /// counts, and how many live items' legacy `item.folder` points at it.
+    private static func listAllFolders(repo: Repository) throws {
+        let allFolders = try repo.folders(includingDeleted: true)
+        let allMemberships = try repo.context.fetch(FetchDescriptor<StoredFolderMembership>())
+        let allItems = try repo.context.fetch(FetchDescriptor<StoredItem>())
+        print("[MDC] --- list-all-folders: \(allFolders.count) folder(s) ---")
+        for folder in allFolders.sorted(by: { $0.name == $1.name ? $0.createdAt < $1.createdAt : $0.name < $1.name }) {
+            let membershipsForFolder = allMemberships.filter { $0.folder?.id == folder.id }
+            let activeMemberships = membershipsForFolder.filter { !$0.isSoftDeleted }
+            let legacyPointerCount = allItems.filter { $0.folder?.id == folder.id && !$0.isSoftDeleted }.count
+            print("[MDC] folder id=\(folder.id) name=\"\(folder.name)\"")
+            print("[MDC]   dirty=\(folder.dirty) isSoftDeleted=\(folder.isSoftDeleted) sortOrder=\(folder.sortOrder)")
+            print("[MDC]   createdAt=\(folder.createdAt) updatedAt=\(folder.updatedAt)")
+            print("[MDC]   activeMemberships=\(activeMemberships.count) totalMemberships=\(membershipsForFolder.count) legacyItemFolderPointers=\(legacyPointerCount)")
+        }
+        print("[MDC] --- end list-all-folders ---")
     }
 }
 
