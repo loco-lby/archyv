@@ -466,7 +466,12 @@ private struct ShareDrawerContent: View {
                 VStack(spacing: 0) {
                     actionBar
                     folderAccessory
-                    Spacer(minLength: 12)
+                    // Final visual pass: a smaller minimum above than
+                    // below shifts the preview block slightly higher —
+                    // both Spacers are still flexible, so this is a
+                    // small nudge within the existing layout, not a
+                    // fixed reposition.
+                    Spacer(minLength: 6)
                     previewArea(width: max(geometry.size.width - 40, 0))
                     Spacer(minLength: 12)
                     noteField
@@ -540,7 +545,10 @@ private struct ShareDrawerContent: View {
         if candidates.count > 1, !ready.isEmpty {
             let slotWidth = width * Self.activeSlotFraction
             let height = carouselHeight(forWidth: slotWidth)
-            VStack(spacing: 8) {
+            // Final visual pass: a little more breathing room between the
+            // carousel and the "Choose image" label beneath it (16, up
+            // from 8).
+            VStack(spacing: 16) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: Self.candidateSpacing) {
                         ForEach(ready, id: \.offset) { entry in
@@ -638,21 +646,28 @@ private struct ShareDrawerContent: View {
 
     @ViewBuilder
     private func candidateSlot(_ candidate: ResolvedImageCandidate, isActive: Bool, slotWidth: CGFloat, height: CGFloat) -> some View {
+        // Final visual pass, "the preview is the source image itself":
+        // NO corner radius, NO background fill, NO border — those all
+        // read as a Cherries-created card/viewport around the image,
+        // which is exactly what's being removed. `.frame(width:height:)`
+        // below is purely an invisible layout slot for the paging
+        // math — it draws nothing of its own. If the source image has
+        // real alpha transparency, or simply doesn't fill this
+        // (invisible) slot because its own aspect ratio differs from
+        // the shared box, the drawer's own black canvas shows through
+        // directly — never a gray backing plate manufactured to make it
+        // look like a rectangular card.
         Group {
             if let image = previewImages[candidate.id] {
                 // `.fit`, never `.fill` — the candidate's own decoded
-                // size drives its true aspect ratio directly.
+                // size drives its true aspect ratio directly, so the
+                // rendered edges are the image's own edges.
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(image.size.width / max(image.size.height, 1), contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(ArkyvColor.surface)
-            } else {
-                ArkyvColor.surface
             }
         }
         .frame(width: slotWidth, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
         // Reduced scale + opacity is the whole "there is another image,
         // clearly subordinate, clearly swipeable" signal — combined
         // with genuinely being partially visible at the box's own edge
