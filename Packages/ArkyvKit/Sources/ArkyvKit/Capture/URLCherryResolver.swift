@@ -28,13 +28,20 @@ public enum URLCherryResolver {
     /// enterprise framework."
     public static let defaultEnrichers: [SourceEnricher] = [YouTubeOEmbedEnricher()]
 
-    /// Attempts to resolve `url` into an image-backed draft. `sourceURL` on
-    /// the returned draft is always `url.absoluteString` — the *original*
-    /// incoming URL, never `metadata.url`/`metadata.originalURL` — so
-    /// query-string context a generic "canonical URL" would silently drop
-    /// (Instagram's `img_index`, YouTube's `t=`) survives untouched. This
-    /// also holds for enriched drafts — `EnrichedLinkContent` only ever
-    /// supplies a title/image, never a replacement URL.
+    /// Checked only when no enricher matched — an enricher already IS
+    /// the highest-confidence single image for its source (YouTube),
+    /// so there is nothing for a candidate source to usefully add there.
+    public static let defaultCandidateSources: [CandidateImageSource] = [ProductPageCandidateSource()]
+
+    /// Attempts to resolve `url` into an image-backed draft using ONLY
+    /// the single best-guess candidate — the exact behavior this type
+    /// has always had, and still what every existing caller/test uses.
+    /// A thin wrapper around `resolveCandidates`/`materializeCandidate`;
+    /// see `resolveCandidates` for the Link Cherry Visual Picker 01
+    /// multi-candidate API. `sourceURL` is always `url.absoluteString` —
+    /// the *original* incoming URL, never a canonicalized one — so
+    /// query-string context (Instagram's `img_index`, YouTube's `t=`)
+    /// survives untouched.
     public static func resolve(
         _ url: URL,
         sourceDevice: SourcePlatform,
@@ -43,9 +50,39 @@ public enum URLCherryResolver {
         enrichers: [SourceEnricher] = defaultEnrichers,
         timeout: TimeInterval = defaultTimeout
     ) async -> CaptureDraft? {
-        await withTaskGroup(of: CaptureDraft?.self) { group in
+        guard let resolved = await resolveCandidates(
+            url, sourceDevice: sourceDevice, fetcher: fetcher, enrichers: enrichers, candidateSources: [], timeout: timeout
+        ), let primary = resolved.candidates.first else {
+            return nil
+        }
+        return await materializeCandidate(primary, title: resolved.title, sourceURL: url, sourceDevice: sourceDevice, mediaStore: mediaStore)
+    }
+
+    /// Link Cherry Visual Picker 01: resolves `url` into an ORDERED list
+    /// of candidate visuals rather than committing to one — candidate 0
+    /// is always the same single best guess `resolve` alone would have
+    /// produced (an enricher's image if one matched and succeeded,
+    /// otherwise generic `LPMetadataProvider`'s). Candidate 0's bytes
+    /// are fetched eagerly, right here, so displaying it is exactly as
+    /// fast as today's single-image flow; every other candidate is a
+    /// lazy `.url` the caller only fetches via `materializeCandidate` if
+    /// the user actually looks at or selects it. Additional candidates
+    /// (from `candidateSources`) are only ever appended AFTER candidate
+    /// 0 and only when no enricher already produced the primary image —
+    /// "don't let a random alternate image outrank the existing proven
+    /// representative image without evidence." Returns `nil` on total
+    /// failure (no candidate at all), exactly like `resolve`.
+    public static func resolveCandidates(
+        _ url: URL,
+        sourceDevice: SourcePlatform,
+        fetcher: LinkMetadataFetching = LPMetadataProvider(),
+        enrichers: [SourceEnricher] = defaultEnrichers,
+        candidateSources: [CandidateImageSource] = defaultCandidateSources,
+        timeout: TimeInterval = defaultTimeout
+    ) async -> ResolvedURLCherry? {
+        await withTaskGroup(of: ResolvedURLCherry?.self) { group in
             group.addTask {
-                await attemptResolve(url, sourceDevice: sourceDevice, fetcher: fetcher, mediaStore: mediaStore, enrichers: enrichers)
+                await attemptResolveCandidates(url, fetcher: fetcher, enrichers: enrichers, candidateSources: candidateSources)
             }
             group.addTask {
                 try? await Task.sleep(for: .seconds(timeout))
@@ -58,34 +95,99 @@ public enum URLCherryResolver {
         }
     }
 
-    private static func attemptResolve(
-        _ url: URL,
+    /// Downloads (or, for an already-fetched `.bytes` candidate, simply
+    /// validates) `candidate`'s image and saves it through the exact
+    /// same `MediaStore` path any other image capture uses — this is the
+    /// ONLY point at which a candidate's bytes ever touch persistence.
+    /// Unselected candidates this is never called for are never fetched
+    /// again and never persisted at all.
+    public static func materializeCandidate(
+        _ candidate: ResolvedImageCandidate,
+        title: String?,
+        sourceURL: URL,
         sourceDevice: SourcePlatform,
-        fetcher: LinkMetadataFetching,
-        mediaStore: MediaStore,
-        enrichers: [SourceEnricher]
+        mediaStore: MediaStore = .shared
     ) async -> CaptureDraft? {
+        let data: Data
+        let ext: String
+        switch candidate.source {
+        case .bytes(let existingData, let typeHint):
+            data = existingData
+            ext = typeHint
+        case .url(let imageURL):
+            do {
+                let (fetchedData, response) = try await URLSession.shared.data(from: imageURL)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    debugLog("materialize: bad response for candidate \(candidate.id)")
+                    return nil
+                }
+                data = fetchedData
+            } catch {
+                debugLog("materialize: fetch failed for candidate \(candidate.id): \(error)")
+                return nil
+            }
+            ext = imageURL.pathExtension.isEmpty ? "jpg" : imageURL.pathExtension
+        }
+        guard !Task.isCancelled else { return nil }
+
+        // Header-only inspection (ImageIO, no full decode) — validates
+        // AND supplies `CaptureDraft.pixelSize` in one cheap call
+        // regardless of source resolution.
+        guard let pixelSize = ImageDecoding.pixelSize(ofData: data) else {
+            debugLog("materialize: undecodable bytes for candidate \(candidate.id)")
+            return nil
+        }
+        guard !Task.isCancelled else { return nil }
+
+        guard let filename = try? mediaStore.save(data: data, ext: ext) else {
+            debugLog("materialize: MediaStore save failed for candidate \(candidate.id)")
+            return nil
+        }
+
+        debugLog("materialized candidate \(candidate.id) -> \(data.count) bytes, \(Int(pixelSize.width))x\(Int(pixelSize.height))")
+        return CaptureDraft(
+            kind: .image,
+            localFilename: filename,
+            pixelSize: pixelSize,
+            title: title,
+            sourceURL: sourceURL.absoluteString,
+            sourceDevice: sourceDevice
+        )
+    }
+
+    private static func attemptResolveCandidates(
+        _ url: URL,
+        fetcher: LinkMetadataFetching,
+        enrichers: [SourceEnricher],
+        candidateSources: [CandidateImageSource]
+    ) async -> ResolvedURLCherry? {
         if let enricher = enrichers.first(where: { $0.matches(url) }) {
-            if let enrichedDraft = await attemptEnrichedResolve(url, sourceDevice: sourceDevice, mediaStore: mediaStore, enricher: enricher) {
-                return enrichedDraft
+            if let primary = await fetchEnrichedImage(url, enricher: enricher) {
+                let candidate = ResolvedImageCandidate(id: "primary", source: .bytes(primary.data, typeHint: primary.ext))
+                return ResolvedURLCherry(title: primary.title, sourceURL: url, candidates: [candidate])
             }
             debugLog("enrichment unavailable/failed for \(url.absoluteString) — falling back to generic")
         }
-        return await attemptGenericResolve(url, sourceDevice: sourceDevice, fetcher: fetcher, mediaStore: mediaStore)
+
+        guard let primary = await fetchGenericImage(url, fetcher: fetcher) else { return nil }
+        var candidates = [ResolvedImageCandidate(id: "primary", source: .bytes(primary.data, typeHint: primary.ext))]
+
+        if let source = candidateSources.first(where: { $0.matches(url) }) {
+            if let extraURLs = try? await source.candidateImageURLs(for: url), !Task.isCancelled {
+                let extraCandidates = extraURLs.map { ResolvedImageCandidate(id: CandidateAssembly.dedupeKey(for: $0), source: .url($0)) }
+                candidates = CandidateAssembly.merging(candidates, with: extraCandidates)
+                debugLog("candidate source found \(extraCandidates.count) additional, \(candidates.count) total after merge for \(url.absoluteString)")
+            }
+        }
+        return ResolvedURLCherry(title: primary.title, sourceURL: url, candidates: candidates)
     }
 
     /// A matched enricher gets exactly one attempt; ANY failure (thrown
-    /// error, non-200 thumbnail fetch, undecodable bytes, a save
-    /// failure) returns `nil` here so the caller falls through to the
-    /// unchanged generic path below — never a hard failure for the whole
-    /// resolution just because one source's enrichment didn't work this
-    /// time.
-    private static func attemptEnrichedResolve(
-        _ url: URL,
-        sourceDevice: SourcePlatform,
-        mediaStore: MediaStore,
-        enricher: SourceEnricher
-    ) async -> CaptureDraft? {
+    /// error, non-200 thumbnail fetch, undecodable bytes) returns `nil`
+    /// so the caller falls through to the unchanged generic path —
+    /// never a hard failure for the whole resolution just because one
+    /// source's enrichment didn't work this time.
+    private static func fetchEnrichedImage(_ url: URL, enricher: SourceEnricher) async -> (title: String?, data: Data, ext: String)? {
         let enriched: EnrichedLinkContent
         do {
             enriched = try await enricher.enrich(url)
@@ -107,37 +209,15 @@ public enum URLCherryResolver {
             debugLog("enriched image fetch failed for \(url.absoluteString): \(error)")
             return nil
         }
-        guard !Task.isCancelled else { return nil }
-
-        guard let pixelSize = ImageDecoding.pixelSize(ofData: data) else {
-            debugLog("enriched image undecodable for \(url.absoluteString)")
+        guard !Task.isCancelled, ImageDecoding.pixelSize(ofData: data) != nil else {
+            debugLog("enriched image undecodable or cancelled for \(url.absoluteString)")
             return nil
         }
-        guard !Task.isCancelled else { return nil }
-
         let ext = enriched.imageURL.pathExtension.isEmpty ? "jpg" : enriched.imageURL.pathExtension
-        guard let filename = try? mediaStore.save(data: data, ext: ext) else {
-            debugLog("MediaStore save failed for enriched \(url.absoluteString)")
-            return nil
-        }
-
-        debugLog("enriched-resolved \(url.absoluteString) -> \(data.count) bytes, title=\(enriched.title ?? "nil")")
-        return CaptureDraft(
-            kind: .image,
-            localFilename: filename,
-            pixelSize: pixelSize,
-            title: enriched.title,
-            sourceURL: url.absoluteString,
-            sourceDevice: sourceDevice
-        )
+        return (enriched.title, data, ext)
     }
 
-    private static func attemptGenericResolve(
-        _ url: URL,
-        sourceDevice: SourcePlatform,
-        fetcher: LinkMetadataFetching,
-        mediaStore: MediaStore
-    ) async -> CaptureDraft? {
+    private static func fetchGenericImage(_ url: URL, fetcher: LinkMetadataFetching) async -> (title: String?, data: Data, ext: String)? {
         let metadata: LPLinkMetadata
         do {
             metadata = try await fetcher.fetchMetadata(for: url)
@@ -149,49 +229,20 @@ public enum URLCherryResolver {
             debugLog("cancelled after metadata fetch for \(url.absoluteString)")
             return nil
         }
-
         guard let imageProvider = metadata.imageProvider else {
             debugLog("no imageProvider for \(url.absoluteString)")
             return nil
         }
-
         guard let (data, typeIdentifier) = await loadImageData(from: imageProvider) else {
             debugLog("image provider load failed for \(url.absoluteString)")
             return nil
         }
-        guard !Task.isCancelled else {
-            debugLog("cancelled after image load for \(url.absoluteString)")
-            return nil
-        }
-
-        // Header-only inspection (ImageIO, no full decode) — this is both
-        // the "does this actually decode as an image" validation AND the
-        // pixel-size read `CaptureDraft.pixelSize` needs, in one cheap
-        // call regardless of how large the source image is.
-        guard let pixelSize = ImageDecoding.pixelSize(ofData: data) else {
-            debugLog("undecodable image bytes for \(url.absoluteString), \(data.count) bytes")
-            return nil
-        }
-
-        guard !Task.isCancelled else {
-            debugLog("cancelled before save for \(url.absoluteString)")
+        guard !Task.isCancelled, ImageDecoding.pixelSize(ofData: data) != nil else {
+            debugLog("undecodable image bytes or cancelled for \(url.absoluteString)")
             return nil
         }
         let ext = UTType(typeIdentifier)?.preferredFilenameExtension ?? "jpg"
-        guard let filename = try? mediaStore.save(data: data, ext: ext) else {
-            debugLog("MediaStore save failed for \(url.absoluteString)")
-            return nil
-        }
-
-        debugLog("resolved \(url.absoluteString) -> \(data.count) bytes, \(Int(pixelSize.width))x\(Int(pixelSize.height))")
-        return CaptureDraft(
-            kind: .image,
-            localFilename: filename,
-            pixelSize: pixelSize,
-            title: metadata.title,
-            sourceURL: url.absoluteString,
-            sourceDevice: sourceDevice
-        )
+        return (metadata.title, data, ext)
     }
 
     /// Picks the first registered type that conforms to `.image` (matches

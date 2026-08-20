@@ -4,6 +4,19 @@ import SwiftData
 import UniformTypeIdentifiers
 import ArkyvKit
 
+/// Link Cherry Visual Picker 01: what `extractDraft()` hands to the
+/// drawer — either an already-complete single draft (every non-URL
+/// share, and any URL share that only ever produces one candidate), or
+/// an unmaterialized, ordered candidate list for `ShareDrawerContent` to
+/// page through. Kept as a plain two-case enum, not a unified "always a
+/// candidate list" shape, so the overwhelmingly common single-image path
+/// (screenshots, photos, most links) never pays for candidate-list
+/// bookkeeping it doesn't need.
+private enum ShareDraftResolution {
+    case single(CaptureDraft)
+    case candidates(ResolvedURLCherry)
+}
+
 /// Principal class for the Share Extension.
 ///
 /// `@objc(ShareViewController)` is REQUIRED: `NSExtensionPrincipalClass` in the
@@ -91,10 +104,10 @@ final class ShareViewController: UIViewController {
     /// `ShareDrawerContent`'s `loadFailed` for the corresponding UI
     /// state (disabled ✓, an explicit "couldn't load" message instead
     /// of a silently-ready empty draft).
-    private func extractDraft() async -> CaptureDraft? {
+    private func extractDraft() async -> ShareDraftResolution? {
         guard let item = extensionContext?.inputItems.first as? NSExtensionItem,
               let providers = item.attachments else {
-            return CaptureDraft(kind: .note, sourceDevice: .iOS)
+            return .single(CaptureDraft(kind: .note, sourceDevice: .iOS))
         }
 
         #if DEBUG
@@ -104,14 +117,14 @@ final class ShareViewController: UIViewController {
         let imageProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
         if !imageProviders.isEmpty {
             for provider in imageProviders {
-                if let draft = await imageDraft(from: provider) { return draft }
+                if let draft = await imageDraft(from: provider) { return .single(draft) }
             }
             return nil
         }
 
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
             if let url = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
-                return await urlDraft(for: url)
+                return await urlResolution(for: url)
             }
         }
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
@@ -124,28 +137,28 @@ final class ShareViewController: UIViewController {
                 // URL-typed. Any surrounding text falls through to the
                 // existing note behavior unchanged, below.
                 if let url = PlainTextURLRecognizer.recognizedURL(from: text) {
-                    return await urlDraft(for: url)
+                    return await urlResolution(for: url)
                 }
-                return CaptureDraft(kind: .note, noteBody: text, sourceDevice: .iOS)
+                return .single(CaptureDraft(kind: .note, noteBody: text, sourceDevice: .iOS))
             }
         }
-        return CaptureDraft(kind: .note, sourceDevice: .iOS)
+        return .single(CaptureDraft(kind: .note, sourceDevice: .iOS))
     }
 
-    /// URL → Cherry Production Foundation 01: "a user does not save a
-    /// link, they save the thing it points to." Any failure here (no
-    /// network, timeout, no image, undecodable bytes) returns the exact
-    /// same text-only draft this codebase has always produced for a bare
-    /// URL — resolution is an enhancement, never a new failure
-    /// dependency. Shared by both ways a share can be recognized as "a
-    /// URL" — a URL-typed provider, or plain text that's exactly one URL
-    /// — so a plain-text URL share is behaviorally identical to a
-    /// URL-typed one from this point on.
-    private func urlDraft(for url: URL) async -> CaptureDraft {
-        if let resolved = await URLCherryResolver.resolve(url, sourceDevice: .iOS) {
-            return resolved
+    /// Link Cherry Visual Picker 01: "a user does not save a link, they
+    /// save the thing it points to" — and now, when a page genuinely
+    /// offers more than one trustworthy visual, they get to say WHICH
+    /// thing. Candidate 0 is always the same single best guess the
+    /// pre-picker flow would have produced; a page with only one
+    /// trustworthy candidate behaves completely unchanged (no paging UI
+    /// — see `ShareDrawerContent`). Any failure (no network, timeout, no
+    /// image at all) falls back to the exact same text-only draft this
+    /// codebase has always produced for a bare URL.
+    private func urlResolution(for url: URL) async -> ShareDraftResolution {
+        if let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS), !resolved.candidates.isEmpty {
+            return .candidates(resolved)
         }
-        return CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS)
+        return .single(CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS))
     }
 
     #if DEBUG
@@ -308,7 +321,7 @@ final class ShareViewController: UIViewController {
 /// attachment loads in the background — ✓ is only live once it's ready.
 private struct ShareDrawerView: View {
     let container: ModelContainer
-    let load: () async -> CaptureDraft?
+    let load: () async -> ShareDraftResolution?
     let onDone: () -> Void
     let onCancel: () -> Void
 
@@ -326,11 +339,12 @@ private struct ShareDrawerView: View {
 /// (see the Share Extension parity milestone notes) — the preview is a
 /// plain, non-interactive thumbnail of the untouched original.
 private struct ShareDrawerContent: View {
-    let load: () async -> CaptureDraft?
+    let load: () async -> ShareDraftResolution?
     let onDone: () -> Void
     let onCancel: () -> Void
 
     @Environment(\.modelContext) private var context
+    @Environment(\.openURL) private var openURLAction
     // Unfiltered `@Query` + in-memory filter, not a `#Predicate` nil-check —
     // see ArchiveView.swift's `allFoldersRaw` doc comment: a `deletedAt ==
     // nil` predicate combined with a `sort:` argument in the same `@Query`
@@ -342,7 +356,27 @@ private struct ShareDrawerContent: View {
         allFoldersRaw.filter { !$0.isSoftDeleted }
     }
 
-    @State private var draft: CaptureDraft?
+    /// Link Cherry Visual Picker 01: `nil` while loading, then either a
+    /// complete single draft or an unmaterialized candidate list — see
+    /// `ShareDraftResolution`'s own doc comment.
+    @State private var resolution: ShareDraftResolution?
+    /// Every candidate actually fetched+`MediaStore`-saved so far, keyed
+    /// by `ResolvedImageCandidate.id`. Candidates the user never swipes
+    /// to are never added here at all; candidates added here but not
+    /// ultimately selected are deleted from `MediaStore` in
+    /// `cancelAndCleanUp`/`confirmSave` — "unselected candidates are NOT
+    /// permanently archived."
+    @State private var materialized: [String: CaptureDraft] = [:]
+    @State private var materializing: Set<String> = []
+    /// The currently-materializing candidate's task, so rapidly swiping
+    /// past several unfetched candidates cancels the stale in-flight
+    /// fetch for one the user has already moved past, rather than
+    /// letting fetches pile up.
+    @State private var materializeTask: Task<Void, Never>?
+    /// Index 0 by default — "if the user never swipes, save candidate 0
+    /// exactly as today." Changing folder/note or opening/closing the
+    /// folder dropdown never touches this.
+    @State private var selectedCandidateIndex = 0
     @State private var note = ""
     @State private var showingPicker = false
     /// Chosen in the dropdown (see `folderPanel`'s row actions), not yet
@@ -364,19 +398,43 @@ private struct ShareDrawerContent: View {
     /// resolved to `nil` — see `ShareViewController.extractDraft()`'s
     /// doc comment for exactly what that means (an image was shared but
     /// couldn't be processed/saved, most plausibly disk-full). Distinct
-    /// from "still loading" (`draft == nil && !loadFailed`, shows
+    /// from "still loading" (`resolution == nil && !loadFailed`, shows
     /// "Preparing…") so this state gets its own explicit message rather
     /// than silently presenting as a normal, saveable, content-free
-    /// draft — `isReady` already correctly keeps ✓ disabled either way
-    /// (`draft` stays `nil`), so this only changes what the user is
-    /// told, not what they're permitted to do.
+    /// draft — `isReady` already correctly keeps ✓ disabled either way,
+    /// so this only changes what the user is told, not what they're
+    /// permitted to do.
     @State private var loadFailed = false
+
+    private var candidates: [ResolvedImageCandidate] {
+        if case .candidates(let resolved) = resolution { return resolved.candidates }
+        return []
+    }
+
+    /// The draft that would actually be saved right now: the single
+    /// complete draft directly, or — for a candidate list — the
+    /// currently-selected candidate's draft ONLY once it has actually
+    /// been materialized (downloaded + saved). While a selected
+    /// candidate is still fetching, this is `nil`, which correctly keeps
+    /// ✓ disabled via `isReady` below — the same "Preparing…" gate the
+    /// initial load has always used, reused for a mid-swipe fetch too.
+    private var currentDraft: CaptureDraft? {
+        switch resolution {
+        case .single(let draft):
+            return draft
+        case .candidates:
+            guard candidates.indices.contains(selectedCandidateIndex) else { return nil }
+            return materialized[candidates[selectedCandidateIndex].id]
+        case nil:
+            return nil
+        }
+    }
 
     /// The attachment genuinely can take a perceptible moment to load
     /// (Photos library fetch, a large remote image) — unlike the Action
     /// Button flow's near-instant local read, this is a real wait worth
     /// showing, not a same-frame technical gate.
-    private var isReady: Bool { draft != nil }
+    private var isReady: Bool { currentDraft != nil }
 
     var body: some View {
         // URL → Cherry Physical QA Follow-Up 01: a very wide representative
@@ -399,13 +457,7 @@ private struct ShareDrawerContent: View {
                     actionBar
                     folderAccessory
                     Spacer(minLength: 12)
-                    if let preview = draft?.localFilename {
-                        MediaThumbnail(filename: preview)
-                            .frame(width: max(geometry.size.width - 40, 0), height: 360)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
-                            .padding(.horizontal, 20)
-                    }
+                    previewArea(width: max(geometry.size.width - 40, 0))
                     Spacer(minLength: 12)
                     noteField
                         .padding(.horizontal, 20)
@@ -428,8 +480,93 @@ private struct ShareDrawerContent: View {
         .animation(.easeOut(duration: 0.18), value: showingPicker)
         .task {
             let result = await load()
-            draft = result
+            resolution = result
             loadFailed = (result == nil)
+            if case .candidates(let resolved) = result, let first = resolved.candidates.first {
+                await materialize(candidate: first, resolved: resolved)
+            }
+        }
+    }
+
+    // MARK: Preview — single image (unchanged) or a paged candidate swiper
+
+    /// Link Cherry Visual Picker 01: identical box either way (the same
+    /// `width`/360-height frame the geometry fix already established),
+    /// so no candidate's aspect ratio can affect layout — only WHICH
+    /// view fills that box changes. A single candidate/draft renders
+    /// exactly as before: no `TabView`, no dots, no picker machinery at
+    /// all. Multiple candidates get native horizontal paging with a
+    /// small, quiet page-dot row beneath — shown ONLY when there's
+    /// genuinely a choice to make.
+    @ViewBuilder
+    private func previewArea(width: CGFloat) -> some View {
+        if candidates.count > 1 {
+            VStack(spacing: 10) {
+                TabView(selection: $selectedCandidateIndex) {
+                    ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                        candidatePreview(candidate)
+                            .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(width: width, height: 360)
+                .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+                .onChange(of: selectedCandidateIndex) { _, newIndex in
+                    guard candidates.indices.contains(newIndex) else { return }
+                    let candidate = candidates[newIndex]
+                    guard case .candidates(let resolved) = resolution else { return }
+                    materializeTask?.cancel()
+                    materializeTask = Task { await materialize(candidate: candidate, resolved: resolved) }
+                }
+
+                HStack(spacing: 6) {
+                    ForEach(candidates.indices, id: \.self) { index in
+                        Circle()
+                            .fill(ArkyvColor.textPrimary)
+                            .opacity(index == selectedCandidateIndex ? 1 : 0.25)
+                            .frame(width: 5, height: 5)
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+        } else if let filename = currentDraft?.localFilename {
+            MediaThumbnail(filename: filename)
+                .frame(width: width, height: 360)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+                .padding(.horizontal, 20)
+        }
+    }
+
+    @ViewBuilder
+    private func candidatePreview(_ candidate: ResolvedImageCandidate) -> some View {
+        if let filename = materialized[candidate.id]?.localFilename {
+            MediaThumbnail(filename: filename)
+        } else {
+            ArkyvColor.surface
+                .overlay {
+                    if materializing.contains(candidate.id) {
+                        ProgressView().tint(ArkyvColor.textPrimary)
+                    }
+                }
+        }
+    }
+
+    /// Downloads + `MediaStore`-saves one candidate, guarded against
+    /// re-fetching one already materialized or already in flight.
+    private func materialize(candidate: ResolvedImageCandidate, resolved: ResolvedURLCherry) async {
+        guard materialized[candidate.id] == nil, !materializing.contains(candidate.id) else { return }
+        materializing.insert(candidate.id)
+        let draft = await URLCherryResolver.materializeCandidate(
+            candidate, title: resolved.title, sourceURL: resolved.sourceURL, sourceDevice: .iOS
+        )
+        guard !Task.isCancelled else {
+            materializing.remove(candidate.id)
+            return
+        }
+        materializing.remove(candidate.id)
+        if let draft {
+            materialized[candidate.id] = draft
         }
     }
 
@@ -596,20 +733,29 @@ private struct ShareDrawerContent: View {
     /// no `folders:` argument at all — the existing, already-canonical
     /// Unfiled shape. Dismisses (`onDone`, which calls
     /// `extensionContext.completeRequest`) immediately on success; a
-    /// failed write leaves the user free to just try again.
+    /// failed write leaves the user free to just try again. Link Cherry
+    /// Visual Picker 01: `currentDraft` is the currently-selected
+    /// candidate's already-materialized draft (or the plain single
+    /// draft) — `isReady`/the ✓ button's own `isEnabled` already keep
+    /// this from ever firing before that candidate has finished
+    /// downloading, so this stays fully synchronous, exactly as before.
+    /// After a successful save, every OTHER materialized candidate is
+    /// deleted from `MediaStore` — only the selected visual's bytes ever
+    /// remain referenced by anything.
     private func confirmSave() {
-        guard var draft, isReady, !isSaving else { return }
+        guard var draftToSave = currentDraft, isReady, !isSaving else { return }
         isSaving = true
         saveError = false
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { draft.noteBody = trimmed }
+        if !trimmed.isEmpty { draftToSave.noteBody = trimmed }
         do {
             if let selectedFolder {
-                try Repository(context: context).fileCapture(draft, into: selectedFolder)
+                try Repository(context: context).fileCapture(draftToSave, into: selectedFolder)
             } else {
-                try Repository(context: context).fileCapture(draft, folders: [])
+                try Repository(context: context).fileCapture(draftToSave, folders: [])
             }
             didSave = true
+            deleteUnselectedMaterializedCandidates(keeping: draftToSave.localFilename)
             onDone()
         } catch {
             isSaving = false
@@ -620,14 +766,33 @@ private struct ShareDrawerContent: View {
     /// LIFECYCLE / FAULT INJECTION FOUNDATION 01: reclaims the staged
     /// MediaStore file on a genuine cancel — same reasoning as
     /// `ScreenshotCaptureFlowView`'s cancel paths. `didSave` (set only
-    /// after a successful `fileCapture` above) is the guard that keeps
-    /// this from ever deleting a file a just-saved `StoredItem` now
-    /// depends on.
+    /// after a successful `fileCapture` in `confirmSave`) is the guard
+    /// that keeps this from ever deleting a file a just-saved
+    /// `StoredItem` now depends on. Link Cherry Visual Picker 01: also
+    /// cancels any still-in-flight candidate fetch and reclaims every
+    /// candidate materialized so far — "unselected candidates are NOT
+    /// permanently archived" applies just as much to a cancelled share
+    /// as to one where a different candidate ended up selected.
     private func cancelAndCleanUp() {
-        if !didSave, let filename = draft?.localFilename {
-            MediaStore.shared.delete(filename: filename)
+        materializeTask?.cancel()
+        if !didSave {
+            if case .single(let draft) = resolution, let filename = draft.localFilename {
+                MediaStore.shared.delete(filename: filename)
+            }
+            deleteUnselectedMaterializedCandidates(keeping: nil)
         }
         onCancel()
+    }
+
+    /// Deletes every materialized candidate's `MediaStore` file except
+    /// `keptFilename` (the one that just became `StoredItem.localFilename`,
+    /// or `nil` on a full cancel where nothing is kept).
+    private func deleteUnselectedMaterializedCandidates(keeping keptFilename: String?) {
+        for draft in materialized.values {
+            guard let filename = draft.localFilename, filename != keptFilename else { continue }
+            MediaStore.shared.delete(filename: filename)
+        }
+        materialized.removeAll()
     }
 }
 

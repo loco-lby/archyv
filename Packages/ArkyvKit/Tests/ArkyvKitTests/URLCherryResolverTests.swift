@@ -187,6 +187,55 @@ final class URLCherryResolverTests: XCTestCase {
         XCTAssertFalse(enricher.enrichWasCalled, "a non-matching enricher must never have enrich(_:) invoked")
         XCTAssertEqual(draft?.title, "Generic Title")
     }
+
+    // MARK: - resolveCandidates / materializeCandidate (Link Cherry Visual Picker 01)
+
+    func testResolveCandidatesReturnsSingleCandidateWhenNoSourceMatches() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "T", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [])
+
+        XCTAssertEqual(resolved?.candidates.count, 1)
+    }
+
+    func testResolveCandidatesOrdersPrimaryFirstAndAppendsAdditional() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "T", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let extraURLs = [URL(string: "https://example.com/alt1.jpg")!, URL(string: "https://example.com/alt2.jpg")!]
+        let source = FakeCandidateSource(matchesResult: true, result: .success(extraURLs))
+
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source])
+
+        XCTAssertEqual(resolved?.candidates.count, 3)
+        XCTAssertEqual(resolved?.candidates.first?.id, "primary")
+    }
+
+    func testResolveCandidatesFallsBackToSingleWhenCandidateSourceThrows() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "T", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let source = FakeCandidateSource(matchesResult: true, result: .failure(FakeEnricher.Error.boom))
+
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source])
+
+        XCTAssertEqual(resolved?.candidates.count, 1, "a throwing candidate source must never break resolution — just contribute zero extras")
+    }
+
+    func testMaterializeCandidateFromBytesNeedsNoNetworkAndSavesToMediaStore() async {
+        let (mediaStore, root) = makeIsolatedMediaStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let candidate = ResolvedImageCandidate(id: "primary", source: .bytes(Self.validPNGBytes, typeHint: "png"))
+
+        let draft = await URLCherryResolver.materializeCandidate(
+            candidate, title: "T", sourceURL: URL(string: "https://example.com/thing")!, sourceDevice: .iOS, mediaStore: mediaStore
+        )
+
+        XCTAssertNotNil(draft?.localFilename)
+        XCTAssertEqual(draft?.sourceURL, "https://example.com/thing")
+    }
 }
 
 // MARK: - Test doubles
@@ -250,6 +299,25 @@ private final class FakeEnricher: SourceEnricher, @unchecked Sendable {
         lock.withLock { _enrichWasCalled = true }
         switch result {
         case .success(let content): return content
+        case .failure(let error): throw error
+        }
+    }
+}
+
+private final class FakeCandidateSource: CandidateImageSource, @unchecked Sendable {
+    private let matchesResult: Bool
+    private let result: Result<[URL], Swift.Error>
+
+    init(matchesResult: Bool, result: Result<[URL], Swift.Error>) {
+        self.matchesResult = matchesResult
+        self.result = result
+    }
+
+    func matches(_ url: URL) -> Bool { matchesResult }
+
+    func candidateImageURLs(for url: URL) async throws -> [URL] {
+        switch result {
+        case .success(let urls): return urls
         case .failure(let error): throw error
         }
     }
