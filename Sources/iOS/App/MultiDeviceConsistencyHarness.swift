@@ -191,6 +191,35 @@ enum MultiDeviceConsistencyHarness {
                 // prefixed "MDC" — including soft-deleted rows, for a
                 // complete picture before any classification/deletion.
                 try auditTestResidue(repo: repo)
+            case "delete-two-device-test-artifact":
+                // Permanent Environment Closeout 01, Section 1: MUTATING.
+                // Hardcoded to the exact item created/edited during
+                // Two-Device Restore/Sync Validation 01's live sync test
+                // (id confirmed via `report` on both devices; noteBody
+                // confirmed to carry both the A-side and B-side edits
+                // before deletion proceeds — never inferred from
+                // timestamp/name proximity alone).
+                let targetID = UUID(uuidString: "52B25162-4C90-400B-95E8-15DC7D5F1EAC")!
+                let allItems = try repo.context.fetch(FetchDescriptor<StoredItem>())
+                guard let item = allItems.first(where: { $0.id == targetID }) else {
+                    print("[MDC] SKIP: TWO-DEVICE-TEST-A (id=\(targetID)) not found"); break
+                }
+                guard item.tags.contains(testTag),
+                      let note = item.noteBody,
+                      note.hasPrefix("TWO-DEVICE-TEST-A"), note.contains("#two-device-b") else {
+                    print("[MDC] REFUSING to delete \(targetID) — identity check failed: tags=\(item.tags) noteBody=\(item.noteBody ?? "nil")"); break
+                }
+                try repo.softDelete(item)
+                print("[MDC] deleted TWO-DEVICE-TEST-A id=\(targetID) noteBody=\(note)")
+            case "audit-non-harness-recent":
+                // Permanent Environment Closeout 01, Section 2: READ-ONLY.
+                // Lists every live item NOT tagged mdc-test (i.e. not a
+                // harness fixture), sorted most-recent-first, so the real
+                // manual Share Extension test Cherry can be told apart from
+                // the migrated legacy archive by inspection (its createdAt
+                // will cluster near the identity-cutover testing window,
+                // not the legacy archive's original capture dates).
+                try auditNonHarnessRecent(repo: repo)
             case "list-all-folders":
                 // Post-Migration Folder Reconciliation 01: READ-ONLY. Full
                 // detail on every StoredFolder, including soft-deleted —
@@ -408,6 +437,25 @@ enum MultiDeviceConsistencyHarness {
             print("[MDC] folder id=\(folder.id) name=\(folder.name) isSoftDeleted=\(folder.isSoftDeleted) referenceCount=\(folder.referenceCount)")
         }
         print("[MDC] --- end report ---")
+    }
+
+    // MARK: - Permanent Environment Closeout 01
+
+    /// READ-ONLY. Every live item not tagged `mdc-test`, sorted most recent
+    /// first, capped at 15 rows — enough to visually separate a single
+    /// recent, non-migrated, non-harness Cherry (the real manual Share
+    /// Extension test) from the bulk of the migrated legacy archive.
+    private static func auditNonHarnessRecent(repo: Repository) throws {
+        let descriptor = FetchDescriptor<StoredItem>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        let items = try repo.context.fetch(descriptor).filter { !$0.isSoftDeleted && !$0.tags.contains(testTag) }
+        print("[MDC] --- audit-non-harness-recent: \(items.count) live non-mdc-test item(s), showing up to 15 most recent ---")
+        for item in items.prefix(15) {
+            let folderName = item.folder?.name ?? "Unfiled"
+            print("[MDC] item id=\(item.id) createdAt=\(item.createdAt) legacyFolder=\(folderName)")
+            print("[MDC]   tags=\(item.tags) title=\(item.title ?? "nil") noteBody=\(item.noteBody ?? "nil") sourceURL=\(item.sourceURL ?? "nil")")
+            print("[MDC]   kind=\(item.kind.rawValue) sourceDevice=\(item.sourceDevice.rawValue) imageDataBytes=\(item.imageData?.count ?? -1) localFilename=\(item.localFilename ?? "nil")")
+        }
+        print("[MDC] --- end audit-non-harness-recent ---")
     }
 
     // MARK: - Post-Migration Folder Reconciliation 01
