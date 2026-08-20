@@ -27,6 +27,27 @@ public enum ArkyvSpacing {
     public static let sheetSection: CGFloat = 18
 }
 
+/// One Archive Bottom Scroll / Safe Area 01: the floating root dock's own
+/// geometry, shared between `RootView` (which positions it) and any
+/// scrollable content that must be able to clear it (`ArchiveView`) —
+/// previously `RootView` kept `dockDiameter` as a private constant and
+/// `ArchiveView` reserved clearance for it via an unrelated, hand-picked
+/// `96` that didn't actually match this geometry (and undershot it) —
+/// one shared source of truth instead of two independently-guessed
+/// numbers.
+public enum ArkyvFloatingDock {
+    /// Fixed circle diameter of each floating dock button.
+    public static let diameter: CGFloat = 58.24
+    /// Vertical clearance `RootView` reserves between the dock's own
+    /// bottom edge and the safe-area boundary it floats just above.
+    public static let bottomClearance: CGFloat = 16
+    /// The dock's total footprint above the safe area (diameter + its
+    /// own clearance) — what any scrollable content needs to add, on
+    /// top of its own already-safe-area-respecting stopping point, to
+    /// let its final content clear the dock entirely.
+    public static let totalHeight: CGFloat = diameter + bottomClearance
+}
+
 /// Cherries' motion principle: **fast hands, calm room**. Input responds
 /// immediately, but a visual state change should *settle* into place, not
 /// pop or celebrate — no spring/overshoot, nothing flashes, nothing feels

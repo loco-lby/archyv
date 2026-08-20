@@ -237,9 +237,13 @@ struct RootView: View {
             let columnWidth = (geo.size.width - 2 * outerPadding - gridSpacing) / 2
             let leftColumnCenterX = outerPadding + columnWidth / 2
             let rightColumnCenterX = geo.size.width - outerPadding - columnWidth / 2
-            // Same 16pt clearance below the dock as before, now expressed
-            // as a center Y within this GeometryReader's own height.
-            let bandCenterY = geo.size.height - 16 - Self.dockDiameter / 2
+            // Same clearance below the dock as before, now expressed as a
+            // center Y within this GeometryReader's own height —
+            // `ArkyvFloatingDock.bottomClearance`/`.diameter` (One Archive
+            // Bottom Scroll / Safe Area 01) are the same shared constants
+            // `ArchiveView` reserves scroll clearance for, so this view's
+            // own geometry and that clearance can never drift apart.
+            let bandCenterY = geo.size.height - ArkyvFloatingDock.bottomClearance - ArkyvFloatingDock.diameter / 2
 
             ZStack {
                 floatingWordmark
@@ -248,11 +252,8 @@ struct RootView: View {
                     .position(x: rightColumnCenterX, y: bandCenterY)
             }
         }
-        .frame(height: Self.dockDiameter + 16)
+        .frame(height: ArkyvFloatingDock.totalHeight)
     }
-
-    /// Matches `floatingDockButton`'s own fixed circle size below.
-    private static let dockDiameter: CGFloat = 58.24
 
     /// A quiet brand mark living in the room, not a control — no
     /// background, pill, material, or outline, and deliberately never
@@ -330,7 +331,7 @@ struct RootView: View {
     private func floatingDockButton<Icon: View>(action: @escaping () -> Void, @ViewBuilder icon: () -> Icon) -> some View {
         Button(action: action) {
             icon()
-                .frame(width: 58.24, height: 58.24)
+                .frame(width: ArkyvFloatingDock.diameter, height: ArkyvFloatingDock.diameter)
                 .background {
                     // A generic `Color.black` overlay at 25% still read as
                     // an imitation of standard Apple frosted material —

@@ -184,10 +184,6 @@ struct ArchiveView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
-                // Generous bottom clearance (not the usual ~24pt) so the
-                // last row can scroll fully clear of the floating dock
-                // rather than settling permanently underneath it.
-                .padding(.bottom, 96)
             }
         }
         // One Archive should read as an open visual field, not a utility
@@ -198,6 +194,28 @@ struct ArchiveView: View {
         .background(ArkyvColor.canvas)
         .safeAreaInset(edge: .top) {
             topBar
+        }
+        // One Archive Bottom Scroll / Safe Area 01: the floating root dock
+        // (`RootView.floatingBottomOverlay`) is a plain ZStack overlay —
+        // it contributes NOTHING to this ScrollView's own layout or scroll
+        // extent. The scroll view's natural stopping point already
+        // respects the device's own bottom safe area on its own; this
+        // `safeAreaInset` adds the dock's real footprint
+        // (`ArkyvFloatingDock.totalHeight` — the SAME shared constant
+        // `RootView` positions the dock from, so the two can never drift
+        // apart) plus one spacing token of intentional breathing room, as
+        // genuinely EXTRA scrollable room — not a visible bar, not
+        // reserved layout space that pushes content up, just distance the
+        // final row can travel through so it can rise completely clear of
+        // the dock rather than stopping just short of it (the previous,
+        // unrelated hardcoded `96` undershot the dock's actual height +
+        // clearance by design-guesswork, not measurement). Applied at the
+        // `ScrollView` level, not conditionally on `displayedItems` being
+        // non-empty, so short/empty Archives get the exact same modest,
+        // correct clearance — never "hundreds of points" of blank space,
+        // just the dock's own real, small footprint.
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: ArkyvFloatingDock.totalHeight + ArkyvSpacing.lg)
         }
         .navigationDestination(for: ItemRoute.self) { route in
             if let item = resolveItem(route.itemID) {
