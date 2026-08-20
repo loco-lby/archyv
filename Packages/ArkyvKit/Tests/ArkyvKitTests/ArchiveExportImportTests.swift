@@ -177,22 +177,54 @@ final class ArchiveExportImportTests: XCTestCase {
 
     // MARK: - Failure modes (Section 11)
 
+    /// Real Archive Import 01: unrelated existing content — e.g. items
+    /// created directly in a newly-cutover environment before the legacy
+    /// archive is imported — must NOT block the import. Only an actual
+    /// id collision should.
     @MainActor
-    func testImportRefusesNonEmptyDestination() throws {
+    func testImportSucceedsAlongsideUnrelatedNonCollidingDestinationContent() throws {
         let sourceRepo = try makeRepo()
-        _ = try sourceRepo.fileCapture(.note("hello"))
+        let folder = try sourceRepo.createFolder(name: "Deadwest", icon: .symbol("star"))
+        _ = try sourceRepo.fileCapture(.note("legacy"), folders: [folder])
         let archive = try CherryManifest.export(context: sourceRepo.context)
 
         let destContext = makeEmptyContext()
-        _ = try Repository(context: destContext).fileCapture(.note("already here"))
+        let destRepo = Repository(context: destContext)
+        let preExisting = try destRepo.fileCapture(.note("post-cutover, unrelated"))
+
+        let summary = try CherryManifest.importArchive(archive, into: destContext)
+
+        XCTAssertEqual(summary.itemsImported, 1)
+        XCTAssertEqual(summary.foldersImported, 1)
+        let allItems = try destContext.fetch(FetchDescriptor<StoredItem>())
+        XCTAssertEqual(allItems.count, 2, "the pre-existing unrelated item must survive untouched, alongside the newly-imported one")
+        XCTAssertTrue(allItems.contains { $0.id == preExisting.id })
+        XCTAssertEqual(preExisting.noteBody, "post-cutover, unrelated", "the importer must never read or modify unrelated existing rows")
+    }
+
+    @MainActor
+    func testImportRefusesOnActualIdentityCollision() throws {
+        let sourceRepo = try makeRepo()
+        let collidingItem = try sourceRepo.fileCapture(.note("legacy version"))
+        let archive = try CherryManifest.export(context: sourceRepo.context)
+
+        let destContext = makeEmptyContext()
+        // Simulates the destination already containing a row whose id
+        // matches an archive item — the one case that must be refused.
+        let colliding = StoredItem(id: collidingItem.id, kind: .note, noteBody: "already exists in destination")
+        destContext.insert(colliding)
+        try destContext.save()
 
         XCTAssertThrowsError(try CherryManifest.importArchive(archive, into: destContext)) { error in
-            guard case CherryManifest.ImportError.destinationNotEmpty(let items, let folders) = error else {
-                return XCTFail("expected .destinationNotEmpty, got \(error)")
+            guard case CherryManifest.ImportError.identityCollision(let itemIDs, let folderIDs) = error else {
+                return XCTFail("expected .identityCollision, got \(error)")
             }
-            XCTAssertEqual(items, 1)
-            XCTAssertEqual(folders, 0)
+            XCTAssertEqual(itemIDs, [collidingItem.id])
+            XCTAssertEqual(folderIDs, [])
         }
+
+        // Unaffected by the failed attempt.
+        XCTAssertEqual(colliding.noteBody, "already exists in destination")
     }
 
     @MainActor
@@ -276,19 +308,23 @@ final class ArchiveExportImportTests: XCTestCase {
     }
 
     @MainActor
-    func testImportIsSafeToRetryAfterAFailedNonEmptyDestinationAttempt() throws {
+    func testImportIsSafeToRetryAfterAFailedCollisionAttempt() throws {
         let sourceRepo = try makeRepo()
-        _ = try sourceRepo.fileCapture(.note("hello"))
+        let item = try sourceRepo.fileCapture(.note("hello"))
         let archive = try CherryManifest.export(context: sourceRepo.context)
 
         let destContext = makeEmptyContext()
-        let blocker = try Repository(context: destContext).fileCapture(.note("blocker"))
+        let colliding = StoredItem(id: item.id, kind: .note, noteBody: "blocker")
+        destContext.insert(colliding)
+        try destContext.save()
         XCTAssertThrowsError(try CherryManifest.importArchive(archive, into: destContext))
 
-        try Repository(context: destContext).softDelete(blocker)
-        // Soft-deleted rows still count as non-empty by design (fail-closed
-        // is about the destination's history, not just its live view) —
-        // confirm the refusal persists until the context is genuinely empty.
-        XCTAssertThrowsError(try CherryManifest.importArchive(archive, into: destContext))
+        // Removing the actual colliding row (not merely soft-deleting —
+        // its id would still collide) allows a subsequent import to
+        // succeed cleanly.
+        destContext.delete(colliding)
+        try destContext.save()
+        let summary = try CherryManifest.importArchive(archive, into: destContext)
+        XCTAssertEqual(summary.itemsImported, 1)
     }
 }

@@ -138,12 +138,21 @@ public enum CherryManifest {
     // MARK: - Import (Pre-Launch Migration Ferry 01)
 
     public enum ImportError: Error, Equatable {
-        /// Fail-closed by design (Section 10 of the migration ferry
-        /// milestone): a general-purpose merge/idempotency engine is out
-        /// of scope for a one-time internal tool, so importing twice — or
-        /// into any store that already has content — is a hard refusal,
-        /// not an attempted merge.
-        case destinationNotEmpty(existingItemCount: Int, existingFolderCount: Int)
+        /// Real Archive Import 01: fail-closed by design, but scoped to
+        /// what actually threatens correctness — an archive item or
+        /// folder id already present in the destination, which would mean
+        /// overwriting or ambiguously co-owning existing data. A
+        /// destination that merely has OTHER, non-colliding content
+        /// (e.g. items created directly in the new environment after a
+        /// technical-identity cutover, before the legacy archive was
+        /// imported) is safe and explicitly allowed — this is not a
+        /// general-purpose merge engine, it never modifies or reads
+        /// existing unrelated rows, it only ever inserts the archive's
+        /// own new ones. Superseded `destinationNotEmpty` (Pre-Launch
+        /// Migration Ferry 01's original, stricter "must be totally
+        /// empty" rule) once a real cutover made "empty" the wrong
+        /// question to ask.
+        case identityCollision(itemIDs: Set<UUID>, folderIDs: Set<UUID>)
         /// Two items in the SAME archive share an id — the archive itself
         /// is malformed; this can never happen from a real `export()`
         /// call (SwiftData ids are unique), only from a hand-edited or
@@ -161,13 +170,15 @@ public enum CherryManifest {
         public var totalImageDataBytes = 0
     }
 
-    /// Reconstructs `archive` into `context`, which must be completely
-    /// empty (Section 10: fail-closed, no merge semantics). Builds every
-    /// model object in memory first and calls `context.save()` exactly
-    /// once at the end — SwiftData/CoreData's `save()` is one atomic
-    /// commit, so this import is all-or-nothing by construction: if it
-    /// throws, nothing was persisted (the destination remains exactly as
-    /// empty as it started, trivially safe to retry), and there is no
+    /// Reconstructs `archive` into `context`. Fail-closed on identity
+    /// collision (Real Archive Import 01) — refuses if any archive item
+    /// or folder id already exists in the destination — but otherwise
+    /// tolerates and never touches unrelated existing content. Builds
+    /// every model object in memory first and calls `context.save()`
+    /// exactly once at the end — SwiftData/CoreData's `save()` is one
+    /// atomic commit, so this import is all-or-nothing by construction:
+    /// if it throws, nothing was persisted (existing content, colliding
+    /// or not, is completely unaffected either way), and there is no
     /// window where a caller could observe a partially-reconstructed
     /// archive as if it were complete.
     ///
@@ -184,10 +195,12 @@ public enum CherryManifest {
     /// own semantics rather than inventing new ones.
     @discardableResult
     public static func importArchive(_ archive: Archive, into context: ModelContext) throws -> ImportSummary {
-        let existingItemCount = try context.fetchCount(FetchDescriptor<StoredItem>())
-        let existingFolderCount = try context.fetchCount(FetchDescriptor<StoredFolder>())
-        guard existingItemCount == 0, existingFolderCount == 0 else {
-            throw ImportError.destinationNotEmpty(existingItemCount: existingItemCount, existingFolderCount: existingFolderCount)
+        let existingItemIDs = Set(try context.fetch(FetchDescriptor<StoredItem>()).map(\.id))
+        let existingFolderIDs = Set(try context.fetch(FetchDescriptor<StoredFolder>()).map(\.id))
+        let collidingItemIDs = existingItemIDs.intersection(archive.items.map(\.id))
+        let collidingFolderIDs = existingFolderIDs.intersection(archive.folders.map(\.id))
+        guard collidingItemIDs.isEmpty, collidingFolderIDs.isEmpty else {
+            throw ImportError.identityCollision(itemIDs: collidingItemIDs, folderIDs: collidingFolderIDs)
         }
 
         var seenItemIDs = Set<UUID>()

@@ -28,6 +28,19 @@ enum MigrationFerry {
             switch action {
             case "full-cycle":
                 try await runFullCycle(realContainer: realContainer)
+            case "import-real-archive":
+                // Real Archive Import 01: MUTATING, and the one action in
+                // this file that writes into the REAL container — every
+                // other action here is read-only against it. Reads the
+                // verified migration artifact from this app's own
+                // Documents directory (pushed there via `devicectl copy
+                // to` ahead of this call — never the App Group, never
+                // CloudKit directly) and imports it through
+                // CherryManifest.importArchive's identity-collision-safe
+                // path.
+                try importRealArchive(realContainer: realContainer)
+            case "verify-real-archive":
+                try verifyRealArchive(realContainer: realContainer)
             default:
                 print("[Ferry] unknown action: \(action)")
             }
@@ -92,6 +105,60 @@ enum MigrationFerry {
         print("[Ferry] real-archive sanity: itemCount before=\(archive.items.count) after=\(postItems), folderCount before=\(archive.folders.count) after=\(postFolders) — \(postItems == archive.items.count && postFolders == archive.folders.count ? "UNCHANGED" : "MISMATCH — investigate")")
     }
 
+    // MARK: - Real import (Real Archive Import 01)
+
+    private static func importRealArchive(realContainer: ModelContainer) throws {
+        let artifactURL = migrationArtifactURL()
+        guard FileManager.default.fileExists(atPath: artifactURL.path) else {
+            print("[Ferry] FATAL: migration artifact not found at \(artifactURL.path) — push it via `devicectl device copy to` first")
+            return
+        }
+        let json = try Data(contentsOf: artifactURL)
+        let checksum = SHA256.hash(data: json).map { String(format: "%02x", $0) }.joined()
+        print("[Ferry] artifact: path=\(artifactURL.path) jsonBytes=\(json.count) sha256=\(checksum)")
+
+        let archive = try CherryManifest.decodeJSON(json)
+        printSourceInventory(archive, jsonByteCount: json.count, checksum: checksum, exportDuration: 0, artifactURL: artifactURL)
+
+        let realContext = ModelContext(realContainer)
+        let preExistingItems = try realContext.fetch(FetchDescriptor<StoredItem>())
+        let preExistingFolders = try realContext.fetch(FetchDescriptor<StoredFolder>())
+        print("[Ferry] pre-import destination state: items=\(preExistingItems.count) folders=\(preExistingFolders.count)")
+
+        let importStart = Date()
+        let summary = try CherryManifest.importArchive(archive, into: realContext)
+        let importDuration = Date().timeIntervalSince(importStart)
+        print("[Ferry] IMPORT SUCCEEDED: folders=\(summary.foldersImported) items=\(summary.itemsImported) memberships=\(summary.membershipsImported) imageDataBytes=\(summary.totalImageDataBytes) duration=\(String(format: "%.2f", importDuration))s")
+
+        try compare(sourceArchive: archive, isolatedContext: realContext)
+
+        let report = IntegrityCheck.run(context: realContext)
+        print("[Ferry] IntegrityCheck (post-import, real container): isClean=\(report.isClean) itemsWithMultipleActiveFolders=\(report.itemsWithMultipleActiveFolders.count) folderMembershipDisagreements=\(report.folderMembershipDisagreements.count) duplicateActiveMemberships=\(report.duplicateActiveMemberships.count) itemsWithNoKnownRecovery=\(report.itemsWithNoKnownRecovery.count) missingMedia=\(report.itemsWithMissingMedia.count)")
+
+        let postItems = try realContext.fetch(FetchDescriptor<StoredItem>())
+        let postFolders = try realContext.fetch(FetchDescriptor<StoredFolder>())
+        print("[Ferry] post-import total: items=\(postItems.count) folders=\(postFolders.count) (pre-existing \(preExistingItems.count)/\(preExistingFolders.count) + imported \(summary.itemsImported)/\(summary.foldersImported))")
+    }
+
+    /// READ-ONLY re-verification against the REAL container's current
+    /// state — does not call `importArchive` again (which would now
+    /// correctly refuse via identity collision, since the legacy items
+    /// already exist). Re-runs the same comparison/IntegrityCheck logic
+    /// `import-real-archive` already ran inline, so the corrected
+    /// subset-based comparison can be confirmed clean without needing to
+    /// mutate anything again.
+    private static func verifyRealArchive(realContainer: ModelContainer) throws {
+        let artifactURL = migrationArtifactURL()
+        let json = try Data(contentsOf: artifactURL)
+        let archive = try CherryManifest.decodeJSON(json)
+        let realContext = ModelContext(realContainer)
+
+        try compare(sourceArchive: archive, isolatedContext: realContext)
+
+        let report = IntegrityCheck.run(context: realContext)
+        print("[Ferry] IntegrityCheck (verify pass, real container): isClean=\(report.isClean) itemsWithMultipleActiveFolders=\(report.itemsWithMultipleActiveFolders.count) folderMembershipDisagreements=\(report.folderMembershipDisagreements.count) duplicateActiveMemberships=\(report.duplicateActiveMemberships.count) itemsWithNoKnownRecovery=\(report.itemsWithNoKnownRecovery.count) missingMedia=\(report.itemsWithMissingMedia.count) orphanedMedia=\(report.orphanedMediaFilenames.count)")
+    }
+
     // MARK: - Inventory
 
     private static func printSourceInventory(_ archive: CherryManifest.Archive, jsonByteCount: Int, checksum: String, exportDuration: TimeInterval, artifactURL: URL) {
@@ -126,12 +193,19 @@ enum MigrationFerry {
 
         var mismatches: [String] = []
 
-        if importedItems.count != sourceArchive.items.count {
-            mismatches.append("item count: source=\(sourceArchive.items.count) imported=\(importedItems.count)")
+        // Subset checks, not exact-count equality: the destination may
+        // legitimately contain unrelated pre-existing content (e.g. items
+        // created directly in a newly-cutover environment before the
+        // legacy archive was imported) — that's expected and correct, not
+        // a mismatch. What actually matters is that every archive id is
+        // present in the destination.
+        let importedItemIDs = Set(importedItems.map(\.id))
+        let sourceItemIDs = Set(sourceArchive.items.map(\.id))
+        if !sourceItemIDs.isSubset(of: importedItemIDs) {
+            mismatches.append("missing archive item ids: \(sourceItemIDs.subtracting(importedItemIDs).count)")
         }
-        if importedFolders.count != sourceArchive.folders.count {
-            mismatches.append("folder count: source=\(sourceArchive.folders.count) imported=\(importedFolders.count)")
-        }
+        print("[Ferry] item counts: source=\(sourceArchive.items.count) destination-total=\(importedItems.count) (destination may legitimately include pre-existing unrelated items)")
+        print("[Ferry] folder counts: source=\(sourceArchive.folders.count) destination-total=\(importedFolders.count) (destination may legitimately include pre-existing unrelated folders)")
 
         var imageDataMismatches = 0
         var cropMismatches = 0
@@ -167,8 +241,8 @@ enum MigrationFerry {
 
         let sourceFolderIDs = Set(sourceArchive.folders.map(\.id))
         let importedFolderIDs = Set(importedFolders.map(\.id))
-        if sourceFolderIDs != importedFolderIDs {
-            mismatches.append("folder identity sets differ")
+        if !sourceFolderIDs.isSubset(of: importedFolderIDs) {
+            mismatches.append("missing archive folder ids: \(sourceFolderIDs.subtracting(importedFolderIDs).count)")
         }
 
         print("[Ferry] --- round-trip comparison ---")
