@@ -363,61 +363,50 @@ private struct ShareDrawerContent: View {
     private var isReady: Bool { draft != nil }
 
     var body: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                actionBar
-                folderAccessory
-                Spacer(minLength: 12)
-                if let preview = draft?.localFilename {
-                    // URL → Cherry Physical QA Follow-Up 01: this MUST be
-                    // one combined `.frame(maxWidth:maxHeight:)` call, not
-                    // two chained separate `.frame()`s (maxWidth alone,
-                    // then maxHeight alone) — chaining lets a resizable
-                    // `.scaledToFill()` image negotiate its height against
-                    // an UNCONSTRAINED first pass (only width pinned), and
-                    // for an unusually wide source image that intermediate
-                    // ideal size can itself end up wider than the screen
-                    // before the second frame() ever gets a chance to cap
-                    // it — from which the oversized reported width
-                    // propagates straight up through the VStack/ZStack and
-                    // visibly displaces the X/check/folder controls out of
-                    // bounds (confirmed live with the Works in Progress
-                    // article's wide hero image). One combined frame call
-                    // constrains both dimensions in the same layout pass,
-                    // so the reported size is always exactly this box
-                    // regardless of the source image's aspect ratio.
-                    // `.clipped()` alongside `.clipShape` is defense in
-                    // depth — belt-and-suspenders against any visual
-                    // bleed, not required to fix the reported-size issue
-                    // above by itself.
-                    MediaThumbnail(filename: preview)
-                        .frame(maxWidth: .infinity, maxHeight: 360)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+        // URL → Cherry Physical QA Follow-Up 01: a very wide representative
+        // image (the Works in Progress hero) was found to push the whole
+        // drawer's reported width past the true screen bounds even after
+        // giving MediaThumbnail its own `.frame(maxWidth: .infinity,
+        // maxHeight: 360)` — flexible (`.infinity`/`max`) sizing is a
+        // NEGOTIATION between parent and child, and something in this
+        // chain was still letting an outsized child win that negotiation
+        // for the whole drawer, not just the thumbnail. `GeometryReader`
+        // sidesteps the negotiation entirely: it reports the one
+        // concrete size actually offered by the hosting controller
+        // (which IS pinned via Auto Layout to the extension's real screen
+        // bounds), and every child below is given an absolute number
+        // instead of a hint — there is no longer any flexible sizing left
+        // for an unusual aspect ratio to exploit.
+        GeometryReader { geometry in
+            ZStack {
+                VStack(spacing: 0) {
+                    actionBar
+                    folderAccessory
+                    Spacer(minLength: 12)
+                    if let preview = draft?.localFilename {
+                        MediaThumbnail(filename: preview)
+                            .frame(width: max(geometry.size.width - 40, 0), height: 360)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+                            .padding(.horizontal, 20)
+                    }
+                    Spacer(minLength: 12)
+                    noteField
                         .padding(.horizontal, 20)
+                        .padding(.bottom, 20)
                 }
-                Spacer(minLength: 12)
-                noteField
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 20)
-            }
-            // Layout contract (Physical QA Follow-Up 01): the root capture
-            // chrome must never grow wider than what's offered, regardless
-            // of what any child ends up wanting — the media adapts to the
-            // UI, not the other way around. Defense in depth alongside the
-            // MediaThumbnail-level fix above, not a substitute for it (a
-            // truly unbounded child could in principle still widen an
-            // unconstrained VStack before this outer frame gets applied).
-            .frame(maxWidth: .infinity)
-            .opacity(showingPicker ? 0.3 : 1)
-            .allowsHitTesting(!showingPicker)
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .opacity(showingPicker ? 0.3 : 1)
+                .allowsHitTesting(!showingPicker)
 
-            if showingPicker {
-                dropdownOverlay
-                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+                if showingPicker {
+                    dropdownOverlay
+                        .frame(width: geometry.size.width)
+                        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+                }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ArkyvColor.canvas.ignoresSafeArea())
         .ignoresSafeArea(edges: .bottom)
         .animation(.easeOut(duration: 0.18), value: showingPicker)
