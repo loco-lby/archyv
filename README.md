@@ -1418,3 +1418,56 @@ explicitly preserved per instruction.
 **Result:** `IntegrityCheck` clean on all four targets after cleanup;
 6 live folders remain (the 5 real migrated folders plus Sammy's genuine
 `Test` folder); old environment reconfirmed unchanged (84/12/101).
+
+## Two-Device Restore / Sync Validation (Foundation 01)
+
+**GREEN.** Proved that a second physical device (iPhone 14 Max)
+reconstructs the permanent `com.deadwest.cherries` archive through
+ordinary CloudKit sync alone — no App Group copy, no MediaStore copy,
+no migration JSON import, no manual file transfer. The only input to
+Device B was a clean app install pointed at `iCloud.com.deadwest.cherries`.
+
+**Restore fidelity.** Device B converged to the exact Device A baseline:
+identical item/folder/membership counts, identical folder identities and
+names, `IntegrityCheck` clean on both devices
+(`isClean=true`, `folderDisagreements=0`, `duplicateMemberships=0`,
+`multiFolderItems=0`, `noKnownRecovery=0`). A new `media-fingerprint`
+harness action (SHA-256 over all live items' `(id, imageData)` pairs,
+sorted by id) proved byte-exact media identity across both devices,
+before and after the live sync test.
+
+**Transient finding, not a defect.** Immediately after the fresh Device B
+install, `IntegrityCheck` briefly showed `folderDisagreements=8` even
+though item/folder/membership counts and total media bytes had already
+fully converged — all 8 disagreements were items with `legacyFolder=nil`
+but exactly one valid active membership. `reconcile-folders` found
+nothing to fix (`reconciled=0`), and a fresh check moments later showed
+`folderDisagreements=0`. This is cold CloudKit relationship-sync
+ordering (the `item.folder` to-one reference settling slightly behind
+other data during bulk initial import), not corruption, and it
+self-resolved within about a minute of ordinary continued sync.
+
+**Live bidirectional sync test.** Created `TWO-DEVICE-TEST-A` on Device A
+and confirmed it reached Device B; edited it on Device B (appended
+`#two-device-b`) and confirmed the edit reached Device A. Both
+directions verified by exact field match (`noteBody`, `updatedAt`,
+`imageDataBytes`).
+
+**Key operational finding.** The A→B leg of the live sync test initially
+appeared stuck — over 10 minutes and 20+ terminate/relaunch poll cycles
+(~15–20s each) with no sign of the new item on Device B, in sharp
+contrast to the full 86-item/74MB initial restore, which converged in
+about a minute. The cause was the polling method itself: rapid
+terminate/relaunch cycling never gave CloudKit's incremental-sync
+machinery a continuous, undisturbed runtime window to complete an
+import. Leaving the app foregrounded and untouched for a single
+uninterrupted ~2-minute window let the same change complete normally.
+The initial bulk restore was unaffected by this because it had a long
+continuous window on its very first post-install launch. Any future
+single-item sync testing on this harness should prefer one long
+foreground dwell over many short relaunch cycles.
+
+**Legacy environment:** confirmed untouched throughout — `arkyv`
+(`com.expatinsurance.arkyv`) remains installed and running on Device A,
+the migration backup file's SHA-256 is unchanged
+(`1e1bef03...ce441e`), and no Production CloudKit schema was deployed.
