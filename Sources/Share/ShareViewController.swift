@@ -329,9 +329,9 @@ private struct ShareDrawerContent: View {
     @State private var draft: CaptureDraft?
     @State private var note = ""
     @State private var showingPicker = false
-    /// Chosen in the dropdown (see `chooseFolder`), not yet saved — ✓ is
-    /// what actually files the share (see `confirmSave`). `nil` means
-    /// Unfiled, the existing canonical zero-membership shape.
+    /// Chosen in the dropdown (see `folderPanel`'s row actions), not yet
+    /// saved — ✓ is what actually files the share (see `confirmSave`).
+    /// `nil` means Unfiled, the existing canonical zero-membership shape.
     @State private var selectedFolder: StoredFolder?
     @State private var isSaving = false
     @State private var saveError = false
@@ -482,6 +482,19 @@ private struct ShareDrawerContent: View {
 
     private var folderPanel: some View {
         VStack(spacing: 4) {
+            // Context + Single-Folder UX 01, Section 10: "Unfiled" is not
+            // another `StoredFolder` — it only appears as a selectable row
+            // once a real folder is chosen, so there's a way back to it
+            // (previously there was none: this dropdown only ever listed
+            // real folders, and re-tapping the selected one just re-chose
+            // itself). Same reuse-the-tap-target pattern Item Detail's
+            // FolderEditorView already established for this.
+            if selectedFolder != nil {
+                folderRow(icon: nil, name: "Unfiled", isSelected: false) {
+                    selectedFolder = nil
+                    showingPicker = false
+                }
+            }
             if folders.isEmpty {
                 Text("No folders yet")
                     .font(ArkyvFont.mono(.regular, size: 13))
@@ -489,7 +502,15 @@ private struct ShareDrawerContent: View {
                     .padding(.vertical, 10)
             } else {
                 ForEach(folders) { folder in
-                    folderRow(folder)
+                    folderRow(icon: folder.icon, name: folder.name, isSelected: folder.id == selectedFolder?.id) {
+                        // Tapping the already-selected row clears back to
+                        // Unfiled — same toggle-to-nil mechanism Item
+                        // Detail's picker uses, so there's always a way
+                        // back without a separate control.
+                        let resultID = FolderSelectionUX.toggling(current: selectedFolder?.id, tapped: folder.id)
+                        selectedFolder = resultID == folder.id ? folder : nil
+                        showingPicker = false
+                    }
                 }
             }
         }
@@ -502,16 +523,27 @@ private struct ShareDrawerContent: View {
         .shadow(color: .black.opacity(0.5), radius: 12, y: 12)
     }
 
-    private func folderRow(_ folder: StoredFolder) -> some View {
-        let isSelected = folder.id == selectedFolder?.id
-        return Button {
-            chooseFolder(folder)
-        } label: {
+    /// Context + Single-Folder UX 01, Section 9: exactly ONE selection
+    /// cue — a trailing checkmark — replacing the prior combination of
+    /// checkmark + tinted background + leading accent bar, which put
+    /// three simultaneous, independently-styled signals on a single
+    /// state. A Cherry is always in zero or one folder (never more), and
+    /// only one row is ever `isSelected` at a time by construction
+    /// (`selectedFolder` is a single optional, never a set) — the
+    /// simplification is about removing redundant/competing visual
+    /// language, not fixing a multi-selection bug at the state level.
+    /// `icon == nil` (the synthetic "Unfiled" row) simply omits the
+    /// leading glyph rather than inventing a placeholder one.
+    private func folderRow(icon: FolderIcon?, name: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 10) {
-                FolderIconView(icon: folder.icon, size: 13, color: ArkyvColor.accent)
-                Text(folder.name)
+                if let icon {
+                    FolderIconView(icon: icon, size: 13, color: ArkyvColor.accent)
+                }
+                Text(name)
                     .font(ArkyvFont.mono(.regular, size: 13))
-                    .foregroundStyle(ArkyvColor.textPrimary)
+                    .foregroundStyle(isSelected ? ArkyvColor.textPrimary : ArkyvColor.textPrimary.opacity(0.75))
+                    .italic(icon == nil)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if isSelected {
@@ -522,27 +554,9 @@ private struct ShareDrawerContent: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(
-                isSelected ? ArkyvColor.accent.opacity(0.06) : Color.clear,
-                in: RoundedRectangle(cornerRadius: ArkyvRadius.row)
-            )
-            .overlay(alignment: .leading) {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(ArkyvColor.accent)
-                        .frame(width: 2)
-                        .padding(.vertical, 2)
-                }
-            }
+            .contentShape(Rectangle())
         }
-    }
-
-    /// Tapping a folder row *selects* it — closes the dropdown and returns
-    /// to the drawer with that folder's name now in place of "Unfiled ˅".
-    /// Nothing is persisted yet; ✓ is the actual save (see `confirmSave`).
-    private func chooseFolder(_ folder: StoredFolder) {
-        selectedFolder = folder
-        showingPicker = false
+        .buttonStyle(.plain)
     }
 
     private var noteField: some View {

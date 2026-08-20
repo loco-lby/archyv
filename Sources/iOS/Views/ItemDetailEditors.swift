@@ -287,7 +287,7 @@ struct FolderEditorView: View {
                     }
                     ForEach(folders) { folder in
                         folderRow(name: folder.name, isSelected: folder.id == selectedFolderID) {
-                            select(selectedFolderID == folder.id ? nil : folder.id)
+                            select(FolderSelectionUX.toggling(current: selectedFolderID, tapped: folder.id))
                         }
                     }
 
@@ -374,9 +374,18 @@ struct FolderEditorView: View {
                     .foregroundStyle(isSelected ? ArkyvColor.textPrimary : ArkyvColor.textPrimary.opacity(0.75))
                     .scaleEffect(isSelected ? 17 / 16 : 1, anchor: .leading)
                 Spacer()
-                Circle()
-                    .fill(ArkyvColor.textPrimary)
-                    .frame(width: 4, height: 4)
+                // Context + Single-Folder UX 01, Section 9: a checkmark,
+                // not a dot — the Share Extension's picker already used a
+                // checkmark for the identical "this is the current
+                // single-folder selection" concept, and having two
+                // different indicator glyphs for the same state across
+                // Cherries' two folder pickers is exactly the "separate
+                // dot/check meanings" this milestone asks to avoid. The
+                // weight/color/scale treatment on the text above still
+                // reinforces the same one state, not a second signal.
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ArkyvColor.textPrimary)
                     .opacity(isSelected ? 1 : 0)
             }
             .frame(minHeight: 44)

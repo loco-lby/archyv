@@ -121,6 +121,18 @@ struct ItemDetailView: View {
                     }
                 }
 
+                // Context + Single-Folder UX 01: "Link Cherries need a
+                // label, not a card." Quiet, left-aligned title + domain
+                // — no card, no favicon, no badge, no image overlay —
+                // shown only when there's a sourceURL at all (an ordinary
+                // screenshot/photo has none, so this renders nothing and
+                // Item Detail is pixel-identical to before). The title
+                // line itself is further gated by `LinkCherryContext
+                // .displayTitle`'s own rule; the domain line alone can
+                // still appear even when the title is omitted as
+                // untrustworthy.
+                linkContextBlock
+
                 // A compact, centered, self-contained control cluster —
                 // Source/Tags/Folder as one row of quiet chips, "+ Add
                 // note" as a smaller/lighter chip beneath — all
@@ -344,6 +356,46 @@ struct ItemDetailView: View {
 
     private var shareText: String {
         item.noteBody ?? item.title ?? item.sourceURL ?? "Cherries capture"
+    }
+
+    // MARK: - Link Cherry context — quiet label, not a card
+
+    /// `nil` renders nothing at all (an ordinary screenshot/photo has no
+    /// `sourceURL`, so this block is entirely absent — no reserved
+    /// space, no empty affordance). Tapping either line opens the same
+    /// Source room the "Source" chip below already opens — reusing the
+    /// existing editor's own "Open Source" action rather than adding a
+    /// second way to leave the app.
+    @ViewBuilder
+    private var linkContextBlock: some View {
+        if let domain = LinkCherryContext.displayDomain(sourceURL: item.sourceURL) {
+            Button {
+                activeRoom = .source
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    if let title = LinkCherryContext.displayTitle(title: item.title, sourceURL: item.sourceURL) {
+                        Text(title)
+                            .font(ArkyvFont.publicSans(size: 15, weight: .semibold))
+                            .foregroundStyle(ArkyvColor.textPrimary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    HStack(spacing: 4) {
+                        Text(domain)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .font(ArkyvFont.publicSans(size: 13))
+                    .foregroundStyle(ArkyvColor.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, Self.contentHorizontalInset)
+            .padding(.top, 12)
+            .accessibilityElement(children: .combine)
+            .accessibilityHint("Opens the Source editor.")
+        }
     }
 
     // MARK: - Metadata row (Source / Tags / Folder) — pure navigation
