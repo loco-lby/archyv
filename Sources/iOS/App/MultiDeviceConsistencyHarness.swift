@@ -33,6 +33,22 @@ enum MultiDeviceConsistencyHarness {
         print("[MDC] action=\(action)")
         do {
             switch action {
+            case "print-share-diag":
+                // Physical QA Follow-Up 01, Section 5/6: `devicectl copy
+                // from --domain-type appGroupDataContainer` only exposes
+                // Library/Preferences and Library/Caches (a known gap from
+                // Technical Identity Cutover 01), not the App Group root
+                // where the Share Extension's diagnostic log actually
+                // lives — so this reads and prints it from inside the app
+                // instead, where `--console` can capture it.
+                let logURL = AppGroup.containerURL.appendingPathComponent("share-diag-debug.log")
+                if let contents = try? String(contentsOf: logURL, encoding: .utf8) {
+                    print("[MDC] --- share-diag-debug.log ---")
+                    print(contents)
+                    print("[MDC] --- end share-diag-debug.log ---")
+                } else {
+                    print("[MDC] share-diag-debug.log not found at \(logURL.path)")
+                }
             case "container-paths":
                 // Technical Identity Cutover 01, Section 9: read-only,
                 // paths/identifiers only — never prints Cherry contents.
@@ -286,7 +302,7 @@ enum MultiDeviceConsistencyHarness {
         // expected — see the "quick-exit-after-write" finding in the
         // final report. `report`/read-only actions skip the wait, since
         // they have nothing to flush.
-        if action != "report" && action != "integrity-check" && action != "container-paths" && action != "list-all-folders" && action != "audit-test-residue" {
+        if action != "report" && action != "integrity-check" && action != "container-paths" && action != "list-all-folders" && action != "audit-test-residue" && action != "print-share-diag" {
             print("[MDC] waiting 5s before exit to give CloudKit export a fair chance to flush...")
             try? await Task.sleep(for: .seconds(5))
         }
