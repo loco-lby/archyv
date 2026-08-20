@@ -42,6 +42,15 @@ enum MultiDeviceConsistencyHarness {
                 print("[MDC] mediaRoot=\(MediaStore.shared.root.path)")
             case "create":
                 try create(repo: repo)
+            case "create-two-device-test":
+                // Two-Device Restore/Sync Validation 01, Section 9.
+                try create(repo: repo)
+                try withTestItem(repo: repo) { try repo.updateNote($0, body: "TWO-DEVICE-TEST-A") }
+            case "edit-two-device-test-b":
+                try withTestItem(repo: repo) { item in
+                    let current = item.noteBody ?? ""
+                    try repo.updateNote(item, body: current + " #two-device-b")
+                }
             case "report":
                 try report(repo: repo)
             case "favorite-true":

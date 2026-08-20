@@ -41,6 +41,24 @@ enum MigrationFerry {
                 try importRealArchive(realContainer: realContainer)
             case "verify-real-archive":
                 try verifyRealArchive(realContainer: realContainer)
+            case "media-fingerprint":
+                // Two-Device Restore/Sync Validation 01: READ-ONLY. A
+                // single, directly comparable proof of exact byte-level
+                // imageData identity across devices — SHA256 over every
+                // live item's (id, imageData) pair, sorted by id so
+                // fetch/iteration order never affects the result. If this
+                // hash matches on both devices, every item's imageData is
+                // byte-for-byte identical; if not, at least one differs.
+                try printMediaFingerprint(realContainer: realContainer)
+            case "current-inventory":
+                // Two-Device Restore/Sync Validation 01: READ-ONLY. Reuses
+                // export()'s in-memory snapshot purely to print the same
+                // stat breakdown as the migration inventory — never writes
+                // anything to disk. Usable against either device's real
+                // container, to compare Device A/B state directly.
+                let context = ModelContext(realContainer)
+                let archive = try CherryManifest.export(context: context)
+                printSourceInventory(archive, jsonByteCount: 0, checksum: "n/a", exportDuration: 0, artifactURL: URL(fileURLWithPath: "/dev/null"))
             default:
                 print("[Ferry] unknown action: \(action)")
             }
@@ -160,6 +178,22 @@ enum MigrationFerry {
     }
 
     // MARK: - Inventory
+
+    private static func printMediaFingerprint(realContainer: ModelContainer) throws {
+        let context = ModelContext(realContainer)
+        let items = try context.fetch(FetchDescriptor<StoredItem>()).filter { !$0.isSoftDeleted }
+        var hasher = SHA256()
+        var itemsWithMedia = 0
+        for item in items.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            hasher.update(data: Data(item.id.uuidString.utf8))
+            if let imageData = item.imageData {
+                hasher.update(data: imageData)
+                itemsWithMedia += 1
+            }
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        print("[Ferry] media fingerprint (live items, sorted by id): itemsWithMedia=\(itemsWithMedia) sha256=\(digest)")
+    }
 
     private static func printSourceInventory(_ archive: CherryManifest.Archive, jsonByteCount: Int, checksum: String, exportDuration: TimeInterval, artifactURL: URL) {
         let items = archive.items
