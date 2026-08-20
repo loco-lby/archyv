@@ -97,6 +97,10 @@ final class ShareViewController: UIViewController {
             return CaptureDraft(kind: .note, sourceDevice: .iOS)
         }
 
+        #if DEBUG
+        await logShareInputDiagnostics()
+        #endif
+
         let imageProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
         if !imageProviders.isEmpty {
             for provider in imageProviders {
@@ -127,6 +131,68 @@ final class ShareViewController: UIViewController {
         }
         return CaptureDraft(kind: .note, sourceDevice: .iOS)
     }
+
+    #if DEBUG
+    /// URL → Cherry Physical QA Follow-Up 01, Section 5: characterizes
+    /// exactly what a share's input items/providers look like — built to
+    /// answer, empirically and without guessing, whether Instagram hands
+    /// the Share Extension the exact visible carousel image, a
+    /// slide-identifying URL, or only a post-level URL with no
+    /// selected-slide information. DEBUG-only; never runs in a production
+    /// build. Deliberately logs only type identifiers and the shared
+    /// URL's own structure (query items, since that's exactly where a
+    /// carousel index would live) — no caption/account/user content is
+    /// ever available to this method in the first place, since the Share
+    /// Extension is only ever handed `NSExtensionItem`/`NSItemProvider`
+    /// attachments, not Instagram's app-internal state.
+    private func logShareInputDiagnostics() async {
+        // `devicectl` has no way to stream console output from a process
+        // the OS launches (only from ones this tooling launches itself),
+        // so a real Instagram share triggered through the system Share
+        // Sheet can't be observed via `print()` alone — these same lines
+        // are also appended to a small DEBUG-only file in the App Group
+        // container so they can be pulled back afterward via `devicectl
+        // device copy from`. Never written in a Release build; never
+        // synced (plain local file, outside MediaStore/SwiftData).
+        var lines: [String] = []
+        func log(_ line: String) {
+            print(line)
+            lines.append(line)
+        }
+
+        let allItems = extensionContext?.inputItems.compactMap { $0 as? NSExtensionItem } ?? []
+        log("[ShareDiag] inputItems=\(allItems.count)")
+        for (itemIndex, item) in allItems.enumerated() {
+            let providers = item.attachments ?? []
+            log("[ShareDiag] item[\(itemIndex)] providers=\(providers.count)")
+            for (providerIndex, provider) in providers.enumerated() {
+                let types = provider.registeredTypeIdentifiers
+                let conformsURL = provider.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+                let conformsImage = provider.hasItemConformingToTypeIdentifier(UTType.image.identifier)
+                let conformsJPEG = provider.hasItemConformingToTypeIdentifier(UTType.jpeg.identifier)
+                let conformsPNG = provider.hasItemConformingToTypeIdentifier(UTType.png.identifier)
+                let conformsHEIC = provider.hasItemConformingToTypeIdentifier("public.heic")
+                log("[ShareDiag]   provider[\(providerIndex)] types=\(types) url=\(conformsURL) image=\(conformsImage) jpeg=\(conformsJPEG) png=\(conformsPNG) heic=\(conformsHEIC)")
+
+                if conformsURL, let url = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
+                    let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                    let queryItems = components?.queryItems ?? []
+                    log("[ShareDiag]   provider[\(providerIndex)] url.path=\(url.path) url.host=\(url.host ?? "nil")")
+                    log("[ShareDiag]   provider[\(providerIndex)] url.queryItems=\(queryItems.map { "\($0.name)=\($0.value ?? "")" })")
+                }
+            }
+        }
+        log("[ShareDiag] --- end ---")
+
+        let logURL = AppGroup.containerURL.appendingPathComponent("share-diag-debug.log")
+        let entry = (["", "=== \(Date()) ==="] + lines).joined(separator: "\n") + "\n"
+        if let existing = try? String(contentsOf: logURL, encoding: .utf8) {
+            try? (existing + entry).write(to: logURL, atomically: true, encoding: .utf8)
+        } else {
+            try? entry.write(to: logURL, atomically: true, encoding: .utf8)
+        }
+    }
+    #endif
 
     /// Share/Capture Reliability Foundation 01: prefers a decode-free
     /// fast path (`jpegFastPathDraft`) when the shared attachment is
@@ -303,9 +369,30 @@ private struct ShareDrawerContent: View {
                 folderAccessory
                 Spacer(minLength: 12)
                 if let preview = draft?.localFilename {
+                    // URL → Cherry Physical QA Follow-Up 01: this MUST be
+                    // one combined `.frame(maxWidth:maxHeight:)` call, not
+                    // two chained separate `.frame()`s (maxWidth alone,
+                    // then maxHeight alone) — chaining lets a resizable
+                    // `.scaledToFill()` image negotiate its height against
+                    // an UNCONSTRAINED first pass (only width pinned), and
+                    // for an unusually wide source image that intermediate
+                    // ideal size can itself end up wider than the screen
+                    // before the second frame() ever gets a chance to cap
+                    // it — from which the oversized reported width
+                    // propagates straight up through the VStack/ZStack and
+                    // visibly displaces the X/check/folder controls out of
+                    // bounds (confirmed live with the Works in Progress
+                    // article's wide hero image). One combined frame call
+                    // constrains both dimensions in the same layout pass,
+                    // so the reported size is always exactly this box
+                    // regardless of the source image's aspect ratio.
+                    // `.clipped()` alongside `.clipShape` is defense in
+                    // depth — belt-and-suspenders against any visual
+                    // bleed, not required to fix the reported-size issue
+                    // above by itself.
                     MediaThumbnail(filename: preview)
-                        .frame(maxWidth: .infinity)
-                        .frame(maxHeight: 360)
+                        .frame(maxWidth: .infinity, maxHeight: 360)
+                        .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
                         .padding(.horizontal, 20)
                 }
@@ -314,6 +401,14 @@ private struct ShareDrawerContent: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 20)
             }
+            // Layout contract (Physical QA Follow-Up 01): the root capture
+            // chrome must never grow wider than what's offered, regardless
+            // of what any child ends up wanting — the media adapts to the
+            // UI, not the other way around. Defense in depth alongside the
+            // MediaThumbnail-level fix above, not a substitute for it (a
+            // truly unbounded child could in principle still widen an
+            // unconstrained VStack before this outer frame gets applied).
+            .frame(maxWidth: .infinity)
             .opacity(showingPicker ? 0.3 : 1)
             .allowsHitTesting(!showingPicker)
 
