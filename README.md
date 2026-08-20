@@ -1635,3 +1635,42 @@ earlier install, not anything in the current asset catalog.
 `ArkyvMark`/`ArkyvWordmark` imagesets still exist but aren't
 referenced anywhere in the Share Extension's own code, only the main
 app's — left untouched, read-only finding for a future rebrand pass.
+
+## Context + Single-Folder UX (Foundation 01)
+
+**GREEN.** Two product-clarity fixes from Sammy's real use of URL → Cherry.
+
+**Link Cherry context — "a label, not a card."** `LinkCherryContext`
+(pure, `ArkyvKit`) decides whether Item Detail shows a quiet title +
+domain line beneath a URL-derived Cherry's image. The rule was derived
+entirely from six real stored titles, not per-source adapters: a title
+is shown only if non-empty, ≤100 characters (Pinterest's real stored
+title was 118 characters of pipe-separated keyword stuffing), not
+identical to the domain, and doesn't merely contain the site's own
+registrable name (Instagram's real stored title, `"<name> Documented
+on Instagram,"` is a generic per-post template with zero post-specific
+information). The domain line can still appear even when the title is
+omitted. Wired into `ItemDetailView` between the image and the
+Source/Tags/Folder cluster; renders nothing at all for items without
+`sourceURL`, so ordinary screenshots/photos are pixel-identical to
+before — confirmed on Device A. One Archive is untouched.
+
+**Single-folder picker — visual language, not a state bug.** Both
+folder pickers (Share Extension drawer, Item Detail's Folder editor)
+were already backed by a single optional selection — a Cherry could
+never actually be in two folders. The confusion traced to inconsistent
+*visual* language: the Share Extension stacked three simultaneous
+selection cues (checkmark + tinted background + leading accent bar)
+while Item Detail used a different cue entirely (a 4×4 dot, no check).
+Both now use exactly one indicator, a trailing checkmark. The
+tap-interpretation rule itself — tapping a different folder replaces
+the selection, tapping the current selection clears to Unfiled — is
+now a single shared pure function, `FolderSelectionUX.toggling(current:
+tapped:)`, called from both pickers, so they're provably identical
+rather than independently-written. The Share Extension's dropdown also
+gained an explicit "Unfiled" row — previously there was no way back to
+Unfiled once a folder was chosen. No `Repository`/schema changes: both
+pickers already routed every write through the same single-folder
+membership machinery; `IntegrityCheck` remained clean
+(`duplicateActiveMemberships=0`, `itemsWithMultipleActiveFolders=0`,
+`folderMembershipDisagreements=0`) throughout.
