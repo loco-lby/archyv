@@ -1303,3 +1303,43 @@ instead, and the shared `ArkyvKit` package it depends on builds cleanly
 for macOS via its own scheme).
 
 Next: import the verified migration archive into the new environment.
+
+## Real Archive Import (Foundation 01)
+
+**GREEN.** Sammy's 84-item legacy archive is now live in the permanent
+`com.deadwest.cherries` environment, imported from the verified
+migration artifact — the old `com.expatinsurance.arkyv` environment
+remains fully intact as the rollback path.
+
+**Fail-closed check generalized from "empty" to "no collision."**
+`CherryManifest.importArchive` originally refused any non-empty
+destination (`Pre-Launch Migration Ferry 01`'s stricter rule, correct
+for an always-empty isolated test store). A real cutover legitimately
+leaves unrelated content in the new environment first (a disposable
+CUTOVER-TEST item, a real Share Extension test Cherry, 5 default-seeded
+folders) — none of that should block or be touched by the legacy
+import. `ImportError.identityCollision` replaces `destinationNotEmpty`:
+refuses only if an archive item/folder id already exists in the
+destination, never reads or modifies unrelated existing rows otherwise.
+
+**Result:** import succeeded — 84 items, 12 folders, 75 memberships,
+73,638,128 bytes of `imageData`, matching the artifact exactly. **Zero
+fidelity mismatches** across imageData byte-identity, crop regions, and
+all metadata/membership fields for every item. Post-import
+`IntegrityCheck` against the real container: `itemsWithMultipleActiveFolders
+= 0`, `folderMembershipDisagreements = 0`, `duplicateActiveMemberships =
+0`, `itemsWithNoKnownRecovery = 0`, `isClean = true`. A second import
+attempt against the now-populated store correctly refused via identity
+collision on all 84 item ids and 12 folder ids — confirmed duplicate-safety
+directly on real data, not just synthetic tests. The old environment's
+84-item archive was re-verified unchanged (exact baseline) before and
+after.
+
+Unrelated pre-existing content survived exactly as expected: 86 total
+items (84 imported + 2 pre-existing — one disposable `mdc-test`-tagged
+CUTOVER-TEST item, safe to delete at your discretion, and one real
+Share Extension test Cherry), 17 total folders (12 imported + 5
+default-seeded).
+
+Next: two-device restore/sync validation, once Device A's migrated
+archive is reviewed.
