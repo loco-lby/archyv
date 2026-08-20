@@ -1847,3 +1847,81 @@ would require new persisted storage — not added). Description,
 site name, full embedded JSON-LD/oEmbed payloads (D: should remain
 ephemeral, not stored — matches "an archival object label, not a JSON
 inspector").
+
+## Link Cherry Visual Picker (Foundation 01)
+
+**GREEN**, after five physical-device refinement rounds. "Cherries
+found these. YOU decide." — when a page offers multiple trustworthy
+visuals, the Share Extension shows a WYSIWYG spatial carousel instead
+of committing to one guess; a single-candidate source behaves
+byte-for-byte as before.
+
+**Candidate architecture.** `ResolvedImageCandidate`/`ResolvedURLCherry`
+(pure, `ArkyvKit`) represent candidates ephemerally, before any
+persistence decision. `URLCherryResolver.resolveCandidates` returns an
+ordered list — candidate 0 is always the exact single best guess the
+pre-picker flow would have produced (fetched eagerly, so it appears as
+fast as today); `CandidateImageSource` (a second, small protocol
+distinct from `SourceEnricher`) supplies additional alternates,
+appended only after the primary and only when no enricher already
+matched. `ProductPageCandidateSource` is the one shipped source:
+standards-first schema.org JSON-LD `Product.image`, falling back to a
+narrow, empirically-verified Shopify inline-JSON gallery array only
+when JSON-LD alone yields fewer than two images. `CandidateAssembly`
+is the one place dedup (query-string and Shopify size-suffix
+normalized — no perceptual comparison) and the 10-candidate cap live.
+
+**Preview/archival split.** Candidate previews are lightweight,
+downsampled (~700px), in-memory-only `UIImage`s — never written to
+`MediaStore`. The carousel's visible/scrollable set is built *only*
+from candidates whose preview has actually finished decoding, so a
+swipe can never land on a blank/loading frame — "the perceived
+animation" and "network loading" are structurally separated, not just
+visually smoothed over. The real archival fetch
+(`URLCherryResolver.materializeCandidate`, the one that writes to
+`MediaStore`) happens exactly once, for whichever candidate is
+selected, at the moment ✓ is pressed — `confirmSave` is async to
+accommodate this. Nothing is ever persisted for a candidate that isn't
+ultimately chosen, so there was never an "unselected candidate
+cleanup" problem to solve in this final architecture.
+
+**WYSIWYG rendering.** No candidate — active or neighbor — is ever
+cropped, letterboxed onto a manufactured background, or clipped into a
+rounded card. The whole carousel area's height is derived directly
+from the *active* candidate's own real aspect ratio (clamped 220–420pt
+so one extreme source ratio can't collapse the drawer's vertical
+rhythm or push X/✓/note off a small screen); every image renders via
+plain `.aspectRatio(_, contentMode: .fit)` using its own decoded size —
+the visible edges of the preview are the image's own edges, nothing
+Cherries adds. Transitions between differently-shaped candidates
+animate with `ArkyvMotion.settle`, the same calm token the Folder
+selector's own selection state already uses — no spring/bounce,
+consistent with Cherries' existing motion language rather than
+importing generic carousel styling.
+
+**Spatial affordance, tuned across three physical-device passes.**
+Neighbors sit at 68% of the active candidate's slot width with an 8pt
+gap — solved directly from the target geometry (roughly 20% of each
+neighbor's own width visible), after two earlier, still-too-subtle
+attempts (74%, then 78%). A quiet "Choose image" / "N of M" label
+replaced an initial page-dot row entirely, once real feedback showed
+dots plus an exact count were two indicators saying the same thing —
+and, more importantly, that a carousel alone can read as "browse a
+gallery" rather than "pick one" without an explicit cue.
+
+**Regression:** single-candidate sources (YouTube, Pinterest, Works in
+Progress, Natify, ordinary screenshots/photos) are structurally
+unaffected — `previewArea` only renders the carousel at all when
+`candidates.count > 1`; the single-image branch is untouched
+`MediaThumbnail` `.fill` rendering, exactly as before this milestone.
+
+**Wrangler — a separate, confirmed data-access issue, not an
+interaction problem.** Direct HTTP requests (both iPhone and desktop
+Safari user agents) to the real Wrangler product page return HTTP 403
+from Cloudflare ("Attention Required") regardless of client —
+confirmed on-device too. This is a network-level access block, not a
+data-availability gap; `ProductPageCandidateSource`'s existing non-200
+handling already degrades gracefully to zero extra candidates.
+Deliberately not addressed this milestone — bypassing it would require
+browser automation/anti-detection techniques out of scope; reconnoiter
+separately before deciding whether it's worth pursuing at all.
