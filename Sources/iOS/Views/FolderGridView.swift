@@ -38,6 +38,13 @@ struct FolderGridView: View {
     }
 
     var body: some View {
+        // One Archive Bottom Scroll / Safe Area 01: `MasonryGrid` now
+        // requires the caller's real measured width (see its own doc
+        // comment) rather than an internal, potentially-diverging
+        // estimate — this view is unused dead code (superseded by
+        // `ArchiveView`), kept compiling correctly rather than left
+        // broken.
+        GeometryReader { geometry in
         ScrollView {
             if searching {
                 searchField
@@ -45,7 +52,7 @@ struct FolderGridView: View {
             if items.isEmpty {
                 emptyState
             } else {
-                MasonryGrid(items: items, columns: 2, spacing: 12) { item in
+                MasonryGrid(items: items, columns: 2, spacing: 12, availableWidth: geometry.size.width - 32) { item in
                     // Full-cell Button + manual append, not
                     // NavigationLink(value: item) — same lesson as
                     // HomeView's folder cards: don't put a live SwiftData
@@ -84,6 +91,7 @@ struct FolderGridView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
+        }
     }
 
     /// Resolves an `ItemRoute` back to its live `StoredItem` by `id`. Looks

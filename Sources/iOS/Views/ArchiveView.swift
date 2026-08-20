@@ -161,7 +161,7 @@ struct ArchiveView: View {
                     // short content.
                     emptyState
                 } else {
-                    MasonryGrid(items: displayedItems, columns: 2, spacing: 8) { item in
+                    MasonryGrid(items: displayedItems, columns: 2, spacing: 8, availableWidth: geometry.size.width - 16) { item in
                     // Full-cell Button + manual append, not
                     // NavigationLink(value: item) — don't put a live
                     // SwiftData model in the NavigationPath (see
@@ -213,7 +213,12 @@ struct ArchiveView: View {
                 // from, so the two can never drift apart), the device's
                 // OWN real bottom safe-area inset (read directly, not
                 // assumed to already be "free"), and one spacing token of
-                // intentional Cherries breathing room on top.
+                // intentional Cherries breathing room on top. This is only
+                // effective now that `MasonryGrid` itself reports its true
+                // rendered height (see its own doc comment) — appended
+                // after an under-reserved height, this same padding was
+                // already present and had no visible effect, because the
+                // grid's own overflow silently ate it.
                 .padding(.bottom, bottomScrollClearance(safeAreaBottom: geometry.safeAreaInsets.bottom))
                 }
             }
