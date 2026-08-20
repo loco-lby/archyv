@@ -1757,3 +1757,93 @@ a variant-specific share would encode one, since this URL was a
 canonical product page, not necessarily one with an explicit variant
 selected. Needs a fresh test share with a variant actively chosen
 before that milestone can rely on this.
+
+## Priority Source Intelligence (Foundation 01)
+
+**GREEN.** "Generic resolver = universal safety net; priority source
+intelligence = narrow, evidence-backed enhancements for a few
+high-value sources where generic metadata materially fails user
+intent." One enricher shipped (YouTube); the rest investigated and
+explicitly deferred with evidence.
+
+**YouTube play-icon: not Cherries chrome.** Fetched and visually
+inspected the raw bytes LPMetadataProvider was resolving — the
+play-button triangle is baked directly into YouTube's own served
+social-card thumbnail pixels. Grepped the whole codebase for any play
+icon SF Symbol (`play.fill`/`play.circle`/etc.) — zero matches
+anywhere. There was no Cherries UI layer to remove.
+
+**Fixed via YouTube's public oEmbed endpoint instead.** `https://www.youtube.com/oembed`
+— the open, documented oEmbed standard, no API key, no auth, no
+scraping — returns both the real video title (confirmed:
+`"How To Capture Photos That Look Like Paintings"`, genuinely
+different from `LPLinkMetadata.title`'s `"Max Kent"`, the channel
+name) and a `thumbnail_url` confirmed, by the same direct visual
+inspection, to have no play-button overlay baked in. `SourceEnricher`
+(`matches(_:)` + `enrich(_:) async throws`) is the new minimal
+architecture — a plain ordered array `URLCherryResolver` checks, no
+registry, no persisted source-type schema. Any enrichment failure
+(thrown error, bad thumbnail fetch, undecodable bytes) falls straight
+through to the exact unchanged generic `LPMetadataProvider` path within
+the same bounded attempt (timeout raised 6s → 8s to give a failed
+enrichment room to still fall back). Confirmed live on Device A: clean
+thumbnail, no play icon, real video title shown.
+
+**Source-enricher reconnaissance for the other five families —
+evidence-based, mostly DEFER:**
+- **Pinterest:** generic already returns the correct Pin image;
+  title is already correctly hidden by the existing filter. No public
+  Pinterest metadata endpoint would improve on this without fragility.
+  **GENERIC IS ENOUGH.**
+- **Instagram:** confirmed the legacy no-auth oEmbed endpoint
+  (`api.instagram.com/oembed`) now just redirects (302); the Graph API
+  oEmbed variant returns only a client-JS-rendered embed skeleton with
+  no real image/title data in the raw response — would require
+  executing embedded JavaScript (browser automation) to get anything
+  useful, explicitly excluded. **DEFER**, no viable public mechanism.
+- **Ecommerce/product pages:** real finding — Darc Sport's page embeds
+  a genuine multi-image `"images":[...]` array (4+ real product photos)
+  in inline page JSON, and separately a JSON-LD `Product.offers` array
+  whose URLs carry explicit `?variant=<id>` query parameters,
+  confirming Shopify-style sites DO encode variant state in the URL.
+  This is real evidence the data a future candidate-image picker needs
+  *can* exist — but extracting it requires a dedicated raw-page-fetch +
+  embedded-JSON-parsing mechanism per commerce platform (Shopify's own
+  convention, not a universal standard), meaningfully more fragile and
+  platform-specific than YouTube's single documented endpoint. **MAYBE
+  BEFORE LAUNCH**, not built this pass.
+- **Articles/editorial:** Works in Progress resolved perfectly
+  generically end to end. **GENERIC IS ENOUGH.**
+- **Reddit:** `www.reddit.com/oembed` returns a real post title but no
+  direct image URL (only a JS-rendered embed widget, same limitation
+  as Instagram) — and generic `LPLinkMetadata` already returns a
+  reasonable title (`"From the r/X community on Reddit: …"`) plus an
+  image directly, unlike Instagram's generic-template problem. Lower
+  marginal value than YouTube. **DEFER.**
+
+**Launch priority matrix:**
+
+| Source | Generic quality | Specialist value | Fragility | Complexity | Wow impact | Recommendation |
+|---|---|---|---|---|---|---|
+| YouTube | Poor (channel name, play-icon thumbnail) | High | Low (public oEmbed) | Low | High | **Shipped this milestone** |
+| Ecommerce/Shopify | Good (single image) | High (multi-image, variant) | High (platform-specific JSON parsing) | Medium-High | High | MAYBE BEFORE LAUNCH |
+| Pinterest | Excellent (image), poor (title, already filtered) | Low | — | — | Low | GENERIC IS ENOUGH |
+| Articles | Excellent | Low | — | — | Low | GENERIC IS ENOUGH |
+| Instagram | Fair (post-level crop only) | High in theory, but unreachable | No viable public mechanism | — | — | DEFER (no path without private API/scraping) |
+| Reddit | Good (title + image already) | Low-Medium | Medium (oEmbed, no image) | Low | Low | DEFER |
+
+**Candidate-image-picker feasibility (reconnaissance only, not
+built):** the underlying data genuinely exists for at least
+Shopify-based product pages (a real multi-image array + variant-aware
+URLs), so the picker is *feasible in principle* — but requires a new,
+platform-specific page-parsing mechanism this milestone deliberately
+didn't build.
+
+**Source-room metadata implications:** `StoredItem.title`/`sourceURL`
+(A: already exists) cover video/article/product title and original
+URL for every source investigated. Domain/host (B: derivable from
+`sourceURL`, no storage). Channel/author/subreddit/publication (C:
+would require new persisted storage — not added). Description,
+site name, full embedded JSON-LD/oEmbed payloads (D: should remain
+ephemeral, not stored — matches "an archival object label, not a JSON
+inspector").
