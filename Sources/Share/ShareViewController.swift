@@ -510,63 +510,56 @@ private struct ShareDrawerContent: View {
         }
     }
 
-    // MARK: Preview — single image (unchanged) or a peeking candidate swiper
+    // MARK: Preview — single image (unchanged) or a WYSIWYG spatial carousel
 
-    /// Physical QA feedback on the picker's first pass, in order:
-    /// (1) dots alone didn't make it obvious a swipe was even possible —
-    /// (2) some candidates showed inconsistent/awkward crops — (3)
-    /// swiping to an unfetched candidate felt visibly unfinished. This
-    /// addresses all three: a `ScrollView`/`.viewAligned` "peek" layout
-    /// (each page narrower than the box, so the next candidate is
-    /// genuinely, physically visible at the trailing edge — not just
-    /// implied by a dot row) makes "there is another image, swipe"
-    /// spatially obvious without any added chrome; `.fit` (not `.fill`)
-    /// for candidate previews specifically shows each candidate's whole
-    /// frame rather than an inconsistent crop-to-fill, since candidates
-    /// are far more likely to vary wildly in aspect ratio than a single
-    /// already-chosen representative image is (the single-image path
-    /// below is completely untouched — still `MediaThumbnail`'s
-    /// existing `.fill` behavior); the bounded prefetch above closes
-    /// most of the "visibly loading" gap. Still the identical
-    /// `width`/360-height fixed box either way, so no candidate's aspect
-    /// ratio can affect drawer layout.
+    /// Visual Picker 01 interaction refinement: "the preview is a
+    /// promise" — no candidate, active or neighbor, is ever cropped or
+    /// forced into a Cherries-imposed box. The ACTIVE candidate's own
+    /// aspect ratio drives this whole area's height (clamped to a usable
+    /// range); every candidate is shown via `.aspectRatio(_, contentMode:
+    /// .fit)` within its slot, so it always renders its true, complete
+    /// composition — a very tall or very wide source simply gets more or
+    /// less letterboxing, never a crop. Neighbors sit at reduced scale/
+    /// opacity, genuinely visible (not a sliver) on both sides where they
+    /// exist, so the horizontal choice is obvious before the user
+    /// touches the screen — dots remain only as a secondary position
+    /// indicator. `width` is still the one fixed, concrete number
+    /// everything is built from (from the geometry fix) — only the
+    /// carousel's OWN height varies, animated with `ArkyvMotion.settle`,
+    /// the same calm "fast hands, settle here" token the Folder
+    /// selector's own selection state already uses; X/✓/folder/note stay
+    /// pinned via the surrounding `VStack`'s `Spacer`s absorbing the
+    /// difference, exactly as they already did when the single-image
+    /// path's height was fixed.
     @ViewBuilder
     private func previewArea(width: CGFloat) -> some View {
         if candidates.count > 1 {
+            let slotWidth = width * Self.activeSlotFraction
+            let height = carouselHeight(forWidth: slotWidth)
             VStack(spacing: 10) {
-                let pageWidth = width - Self.candidatePeekWidth
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: Self.candidateSpacing) {
                         ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
-                            candidatePreview(candidate)
-                                .frame(width: pageWidth, height: 360)
-                                .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
-                                // The faint "ghost" treatment for every
-                                // page but the selected one — combined
-                                // with it being physically, partially
-                                // visible at the trailing edge (the
-                                // whole point of a narrower-than-box
-                                // page width), this is what makes "swipe
-                                // for another image" immediately legible
-                                // without a caption or arrow.
-                                .opacity(index == selectedCandidateIndex ? 1 : 0.45)
+                            candidateSlot(candidate, isActive: index == selectedCandidateIndex, slotWidth: slotWidth, height: height)
                                 .id(index)
                         }
                     }
                     .scrollTargetLayout()
+                    .padding(.horizontal, (width - slotWidth) / 2)
                 }
-                .frame(width: width, height: 360)
+                .frame(width: width, height: height)
                 .scrollTargetBehavior(.viewAligned)
                 .scrollPosition(id: $scrollPositionID)
                 .onChange(of: scrollPositionID) { _, newIndex in
                     guard let newIndex, candidates.indices.contains(newIndex) else { return }
-                    selectedCandidateIndex = newIndex
+                    withAnimation(ArkyvMotion.settle) { selectedCandidateIndex = newIndex }
                     let candidate = candidates[newIndex]
                     guard case .candidates(let resolved) = resolution else { return }
                     materializeTask?.cancel()
                     materializeTask = Task { await materialize(candidate: candidate, resolved: resolved) }
                 }
                 .onAppear { scrollPositionID = selectedCandidateIndex }
+                .animation(ArkyvMotion.settle, value: height)
 
                 HStack(spacing: 6) {
                     ForEach(candidates.indices, id: \.self) { index in
@@ -587,28 +580,70 @@ private struct ShareDrawerContent: View {
         }
     }
 
-    /// How much of the neighboring candidate peeks in at the trailing
-    /// edge of the box — large enough to be unmistakably "there's more
-    /// here," small enough that the current candidate still reads as
-    /// the primary subject, not a cramped thumbnail strip.
-    private static let candidatePeekWidth: CGFloat = 32
-    private static let candidateSpacing: CGFloat = 10
+    /// Each candidate slot (active or neighbor) occupies this fraction
+    /// of the available width — large enough that the active candidate
+    /// reads as the primary subject, small enough that BOTH neighbors
+    /// (where they exist) are genuinely, meaningfully visible at the
+    /// edges rather than a sliver.
+    private static let activeSlotFraction: CGFloat = 0.74
+    private static let candidateSpacing: CGFloat = 14
+    /// The carousel area itself must stay a fixed, concrete number for
+    /// any given active candidate (never `.infinity`/flexible) — these
+    /// are the bounds that number is clamped within, so one extreme
+    /// source aspect ratio can't collapse the drawer's vertical rhythm
+    /// (a very wide banner) or push X/✓/note off a small screen (a very
+    /// tall portrait). Within these bounds the ACTIVE candidate's own
+    /// ratio is always honored exactly — clamping only ever adds
+    /// letterboxing, never crops.
+    private static let carouselMinHeight: CGFloat = 220
+    private static let carouselMaxHeight: CGFloat = 420
+    private static let carouselFallbackHeight: CGFloat = 360
+
+    /// The active candidate's true aspect ratio, if known yet (it always
+    /// is almost immediately — candidate 0 is materialized eagerly, and
+    /// `onChange` above kicks off materializing whatever becomes active)
+    /// — `carouselFallbackHeight` covers the brief window before a
+    /// freshly-selected, not-yet-materialized candidate's real
+    /// dimensions are known.
+    private func carouselHeight(forWidth slotWidth: CGFloat) -> CGFloat {
+        guard candidates.indices.contains(selectedCandidateIndex),
+              let pixelSize = materialized[candidates[selectedCandidateIndex].id]?.pixelSize,
+              pixelSize.width > 0, pixelSize.height > 0 else {
+            return Self.carouselFallbackHeight
+        }
+        let raw = slotWidth * pixelSize.height / pixelSize.width
+        return min(max(raw, Self.carouselMinHeight), Self.carouselMaxHeight)
+    }
 
     @ViewBuilder
-    private func candidatePreview(_ candidate: ResolvedImageCandidate) -> some View {
-        if let filename = materialized[candidate.id]?.localFilename {
-            // `.fit`, not `.fill` — see this method's caller's doc
-            // comment for why the candidate swiper specifically avoids
-            // MediaThumbnail's crop-to-fill behavior.
-            MediaThumbnail(filename: filename, contentMode: .fit)
-        } else {
-            ArkyvColor.surface
-                .overlay {
-                    if materializing.contains(candidate.id) {
-                        ProgressView().tint(ArkyvColor.textPrimary)
+    private func candidateSlot(_ candidate: ResolvedImageCandidate, isActive: Bool, slotWidth: CGFloat, height: CGFloat) -> some View {
+        Group {
+            if let draft = materialized[candidate.id], let filename = draft.localFilename,
+               let pixelSize = draft.pixelSize, pixelSize.height > 0 {
+                // `.fit`, never `.fill` — see this method's caller's doc
+                // comment. `draft.pixelSize` (already known once
+                // materialized) drives the true aspect ratio directly,
+                // rather than waiting on the image to decode.
+                MediaThumbnail(filename: filename, contentMode: .fit)
+                    .aspectRatio(pixelSize.width / pixelSize.height, contentMode: .fit)
+            } else {
+                ArkyvColor.surface
+                    .overlay {
+                        if materializing.contains(candidate.id) {
+                            ProgressView().tint(ArkyvColor.textPrimary)
+                        }
                     }
-                }
+            }
         }
+        .frame(width: slotWidth, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+        // Reduced scale + opacity is the whole "there is another image,
+        // clearly subordinate, clearly swipeable" signal — combined
+        // with genuinely being partially visible at the box's own edge
+        // (the point of `activeSlotFraction` < 1), this is legible
+        // before the user ever touches the screen.
+        .scaleEffect(isActive ? 1 : 0.86)
+        .opacity(isActive ? 1 : 0.4)
     }
 
     /// Downloads + `MediaStore`-saves one candidate, guarded against
