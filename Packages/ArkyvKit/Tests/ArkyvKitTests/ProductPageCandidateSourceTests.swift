@@ -19,6 +19,37 @@ final class ProductPageCandidateSourceTests: XCTestCase {
         XCTAssertFalse(ProductPageCandidateSource().matches(URL(string: "mailto:someone@example.com")!))
     }
 
+    /// Pinterest Link Cherry V1 01: the real production fix. Pinterest
+    /// Candidate Quality 01 proved Pinterest's `Product.image` JSON-LD is
+    /// never a genuine multi-photo gallery — always the same underlying
+    /// image at Pinterest's own CDN resolution/crop buckets — so it must
+    /// never reach this candidate source at all, regardless of what its
+    /// page content looks like.
+    func testDoesNotMatchPinterestHost() {
+        XCTAssertFalse(ProductPageCandidateSource().matches(URL(string: "https://www.pinterest.com/pin/772859986091581288/")!))
+        XCTAssertFalse(ProductPageCandidateSource().matches(URL(string: "https://pinterest.com/pin/772859986091581288/")!))
+    }
+
+    func testDoesNotMatchPinterestRegionalSubdomain() {
+        XCTAssertFalse(ProductPageCandidateSource().matches(URL(string: "https://in.pinterest.com/pin/869405903067066380/")!))
+    }
+
+    func testDoesNotMatchPinItShortlink() {
+        XCTAssertFalse(ProductPageCandidateSource().matches(URL(string: "https://pin.it/abc123")!))
+    }
+
+    /// A lookalike host must not be swept up by a naive substring check.
+    func testDoesNotExcludeLookalikePinterestDomain() {
+        XCTAssertTrue(ProductPageCandidateSource().matches(URL(string: "https://notpinterest.com/anything")!))
+    }
+
+    /// The regression guard: ordinary ecommerce hosts (Darc Sport's own
+    /// shape) must still match exactly as before — this fix is a narrow
+    /// host exclusion, not a general tightening of `matches(_:)`.
+    func testStillMatchesOrdinaryEcommerceHost() {
+        XCTAssertTrue(ProductPageCandidateSource().matches(URL(string: "https://shop.darcsport.com/collections/forever/products/dual-compression-shorts-in-black")!))
+    }
+
     // MARK: - JSON-LD Product.image (schema.org)
 
     func testSingleImageObjectProductYieldsOneCandidate() {

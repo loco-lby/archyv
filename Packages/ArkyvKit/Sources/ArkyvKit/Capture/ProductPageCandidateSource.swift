@@ -28,8 +28,31 @@ public struct ProductPageCandidateSource: CandidateImageSource, Sendable {
     /// fetching it, so "no Product schema found" is handled as zero
     /// candidates inside `candidateImageURLs`, never a matching failure
     /// here.
+    ///
+    /// Pinterest Link Cherry V1 01: Pinterest Candidate Quality 01's
+    /// forensic audit proved, against 4 real Pins (1 tagged `Product`, 3
+    /// `SocialMediaPosting`), that Pinterest's own `Product.image` JSON-LD
+    /// array is never a genuine multi-photo gallery — every entry across
+    /// every Pin tested was Pinterest's own CDN size/crop-bucket
+    /// convention for ONE underlying photo (resolution variants, a
+    /// square thumbnail crop, a wide social-card crop), not a Pin
+    /// author's intentional alternate images. Pinterest's own data model
+    /// has no multi-image-per-Pin concept at all — unlike a real
+    /// ecommerce product page (Darc Sport) or an Instagram carousel,
+    /// there is nothing here for a candidate picker to legitimately
+    /// offer. Excluded by host, not by page content, since "carries
+    /// `Product` JSON-LD" is exactly the signal that was producing the
+    /// false positive — a content-shape check couldn't distinguish
+    /// Pinterest's case from a real one.
     public func matches(_ url: URL) -> Bool {
-        url.scheme == "http" || url.scheme == "https"
+        guard url.scheme == "http" || url.scheme == "https" else { return false }
+        guard let host = url.host?.lowercased() else { return true }
+        return !Self.isPinterestHost(host)
+    }
+
+    private static func isPinterestHost(_ host: String) -> Bool {
+        host == "pinterest.com" || host.hasSuffix(".pinterest.com")
+            || host == "pin.it" || host.hasSuffix(".pin.it")
     }
 
     public func candidateImageURLs(for url: URL) async throws -> [URL] {

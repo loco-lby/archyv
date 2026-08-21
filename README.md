@@ -2419,3 +2419,70 @@ exact-slide claim; a later-slide `img_index` URL still preserves its
 query state exactly and still doesn't guarantee the intended slide
 (the accepted, documented limitation); Darc Sport/YouTube unaffected.
 **GREEN WITH KNOWN CAROUSEL LIMITATION.**
+
+## Pinterest Link Cherry V1 (Foundation 01)
+
+**The regression:** the same physical-device pass that closed out
+Instagram found Pinterest's Share Extension now presenting a candidate
+picker full of what looked like implementation noise — repeated copies
+of the same Pin at different resolutions and crops, never a real choice.
+Pinterest Candidate Quality 01 traced this to ground truth before
+touching any code: `ProductPageCandidateSource` (built for real
+ecommerce galleries like Darc Sport) matches *any* http/https URL
+unconditionally, and Pinterest's own Pin pages sometimes embed real
+`schema.org Product` JSON-LD (whenever a Pin is tagged shoppable) whose
+`image` array — 9 entries on the real test Pin — is entirely Pinterest's
+own CDN size/crop-bucket convention for **one** underlying photo:
+5 resolution variants of the same 4:5 composition (one appearing
+twice, byte-identical), Pinterest's own square thumbnail crop, and its
+own wide social-card crop. Confirmed by independently downloading and
+hashing every one of the 9 URLs — never a second genuine photo anywhere.
+The existing dedupe key (built for Shopify's `_WxH` filename-suffix
+convention) doesn't recognize Pinterest's path-*prefix* size convention
+(`i.pinimg.com/{size}/{hash}.jpg`), so none of the 9 collapsed together.
+A follow-up pass against 3 more real Pins (a generic pin, a recipe-art
+pin, an outfit-recipe blog pin) found none carrying `Product` JSON-LD at
+all — each already resolved to exactly one candidate. Across all 4 real
+Pins tested, zero showed a second genuinely distinct photo anywhere in
+public metadata — consistent with Pinterest's own data model, where a
+Pin is fundamentally one image object, unlike an Instagram carousel or a
+real multi-photo product page.
+
+**The fix:** `ProductPageCandidateSource.matches(_:)` now excludes
+Pinterest hosts (`pinterest.com` and subdomains, `pin.it`) by host, not
+by page content — "carries `Product` JSON-LD" was exactly the signal
+producing the false positive, so a content-shape check couldn't have
+told Pinterest's case apart from a real one. Darc Sport and ordinary
+ecommerce pages are completely unaffected — the exclusion is additive
+and host-scoped only.
+
+**`PinterestSourceEnricher`** (`SourceEnricher`, never a
+`CandidateImageSource` — same shape and same reasoning as
+`InstagramSourceEnricher`) supplies one small, evidence-backed quality
+bonus on top of the required fix: Pinterest's CDN URLs encode
+resolution as a swappable path segment, and the forensic audit proved
+`/originals/` is the exact same faithful 4:5 composition as the
+`236x`/`474x`/`564x`/`736x` buckets, just full resolution — so when the
+page's own `og:image` uses one of those recognized buckets, the
+enricher attempts the `/originals/` swap opportunistically (HTTP
+success + decodable bytes + positive dimensions required, silent
+fallback to the unmodified `og:image` on any failure, same
+`withTaskGroup` timeout race Instagram's optional thumbnail step
+already established — not new concurrency machinery). Pinterest's own
+thumbnail (`60x60`/`136x136`) and social-card (`600x315`) crop
+families are deliberately never touched — those are genuinely different
+compositions, not resolution variants. Title is read directly from
+`og:title` with zero transformation (unlike Instagram's caption, which
+needed a boilerplate prefix stripped), keeping it equivalent to what
+the generic `LPMetadataProvider` path this enricher replaces would
+already have shown.
+
+**No Pinterest `CandidateImageSource` was built** — the evidence (4/4
+real Pins) showed nothing worth picking between; architecting a picker
+for a hypothetical multi-image Pin type Pinterest doesn't currently
+expose was explicitly out of scope.
+
+**Verified on Device A:** the known Pin and an unrelated Pin both
+resolve to one correct visual with no duplicate/crop carousel and a
+correctly-opening source; Darc Sport's real multi-photo swiper
+completely unaffected. **GREEN.**

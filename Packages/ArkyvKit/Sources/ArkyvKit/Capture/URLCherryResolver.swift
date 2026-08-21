@@ -28,8 +28,14 @@ public enum URLCherryResolver {
     /// enterprise framework." Instagram Link Cherry V1 01:
     /// `InstagramSourceEnricher` is title/image enrichment only — see its
     /// own doc comment for why Instagram deliberately has no matching
-    /// entry in `defaultCandidateSources` below.
-    public static let defaultEnrichers: [SourceEnricher] = [YouTubeOEmbedEnricher(), InstagramSourceEnricher()]
+    /// entry in `defaultCandidateSources` below. Pinterest Link Cherry V1
+    /// 01: `PinterestSourceEnricher` is the same shape for the same
+    /// reason — Pinterest never exposes more than one meaningful image
+    /// per Pin (Pinterest Candidate Quality 01), so it's enrichment-only
+    /// too, never a `CandidateImageSource`.
+    public static let defaultEnrichers: [SourceEnricher] = [
+        YouTubeOEmbedEnricher(), InstagramSourceEnricher(), PinterestSourceEnricher(),
+    ]
 
     /// Checked only when no enricher matched — an enricher already IS
     /// the highest-confidence single image for its source (YouTube),
