@@ -238,6 +238,38 @@ final class URLCherryResolverTests: XCTestCase {
         XCTAssertEqual(resolved?.candidates.first?.id, "primary")
     }
 
+    /// Ecommerce ProductGroup Support 01: a discovered risk, documented
+    /// rather than silently patched — that milestone's own scope was
+    /// deliberately narrowed to JSON-LD type recognition only, pending
+    /// physical-device confirmation of whether this actually manifests
+    /// visibly. The generic candidate's `id` is the fixed string
+    /// `"primary"`, never derived from the URL it came from — so when a
+    /// `CandidateImageSource` contributes exactly ONE extra candidate
+    /// that happens to be the exact same underlying photo already
+    /// fetched generically (the common real shape for a `ProductGroup`
+    /// with exactly one image, confirmed on Gymshark/Allbirds/Nike
+    /// during Recon 02 — their `ProductGroup.image` and `og:image`
+    /// resolve to the identical asset), nothing recognizes them as
+    /// duplicates: `candidates.count` becomes 2, which would trip the
+    /// Share Extension's own `candidates.count > 1` picker gate with the
+    /// same photo in both slots. This test proves the COUNT, which is
+    /// all a unit test can prove without real image bytes — whether it's
+    /// actually the same photo (and therefore actually visible junk) can
+    /// only be confirmed on Device A.
+    func testSingleExtraCandidateIsNeverDedupedAgainstGenericPrimaryByIDAlone() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "T", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let source = FakeCandidateSource(matchesResult: true, result: .success([URL(string: "https://example.com/possibly-the-same-photo.jpg")!]))
+
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source])
+
+        XCTAssertEqual(
+            resolved?.candidates.count, 2,
+            "known risk: the generic \"primary\" candidate and a single URL-based extra candidate are never deduped against each other by ID, even if they resolve to the same underlying photo"
+        )
+    }
+
     func testResolveCandidatesFallsBackToSingleWhenCandidateSourceThrows() async {
         let url = URL(string: "https://example.com/thing")!
         let metadata = makeMetadata(url: url, title: "T", imageProvider: imageProvider(bytes: Self.validPNGBytes))

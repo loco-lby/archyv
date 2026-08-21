@@ -3,8 +3,10 @@ import Foundation
 /// Link Cherry Visual Picker 01, Part C: the smallest ecommerce
 /// image-candidate enrichment justified by real evidence (Darc Sport's
 /// real product page, inspected during Priority Source Intelligence 01).
-/// Standards first: `schema.org` `Product.image` via JSON-LD, the
-/// documented, cross-platform mechanism. Only falls back to a narrow,
+/// Standards first: `schema.org` `Product`/`ProductGroup` `.image` via
+/// JSON-LD (Ecommerce ProductGroup Support 01 added `ProductGroup`
+/// recognition — see `isProductType`'s own doc comment), the documented,
+/// cross-platform mechanism. Only falls back to a narrow,
 /// empirically-verified Shopify page-data convention (a `"images":[...]`
 /// array Shopify's default themes embed inline for their own theme JS)
 /// when JSON-LD alone doesn't establish at least two trustworthy images
@@ -60,22 +62,110 @@ public struct ProductPageCandidateSource: CandidateImageSource, Sendable {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
         guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else { return [] }
 
-        let jsonLDImages = Self.productImagesFromJSONLD(html: html, pageURL: url)
-        if jsonLDImages.count >= 2 {
-            return jsonLDImages
-        }
-        let shopifyImages = Self.shopifyGalleryImages(html: html, pageURL: url)
-        guard !shopifyImages.isEmpty else { return jsonLDImages }
+        return Self.candidateImages(html: html, pageURL: url)
+    }
 
+    /// The full pure pipeline `candidateImageURLs(for:)` runs after
+    /// fetching the page — exposed separately (no network) so tests can
+    /// exercise it directly against real captured HTML fixtures, the
+    /// same split every other network-touching source/enricher in this
+    /// codebase already uses.
+    static func candidateImages(html: String, pageURL: URL) -> [URL] {
+        excludingPageOwnPrimaryImage(rawCandidateImages(html: html, pageURL: pageURL), html: html, pageURL: pageURL)
+    }
+
+    private static func rawCandidateImages(html: String, pageURL: URL) -> [URL] {
+        let jsonLDImages = productImagesFromJSONLD(html: html, pageURL: pageURL)
+        // The `>= 2` threshold reads the RAW count — "did JSON-LD alone
+        // establish at least two trustworthy images" — not the deduped
+        // count, so a page whose JSON-LD supplies several resolution
+        // variants of one photo (Allbirds' real shape: a `width=`
+        // query-parameter family) still correctly skips the Shopify
+        // fallback; only the returned list itself is deduped.
+        if jsonLDImages.count >= 2 {
+            return Self.dedupingByNormalizedIdentity(jsonLDImages)
+        }
+        let shopifyImages = shopifyGalleryImages(html: html, pageURL: pageURL)
+        guard !shopifyImages.isEmpty else { return jsonLDImages }
+        return Self.dedupingByNormalizedIdentity(jsonLDImages + shopifyImages)
+    }
+
+    /// Ecommerce Cross-Source Candidate Dedupe 01: real Allbirds JSON-LD
+    /// exposed a gap this milestone's forensic tracing found — multiple
+    /// entries *within the same* `ProductGroup.image` array (four
+    /// `width=100/300/600/900` resolution variants of one photo) were
+    /// never deduped against EACH OTHER, only ever against a separate
+    /// Shopify-fallback array. Applied uniformly wherever a candidate
+    /// list is returned, using the exact same `dedupeKey` normalization
+    /// (ignores query string and CDN filename-suffix resolution
+    /// variants) already relied on elsewhere in this type.
+    private static func dedupingByNormalizedIdentity(_ urls: [URL]) -> [URL] {
         var seen = Set<String>()
-        var merged: [URL] = []
-        for candidateURL in jsonLDImages + shopifyImages {
-            let key = CandidateAssembly.dedupeKey(for: candidateURL)
-            if seen.insert(key).inserted {
-                merged.append(candidateURL)
+        var result: [URL] = []
+        for url in urls {
+            if seen.insert(CandidateAssembly.dedupeKey(for: url)).inserted {
+                result.append(url)
             }
         }
-        return merged
+        return result
+    }
+
+    /// Ecommerce Cross-Source Candidate Dedupe 01: candidate 0 (the
+    /// generic `"primary"` candidate `URLCherryResolver` always produces
+    /// first) is Apple's `LPMetadataProvider` result, handed back as raw
+    /// bytes via an `NSItemProvider` — `LPLinkMetadata` has no accessor
+    /// for the image's own URL, so a direct URL (or even a cheap-to-fetch
+    /// byte hash for every additional candidate) comparison against
+    /// candidate 0 isn't available here.
+    ///
+    /// Forensic tracing (real Gymshark + Allbirds product pages) proved
+    /// `LPMetadataProvider`'s choice is, in every real case tested,
+    /// exactly the page's own `og:image` — that's the whole point of
+    /// Open Graph tags, and this source already fetches the page HTML
+    /// to read JSON-LD, so reading `og:image` too costs nothing extra.
+    /// Filtering any additional candidate that normalizes (via the same
+    /// `CandidateAssembly.dedupeKey` already used for intra-source
+    /// dedup) to that URL is therefore a practical, deterministic proxy
+    /// for "the same image candidate 0 already is" — not a byte
+    /// comparison, but not a guess either.
+    ///
+    /// This is why BOTH real duplicates collapse correctly even though
+    /// they fail differently: Gymshark's is byte-identical (only
+    /// `http`/`https` differs — `dedupeKey` never even looks at scheme);
+    /// Allbirds' is NOT byte-identical (same path, only a `width=` query
+    /// parameter differs, so the two files are genuinely different
+    /// resolutions/bytes — a byte-hash comparison would have missed it,
+    /// but `dedupeKey` already ignores the query string). A real
+    /// multi-photo gallery (Darc Sport, Vibecrafts) routinely lists its
+    /// own cover photo as gallery entry 1 — this filter removes exactly
+    /// that one redundant entry and leaves every genuinely different
+    /// photo untouched; it dedupes by normalized image identity only,
+    /// never by product/SKU/dimension similarity.
+    private static func excludingPageOwnPrimaryImage(_ images: [URL], html: String, pageURL: URL) -> [URL] {
+        guard let primaryImageURL = pageOGImageURL(html: html, pageURL: pageURL) else { return images }
+        let primaryKey = CandidateAssembly.dedupeKey(for: primaryImageURL)
+        return images.filter { CandidateAssembly.dedupeKey(for: $0) != primaryKey }
+    }
+
+    /// `og:image`'s real attribute order varies by store (confirmed
+    /// `property`-before-`content` on some real ecommerce pages, the
+    /// reverse on others — the same divergence already documented
+    /// between `InstagramSourceEnricher` and `PinterestSourceEnricher`);
+    /// tries both.
+    static func pageOGImageURL(html: String, pageURL: URL) -> URL? {
+        let patterns = [
+            #"<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']*)["']"#,
+            #"<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:image["']"#,
+        ]
+        let nsHTML = html as NSString
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            if let match = regex.firstMatch(in: html, range: NSRange(location: 0, length: nsHTML.length)), match.numberOfRanges > 1 {
+                let raw = nsHTML.substring(with: match.range(at: 1))
+                return URL(string: raw, relativeTo: pageURL)?.absoluteURL
+            }
+        }
+        return nil
     }
 
     // MARK: - schema.org JSON-LD Product.image
@@ -93,9 +183,24 @@ public struct ProductPageCandidateSource: CandidateImageSource, Sendable {
         return images
     }
 
+    /// Ecommerce ProductGroup Support 01: Ecommerce Link Cherry Recon 02
+    /// found `ProductGroup` — schema.org's dedicated type for "a product
+    /// with variants" — on 5 of 6 real, successfully-fetched ecommerce
+    /// pages (Studio2am, Gymshark, Vibecrafts, Nike, Allbirds); only the
+    /// original Darc Sport proof case used the older bare `Product`.
+    /// `ProductGroup` was invisible to this check before, so every one of
+    /// those pages silently contributed zero candidates — not a crash,
+    /// not wrong output, just missed coverage. `ProductGroup.image` is
+    /// read through the exact same `imageURLs(from:)` below `Product`
+    /// already used — schema.org defines both types' `image` property
+    /// identically (string/array/`ImageObject`), confirmed against the
+    /// real captured fixtures, so no second parser was needed. This is
+    /// deliberately ONLY a type-recognition change — no `hasVariant`,
+    /// `variesBy`, or `offers.@id` handling yet; see this milestone's own
+    /// scope boundary.
     private static func isProductType(_ value: Any?) -> Bool {
-        if let type = value as? String { return type == "Product" }
-        if let types = value as? [String] { return types.contains("Product") }
+        if let type = value as? String { return type == "Product" || type == "ProductGroup" }
+        if let types = value as? [String] { return types.contains("Product") || types.contains("ProductGroup") }
         return false
     }
 

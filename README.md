@@ -2486,3 +2486,69 @@ expose was explicitly out of scope.
 resolve to one correct visual with no duplicate/crop carousel and a
 correctly-opening source; Darc Sport's real multi-photo swiper
 completely unaffected. **GREEN.**
+
+## Ecommerce ProductGroup Support + Cross-Source Candidate Dedupe (Foundation 01)
+
+**The gap:** Ecommerce Link Cherry Recon 02 — a broad reconnaissance
+pass across a real gauntlet of stores (Darc Sport, Studio2am, Allbirds,
+Gymshark, Vibecrafts, Nike, plus blocked-store probes) — found
+`schema.org ProductGroup`, the modern type for "a product with
+variants," on 5 of 6 successfully-fetched real pages; `ProductPageCandidateSource`
+only recognized the older bare `Product`, so every one of those pages
+silently contributed zero candidates. **Ecommerce ProductGroup Support
+01** extended `isProductType` to also accept `ProductGroup`, reusing
+the exact same `image` extraction `Product` already used (schema.org
+defines the property identically for both types) — deliberately *only*
+type recognition, with `hasVariant`/`variesBy`/`offers.@id` explicitly
+frozen for a later pass.
+
+**The regression this exposed:** physical QA immediately surfaced a
+predicted risk — Gymshark and Nike both showed "the same apparent
+product image twice," Allbirds showed several near-duplicate entries,
+while Vibecrafts' genuinely distinct isolated/environmental photos
+correctly remained selectable. Root cause, traced with real fixtures
+and byte-level proof rather than assumed:
+
+- **Gymshark:** `og:image` and `ProductGroup.image[0]` are
+  byte-identical (confirmed SHA-256 match) — they differ only by
+  `http` vs `https` scheme.
+- **Allbirds:** `og:image` and `ProductGroup.image[]`'s `width=`
+  variants are the *same photo but NOT byte-identical* — 1600×1600
+  (1.08MB) vs. a 900×900 resize (357KB), different SHA-256. A byte-hash
+  comparison alone would have missed this real duplicate. A second,
+  related gap was found alongside it: JSON-LD's own multi-image array
+  entries were never deduped *against each other*, only ever against a
+  separate Shopify-fallback array.
+- **Nike:** could not be reproduced from the real, live page — tested
+  across 4 different real Nike product URLs (2 categories), `ProductGroup`
+  never carries a top-level `image` field on any of them; every image
+  lives only inside `hasVariant`, which the parser deliberately doesn't
+  descend into (in-scope variant work is still frozen). Current code
+  contributes zero extra candidates for Nike regardless.
+
+**The fix:** candidate 0 (the generic `LPMetadataProvider` result) has
+no URL Cherries can ever inspect — `LPLinkMetadata` hands it back as
+raw bytes via an `NSItemProvider`, with no image-URL accessor at all —
+so a direct comparison against candidate 0 isn't available. Since
+`ProductPageCandidateSource` already fetches the page HTML to read
+JSON-LD, it now also reads the page's own `og:image` (the practical,
+evidence-backed proxy for what candidate 0 almost certainly already
+is — confirmed true in both real failure cases) and filters out any
+additional candidate that normalizes, via the *existing* `dedupeKey`
+(unchanged — already ignores scheme and query string), to that same
+identity. JSON-LD array entries are now also deduped against each
+other, closing the Allbirds gap. Both changes dedupe by normalized
+image identity only — never by product/SKU/dimension similarity — so a
+real gallery's genuinely different photos are always preserved.
+
+**Verified** via 9 new regression tests against real captured
+Gymshark/Allbirds/Darc Sport/Vibecrafts shapes (identical URL,
+query-parameter-variant URL, intra-array duplicates, genuinely
+different images surviving, `og:image`-absent fail-open, attribute
+order) plus the existing ProductGroup parsing suite. **Verified on
+Device A:** Gymshark, Allbirds, and Nike all resolve to one meaningful
+image with no duplicate picker; Vibecrafts' genuinely distinct
+product/environment photos remain selectable; Darc Sport's real
+multi-photo gallery remains intact. **GREEN** — "expose ambiguity only
+when the ambiguity is meaningful." `hasVariant`/colorway-aware
+selection remains explicitly out of scope for a future pass.
