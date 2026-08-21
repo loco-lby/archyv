@@ -97,4 +97,122 @@ final class LinkCherryContextTests: XCTestCase {
         XCTAssertNil(LinkCherryContext.displayDomain(sourceURL: nil))
         XCTAssertNil(LinkCherryContext.displayTitle(title: nil, sourceURL: nil))
     }
+
+    // MARK: - Link Cherry Title Quality Repair 01
+    //
+    // Editorial Eden Recon 01 found the previous rule — suppress
+    // whenever the registrable domain name appears ANYWHERE in the
+    // title — silently dropped two entirely real, useful headlines
+    // (Aeon, Nautilus) purely because their publication's short,
+    // single-word name happened to sit inside its own ordinary
+    // "Headline | Publication" suffix. Fixtures below are the exact
+    // real titles captured during that recon.
+
+    /// The exact real bug: "Aeon" (the 4-char registrable name) is a
+    /// literal substring of "Aeon Essays" — previously suppressed the
+    /// entire headline. Must now survive, suffix intact (this milestone
+    /// is suppression-only, not stripping — see `testSuffixIsNotStripped`).
+    func testAeonRealHeadlineSurvives() {
+        let title = LinkCherryContext.displayTitle(
+            title: "History and philosophy should make us feel baffled and strange | Aeon Essays",
+            sourceURL: "https://aeon.co/essays/history-and-philosophy-should-make-us-feel-baffled-and-strange"
+        )
+        XCTAssertEqual(title, "History and philosophy should make us feel baffled and strange | Aeon Essays")
+    }
+
+    /// The exact real bug: "nautil" (the 6-char registrable name) is a
+    /// literal substring of "Nautilus" — previously suppressed the
+    /// entire headline.
+    func testNautilusRealHeadlineSurvives() {
+        let title = LinkCherryContext.displayTitle(
+            title: "The New Flight of the Ibis - Nautilus",
+            sourceURL: "https://nautil.us/the-new-flight-of-the-ibis-234418"
+        )
+        XCTAssertEqual(title, "The New Flight of the Ibis - Nautilus")
+    }
+
+    /// Never regressed, but confirms the fix doesn't disturb it: the
+    /// suffix survives verbatim, unstripped.
+    func testSuffixIsNotStripped() {
+        let title = LinkCherryContext.displayTitle(
+            title: "Permanent Decline | The Point Magazine",
+            sourceURL: "https://thepointmag.com/examined-life/permanent-decline/"
+        )
+        XCTAssertEqual(title, "Permanent Decline | The Point Magazine", "this milestone stops wrong suppression only — it does not strip suffixes")
+    }
+
+    /// Real Life's real title — already survived before this fix (its
+    /// registrable name "reallifemag" never matched "Real Life" as a
+    /// substring), but the em dash exercises the new separator set too.
+    func testRealLifeSuffixedTitleSurvives() {
+        let title = LinkCherryContext.displayTitle(
+            title: "Roving Eyes — Real Life",
+            sourceURL: "https://reallifemag.com/roving-eyes/"
+        )
+        XCTAssertEqual(title, "Roving Eyes — Real Life")
+    }
+
+    /// Magnum's real title has a literal duplicated-suffix bug in their
+    /// own template ("Magnum Photos Magnum Photos") — still must survive
+    /// unchanged; this milestone never rewrites titles, only decides
+    /// whether to show them.
+    func testMagnumBuggyDuplicateSuffixTitleSurvives() {
+        let title = LinkCherryContext.displayTitle(
+            title: "The Photographers' Selection: 2025 | Magnum Photos Magnum Photos",
+            sourceURL: "https://www.magnumphotos.com/arts-culture/the-photographers-selection-2025/"
+        )
+        XCTAssertEqual(title, "The Photographers' Selection: 2025 | Magnum Photos Magnum Photos")
+    }
+
+    /// Emergence Magazine's real title suffixes the AUTHOR, not the
+    /// publication — no registrable-name match occurs at all here, so
+    /// this exercises the unaffected early-return path.
+    func testEmergenceAuthorSuffixedTitleSurvives() {
+        let title = LinkCherryContext.displayTitle(
+            title: "The Fault of Time – Erica Berry",
+            sourceURL: "https://emergencemagazine.org/essay/the-fault-of-time/"
+        )
+        XCTAssertEqual(title, "The Fault of Time – Erica Berry")
+    }
+
+    /// The regression this whole fix must never weaken: Instagram's real
+    /// generic per-post template has the site's name fused directly into
+    /// a content-free sentence, with NO title/publication separator
+    /// anywhere — structurally nothing like Aeon/Nautilus's real
+    /// "Headline | Publication" shape — so it must remain suppressed.
+    func testInstagramGenericTemplateStillSuppressed() {
+        let title = LinkCherryContext.displayTitle(
+            title: "Analogue Documented on Instagram",
+            sourceURL: "https://www.instagram.com/p/DcJWBONjd3-/?img_index=2"
+        )
+        XCTAssertNil(title, "a title with no separator, fused directly into the site's own name, must still be treated as boilerplate")
+    }
+
+    /// The regression this whole fix must never weaken: Pinterest's real
+    /// 118-character keyword-stuffed title stays suppressed via the
+    /// unrelated, untouched length check.
+    func testPinterestKeywordStuffedTitleStillOmitted() {
+        let title = LinkCherryContext.displayTitle(
+            title: "GANG - Print by Ces XC | DROOL Art | Funny horse photos, Horse and motorcycle, Cowboy on horse photography",
+            sourceURL: "https://pin.it/7zmCUuxsH"
+        )
+        XCTAssertNil(title)
+    }
+
+    /// A hypothetical short-prefix boilerplate shape (a bare app/site
+    /// name immediately followed by its own suffix) — a separator is
+    /// present, but there isn't enough real content before it to call
+    /// this a genuine headline, so it must still be suppressed.
+    func testSeparatorPresentButPrefixTooThinStillSuppressed() {
+        let title = LinkCherryContext.displayTitle(title: "App - Instagram", sourceURL: "https://www.instagram.com/p/x")
+        XCTAssertNil(title)
+    }
+
+    /// The site's name mentioned mid-sentence with no separator at all —
+    /// still the boilerplate shape, not the suffix shape — must stay
+    /// suppressed even though real words surround it.
+    func testNameFusedMidSentenceWithNoSeparatorStillSuppressed() {
+        let title = LinkCherryContext.displayTitle(title: "Welcome to the official Aeon homepage", sourceURL: "https://aeon.co/x")
+        XCTAssertNil(title)
+    }
 }

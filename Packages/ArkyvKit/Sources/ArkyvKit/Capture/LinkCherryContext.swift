@@ -46,18 +46,87 @@ public enum LinkCherryContext {
     /// never shows a fallback string — whenever any check fails, so a
     /// bad/unusable title is silently absent rather than confidently
     /// wrong. Requires a usable domain first, same as `displayDomain`.
+    ///
+    /// Link Cherry Title Quality Repair 01: Editorial Eden Recon 01 found
+    /// this rule was too aggressive — a title containing the registrable
+    /// name ANYWHERE was treated as boilerplate, with no regard for how
+    /// much real content sat alongside it. Two real editorial headlines
+    /// (Aeon, Nautilus) were silently reduced to no title at all, purely
+    /// because their publication's short single-word name happened to
+    /// appear literally inside their own ordinary "Headline | Publication"
+    /// suffix — the exact convention this whole check exists to see past.
+    /// Multi-word publications (Works in Progress, The Point Magazine,
+    /// Real Life, Magnum Photos) were never actually protected by
+    /// correct reasoning; they only escaped because their registrable
+    /// domain label concatenates the brand with no spaces
+    /// ("worksinprogress") while the real title renders it with spaces
+    /// ("Works in Progress") — a plain substring search can't bridge
+    /// that gap. That was luck, not a working rule, and this fix doesn't
+    /// rely on it: the answer must be "is this title genuinely
+    /// content-free," never "does this title mention the source" — see
+    /// `hasSubstantialContentBeforeSourceSuffix`.
     public static func displayTitle(title: String?, sourceURL: String?) -> String? {
         guard let domain = displayDomain(sourceURL: sourceURL) else { return nil }
         guard let title else { return nil }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= maximumTitleLength else { return nil }
         guard trimmed.caseInsensitiveCompare(domain) != .orderedSame else { return nil }
-        if let name = registrableName(fromHost: domain),
-           name.count >= minimumMeaningfulNameLength,
-           trimmed.range(of: name, options: .caseInsensitive) != nil {
-            return nil
+        guard let name = registrableName(fromHost: domain),
+              name.count >= minimumMeaningfulNameLength,
+              trimmed.range(of: name, options: .caseInsensitive) != nil
+        else {
+            return trimmed
         }
-        return trimmed
+        // The registrable name appears somewhere in the title — on its
+        // own that no longer means "boilerplate" (see doc comment
+        // above). Only treat it as harmless publication-suffix tagging,
+        // and keep the title, when it sits after a conventional
+        // title/publication separator with substantial real content
+        // before it. Otherwise this is exactly the shape of Instagram's
+        // real "<name> Documented on Instagram" template — the site's
+        // name fused directly into a content-free sentence, no
+        // separator anywhere — and the original, more cautious
+        // suppression still applies.
+        if hasSubstantialContentBeforeSourceSuffix(trimmed, sourceName: name) {
+            return trimmed
+        }
+        return nil
+    }
+
+    /// Real "Headline | Publication" / "Headline - Publication" suffixes
+    /// captured this session all use one of these four characters (Aeon
+    /// `|`, Nautilus `-`, Real Life `—`, Emergence `–`) — a small,
+    /// evidence-backed set, not every possible punctuation mark. `:` is
+    /// deliberately excluded: it routinely appears inside a real
+    /// headline's own clause (Works in Progress' "Beauty in My Backyard:
+    /// ...", ArchDaily's "Building Optimism: Lessons from..."), so
+    /// treating it as a suffix boundary would risk cutting a genuine
+    /// headline in half.
+    private static let titleSuffixSeparators: Set<Character> = ["|", "-", "–", "—"]
+    /// The shortest real "headline before the separator" observed this
+    /// session (Nautilus: "The New Flight of the Ibis") is 27 characters
+    /// — this sits comfortably below every real case while still ruling
+    /// out a near-empty prefix (e.g. a bare app/site name immediately
+    /// followed by its own suffix, which is exactly the boilerplate
+    /// shape this filter exists to catch).
+    private static let minimumSuffixPrefixLength = 8
+
+    /// `true` when `sourceName` appears only inside a trailing
+    /// "separator + publication" tail, with a substantial headline
+    /// before it — the real "Headline | Publication" shape (Aeon,
+    /// Nautilus) — rather than fused directly into a content-free
+    /// sentence with no separator at all (Instagram's real per-post
+    /// template). Uses the LAST separator in the title, matching the
+    /// conventional "headline, then a trailing publication tag" reading
+    /// order.
+    private static func hasSubstantialContentBeforeSourceSuffix(_ trimmed: String, sourceName: String) -> Bool {
+        guard let separatorIndex = trimmed.lastIndex(where: { titleSuffixSeparators.contains($0) }) else {
+            return false
+        }
+        let prefix = trimmed[trimmed.startIndex..<separatorIndex].trimmingCharacters(in: .whitespaces)
+        let suffix = trimmed[trimmed.index(after: separatorIndex)...]
+        guard prefix.count >= minimumSuffixPrefixLength else { return false }
+        return suffix.range(of: sourceName, options: .caseInsensitive) != nil
     }
 
     /// A rough, non-PSL-aware "second-to-last label" heuristic —
