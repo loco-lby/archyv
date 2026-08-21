@@ -25,8 +25,11 @@ public enum URLCherryResolver {
     /// `true` gets one attempt before the generic path runs. Not a
     /// registry/plugin system — a plain, small, ordered list, matching
     /// "approximately a handful of launch-time enrichers, not an
-    /// enterprise framework."
-    public static let defaultEnrichers: [SourceEnricher] = [YouTubeOEmbedEnricher()]
+    /// enterprise framework." Instagram Link Cherry V1 01:
+    /// `InstagramSourceEnricher` is title/image enrichment only — see its
+    /// own doc comment for why Instagram deliberately has no matching
+    /// entry in `defaultCandidateSources` below.
+    public static let defaultEnrichers: [SourceEnricher] = [YouTubeOEmbedEnricher(), InstagramSourceEnricher()]
 
     /// Checked only when no enricher matched — an enricher already IS
     /// the highest-confidence single image for its source (YouTube),

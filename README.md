@@ -2222,3 +2222,200 @@ symbols anywhere, no note field, modern grayscale folder selector
 (matching Item Detail/Import exactly), Link Cherry candidate picker and
 X/✓ unchanged.
 
+
+## Instagram Link Cherry Recon + V1 (Foundation 01)
+
+**The product problem:** Instagram is the biggest unresolved high-volume
+Link Cherry source, with a specific known failure mode — sharing a
+carousel post's non-first slide (`?img_index=N` in the URL) could
+produce the WRONG slide's image, sometimes visibly zoomed/cropped
+oddly. Recon 01 was reconnaissance-only (zero production code changed)
+to establish, with real evidence against a real carousel URL, exactly
+what a public, unauthenticated HTTP request can and cannot recover —
+before deciding what (if anything) to build.
+
+**What the recon found, against the real public response:**
+
+- Instagram's logged-out HTML for a post/Reel exposes exactly **one**
+  server-selected representative image (`og:image`) — its own `efg`
+  parameter decodes to `FEED`/`CAROUSEL_ITEM`/`CLIPS.best_image_urlgen`
+  depending on post type, confirming it's Instagram's own algorithmic
+  "best image" pick for the whole post, not tied to any particular
+  slide.
+- **`img_index` is never honored server-side, at all.** Requesting the
+  identical carousel post with `img_index` omitted, `0`, `1`, `2`, and
+  `3` returned a byte-identical `og:image` every single time, and the
+  page's own `<link rel="canonical">` drops the query string entirely.
+  It's a pure client-side (JavaScript) scroll hint with zero effect on
+  any server-rendered response.
+- **No public carousel media array exists anywhere** in the
+  unauthenticated response — the exhaustive search covered every known
+  key name (`carousel_media`, `edge_sidecar_to_children`,
+  `image_versions2`, JSON-LD, all 30 embedded `<script
+  type="application/json">` blocks) with zero hits. There is nothing to
+  build a candidate list FROM.
+- **Instagram supplied the previously-observed square/zoomed crop, not
+  Cherries** — `og:image` is served through a server-side hard crop
+  (confirmed present even on an ordinary single-image post), which
+  Cherries has never touched or re-cropped.
+- The officially documented Meta oEmbed product
+  (`graph.facebook.com/.../instagram_oembed`) returns a 200 but a
+  useless, field-stripped payload without an access token — confirmed
+  by direct request, not assumed; requires a registered Meta app +
+  review for arbitrary public posts, ruled unsuitable for this app.
+  Instagram's own internal, undocumented embed-widget endpoint
+  (`www.instagram.com/api/v1/oembed/`) is reachable with no auth at all
+  and returns genuinely useful data — but was explicitly rejected as a
+  production dependency (website-internal plumbing, not a developer-
+  documented stable API) even though it was useful during the recon
+  itself.
+
+**Conclusion, accepted rather than fought:** exact carousel-slide
+preservation cannot be implemented robustly without unacceptable
+private/scraping architecture. Full findings (per-case GREEN/YELLOW/RED
+matrix, img_index semantics, Reel/single-post results) live in this
+milestone's own delivered report, not duplicated here.
+
+### V1 implementation
+
+**`InstagramSourceEnricher`** (`Packages/ArkyvKit/Sources/ArkyvKit/Capture/`)
+is a `SourceEnricher` — deliberately **not** a `CandidateImageSource`,
+registered in `URLCherryResolver.defaultEnrichers` alongside
+`YouTubeOEmbedEnricher`. Since there is only ever one publicly
+discoverable representative image, wiring Instagram into the ecommerce
+candidate-image swiper would present a false choice, not a real one —
+there's nothing for a candidate list to be built from, and
+`defaultCandidateSources` has no Instagram entry.
+
+**Image:** `og:image`, read via one ordinary public HTTP GET of the
+post/Reel URL — the same class of technique `ProductPageCandidateSource`
+already uses for JSON-LD (reading `<meta>` tags a page already publishes
+for social-preview consumption; never DOM-driving, never a private
+endpoint). This is the exact same representative image the generic
+`LPMetadataProvider` path already fetches — this enricher changes
+nothing about which pixels get archived, and never crops or otherwise
+transforms whatever Instagram supplies.
+
+**Title — the actual value this milestone adds:** Instagram's
+`og:description`/`og:title` embed a real caption behind a boilerplate
+prefix (`"<handle> on <date>: "<caption>"."`) that, left as-is, contains
+the word "Instagram" — and `LinkCherryContext.displayTitle`'s existing
+generic filter (Context + Single-Folder UX 01) already suppresses ANY
+title containing the source's own registrable name as a boilerplate-
+template detector. Without this enricher, a genuinely useful caption
+would be thrown away at display time purely because of Instagram's own
+prefix wording. `InstagramSourceEnricher.extractCaption` strips that
+prefix — a real caption survives; when no real caption exists at all
+(confirmed on a real Reel: `og:description` degrades to plain
+engagement-stat boilerplate, "70 likes, 6 comments - handle on date,"
+with nothing quoted to extract), title is simply `nil`, never a
+fabricated or boilerplate-only stand-in. No new persisted author/caption
+field — this only changes what `CaptureDraft.title` receives, the same
+optional field every other source already populates or leaves nil.
+
+**Carousels get no special handling beyond this** — `img_index` (and
+every other query parameter) is preserved in `sourceURL` exactly as
+before (an existing, resolver-level guarantee unrelated to which
+enricher matched — `ResolvedURLCherry(sourceURL: url, ...)` always uses
+the original incoming URL), but the stored visual remains Instagram's
+one post-level representative image regardless of which slide the user
+actually intended. This is a known, accepted, documented limitation —
+**not a bug to be "fixed" later with brittle scraping.** A future
+engineer re-reading this code should not attempt to extract exact-slide
+media without first re-establishing that Instagram has started exposing
+it publicly.
+
+**Tests:** `InstagramSourceEnricherTests` — pure, deterministic,
+no-network coverage of `matches(_:)` (post/Reel/reels paths, host
+variants, lookalike-domain rejection) and the caption-extraction
+pipeline (`extractCaption`/`metaContent`/`decodeHTMLEntities`), using
+the *real* `og:description` strings captured during Recon 01 against the
+actual test carousel post and a real Reel as fixtures — not synthetic
+examples. `enrich(_:)`'s real HTTP behavior is verified live on Device
+A instead, the same split `YouTubeOEmbedEnricherTests` already
+established for network-dependent enrichment (there is no seam for an
+enricher's own network call, matching the existing architecture).
+`URLCherryResolverTests` gained one small generic-path addition (nil
+title still produces a valid draft) plus a static-wiring check that
+`defaultCandidateSources` has no Instagram entry. This package's own
+`swift test`/`xcodebuild test` actions hit pre-existing, unrelated
+environment gaps (bare SwiftPM can't build several files needing the
+iOS SDK; neither Xcode scheme has a `Testables` entry wired up) — not
+introduced or touched by this milestone; the new parsing logic was
+additionally hand-verified against the real captured fixtures via a
+standalone script before shipping, and the full `Arkyv` app build
+(which compiles `ArkyvKitTests`' sibling target, `ArkyvKit`, as a real
+dependency) succeeds cleanly.
+
+### Visual Asset Forensics + Optional Thumbnail Enhancement
+
+Fresh physical-device QA of V1 found real quality problems og:image
+alone couldn't explain away as "expected Instagram limitation": an
+ordinary photo read as tighter/more cropped than the real post, a
+carousel ("Retired Cowboy") resolved to a genuinely bad crop of the
+wrong region of a designed slide, and some saved Reels showed a large
+baked-in play icon while others didn't. Visual Asset Forensics 01
+traced three real shares end to end — downloading the actual bytes
+independently and inspecting them, not guessing — and proved all three
+symptoms are **Instagram's own served pixels**, not a Cherries
+transform (`MediaStore.save(data:)` is a bare `data.write(to:)`, zero
+decode/resize/re-encode anywhere in the path). It also found a
+genuinely better asset already sitting in Instagram's own (undocumented)
+`www.instagram.com/api/v1/oembed/` response — uncropped, correct aspect
+ratio, and for Reels specifically, free of the baked-in play icon —
+the same endpoint Recon 01 had already found and deliberately excluded
+from production for being undocumented/internal.
+
+Optional Thumbnail Feasibility 01 then tested that endpoint properly
+before touching any code: 7/7 real URLs (2 photos, 3 Reels, 2
+carousels, including the real Messi World Cup carousel) succeeded, every
+one produced a genuinely different (never byte-identical) and
+better-or-equal asset, median latency ~0.27s (worst observed 0.71s),
+and every simulated failure mode (invalid post, malformed param, missing
+param) resolved to a clean, fast, non-hanging error.
+
+**Optional Thumbnail Enhancement 01 is the resulting production change**
+— layered entirely inside `InstagramSourceEnricher.enrich(_:)`, after
+its existing `og:image`-based result is already complete and
+independently saveable:
+
+```
+og:image result (already valid, already saveable)
+        ↓
+attempt oEmbed thumbnail — 2.5s TOTAL budget, own timeout race
+        ↓
+success: valid thumbnail_url, positive reported dimensions,
+         downloads, decodes, positive real dimensions
+        → replace representative image only
+ANY failure at any stage
+        → silently keep the og:image result unchanged
+```
+
+The 2.5s bound races the whole attempt (oEmbed JSON fetch + thumbnail
+image fetch + decode, combined) against a timeout task using the exact
+same `withTaskGroup` pattern `URLCherryResolver.resolveCandidates`
+already uses for its own overall timeout — not new concurrency
+machinery. The acceptance rule is deliberately boring: "did it decode
+with positive dimensions," no pixel-area/aspect-ratio/perceptual
+comparison against `og:image` — Feasibility 01's own sample showed a
+dimension-comparison rule would have wrongly rejected a legitimately
+better carousel thumbnail. Title, `sourceURL`, and `img_index`
+preservation are all finalized before this step ever runs, so none of
+them can depend on it. No new types, no `CandidateImageSource`, no
+schema changes.
+
+**Accepted V1 limitation, by product decision, not oversight:** exact
+carousel-slide fidelity remains unsolved — the improved thumbnail is
+still a POST-level representative image, never tied to a specific
+`img_index`. Recon 01 already proved no public mechanism exposes
+per-slide media at all, and the product decision is to accept this
+rather than pursue scraping/private APIs/browser automation to close it.
+
+**Verified on Device A:** photo visual fidelity materially improved
+(fuller, correct-aspect, no longer a tight square crop); Reels resolve
+to a clean cover with the baked-in play button substantially eliminated;
+carousels show a visibly better post-level image while making no
+exact-slide claim; a later-slide `img_index` URL still preserves its
+query state exactly and still doesn't guarantee the intended slide
+(the accepted, documented limitation); Darc Sport/YouTube unaffected.
+**GREEN WITH KNOWN CAROUSEL LIMITATION.**

@@ -188,6 +188,31 @@ final class URLCherryResolverTests: XCTestCase {
         XCTAssertEqual(draft?.title, "Generic Title")
     }
 
+    /// `CaptureDraft.title`/`EnrichedLinkContent.title` are both optional
+    /// — a source that legitimately has no useful title to offer
+    /// (Instagram Link Cherry V1 01: a Reel with only engagement-stat
+    /// boilerplate, nothing worth surfacing — see
+    /// `InstagramSourceEnricher.extractCaption`) must still produce a
+    /// normal, saveable image draft. Nothing in `URLCherryResolver`/
+    /// `materializeCandidate` gates on `title` being non-nil (confirmed
+    /// by inspection — `title` is only ever threaded through, never
+    /// branched on); exercised here via the generic path (which is
+    /// properly seamed for network-free testing) since a matched
+    /// enricher's OWN image fetch has no such seam and is instead
+    /// verified live on Device A, same as `YouTubeOEmbedEnricherTests`.
+    func testNilTitleStillProducesDraft() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: nil, imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let (mediaStore, root) = makeIsolatedMediaStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+
+        XCTAssertNotNil(draft?.localFilename)
+        XCTAssertNil(draft?.title)
+    }
+
     // MARK: - resolveCandidates / materializeCandidate (Link Cherry Visual Picker 01)
 
     func testResolveCandidatesReturnsSingleCandidateWhenNoSourceMatches() async {
