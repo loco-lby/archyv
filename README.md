@@ -1994,3 +1994,96 @@ target configured (all this session's automated tests target the
 five iterations plus code review, not an automated layout-contract
 test; adding a new app-level test target was judged out of scope for
 this narrow fix.
+
+## Make Cherry Unification (Foundation 01)
+
+**Product decision:** the "+" / Photo Library entry and Action Button
+screenshot capture are one conceptual flow — **Make Cherry** — differing
+only in how the source image arrives. They now share a single
+implementation rather than two independently-maintained ones.
+
+**The arc that got here** ran through several rounds of physical-device
+refinement, each narrowing the design:
+
+1. **Import Cherry Drawer 01** replaced the pre-Cherries "+" screen (a
+   full-screen room with a legacy floating `arkyv` chevron mark, a giant
+   folder grid, and mixed drawer/room visual metaphors — none of it
+   Cherries' own language) with a purpose-built drawer: X/✓ action bar,
+   a quiet "Unfiled ˅" folder control, a WYSIWYG image preview, an
+   optional note.
+2. **Refinements 01–03** iteratively tightened that drawer against real
+   physical-device QA — native `.medium`/`.large` sheet detents so it
+   read as a drawer rather than another full screen; Public Sans instead
+   of the editorial Lora face for the "Choose from library" action
+   label; the modern, icon-free, grayscale `FolderSelectionRow` language
+   (extracted from Item Detail's `FolderEditorView` and reused by both,
+   rather than a hand-rolled row with colored icons/dots); removing note
+   authoring from Import entirely (notes stay an Item Detail concept);
+   and, finally, giving Import its own bolted-on crop affordance reusing
+   `CropRegion`/`CropEditorView`.
+3. **That last piece is what exposed the wrong abstraction.** Physical
+   QA on the crop-equipped Import drawer made it obvious that Import and
+   Action Button capture had converged on nearly the same feature set
+   through two separate implementations — a standalone crop icon, a
+   second image-local X, a presentation architecture that still
+   diverged from Action Button's — "needless conceptual and UI
+   divergence," not a real product difference.
+
+**The fix was deletion, not more building.** `CaptureSheetView`'s entire
+bespoke add-mode body — the drawer chrome, the fit-to-box preview math,
+the Import-specific crop button/session, the folder dropdown, the
+save/cancel logic, the `.medium`/`.large` detent-escalation plumbing —
+is gone. Add-mode is now only two states:
+
+- **No image yet:** a small "Make Cherry" empty shell (X, a disabled ✓,
+  a static "Unfiled ˅" label, and a centered "Choose from Photos ↑"
+  `PhotosPicker` affordance — copy and icon both tuned across a few
+  physical-device passes: "Import from library" read as ambiguous about
+  *which* library; the inline arrow went through `tray.and.arrow.down`
+  → `arrow.down.left` → a plain `arrow.up`, converging on the same
+  compact `arrow.up.right`-family treatment Item Detail's source-URL
+  button already established, just semantically inverted and finally
+  legible at 10pt).
+- **Once an image exists** (from either entry path): `CaptureSheetView`
+  hands off to **the exact same `ScreenshotCaptureFlowView` instance
+  type** Action Button capture already used — same `CropEditorView`
+  crop bars (opened at `.fullImage`, so nothing is ever silently
+  cropped), same X/✓ hierarchy, same folder accessory/dropdown, same
+  save/cancel/original-image-preservation semantics. There is no
+  remaining Import-specific presentation code to keep in sync — it's
+  the same code path, not two implementations that happen to look
+  alike.
+
+`RootView`'s sheet presentation collapsed the same way: both drawer
+cases now share one `.presentationDetents([.large])` /
+`.presentationDragIndicator(.hidden)` / `.presentationCornerRadius(0)`
+configuration, since add-mode's own empty state uses the identical
+full, chromeless "Make Cherry" canvas Action Button capture always has.
+`CaptureCoordinator.Drawer.isAdd` was deleted once nothing referenced
+it anymore.
+
+**Folder/crop persistence is unchanged and unduplicated:** `Unfiled`
+still means zero `StoredFolder` memberships, never a real folder object
+(`CaptureCoordinator.file(_:into:)` now takes `folder: StoredFolder? =
+nil` and calls `Repository.fileCapture(draft, folders: [])` when nil —
+the same completion Photo Library import was always missing until this
+milestone, now shared with every other capture path). Crop persistence
+reuses `CaptureDraft.cropRegion`/`Repository.fileCapture` exactly as
+Action Button capture already did — the original image bytes are
+untouched in `MediaStore`, `CropRegion` is separate metadata, and
+Item Detail's existing re-crop flow works on a Photo Library import
+exactly as it already did on a screenshot.
+
+**Verified on Device A:** the empty Make Cherry shell (no image,
+disabled ✓, neutral "Unfiled ˅," "Choose from Photos ↑"); landscape,
+square, 4:5, and tall-screenshot images all fitting completely on
+screen through the shared `CropEditorView` geometry with no separate
+Import-specific fitting math; the reused white crop bars behaving
+identically to Action Button capture, with no standalone crop icon and
+no second image-local X; Action Button capture itself unchanged; both
+cropped and uncropped Photo Library saves landing correctly in One
+Archive. `ScreenshotCaptureFlowView`/`CaptureSheetView` live in the app
+target (no XCTest target configured there, consistent with every other
+app-target-only view this session) — verification is physical-device QA
+across this milestone's full round-trip plus code review, not an
+automated UI test.
