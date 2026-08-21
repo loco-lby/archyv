@@ -2087,3 +2087,138 @@ target (no XCTest target configured there, consistent with every other
 app-target-only view this session) — verification is physical-device QA
 across this milestone's full round-trip plus code review, not an
 automated UI test.
+
+## Link Cherry Pipeline Integrity (Foundation 01)
+
+**The regression:** physical-device re-testing of the original six
+canary URLs found that only the Darc Sport product page (and anything
+else with real `Product` JSON-LD) still reached the modern Link Cherry
+carousel — Studio2am/Natify, Pinterest, and any other generic URL
+resolving to exactly one image candidate rendered a **blank preview
+area** above a bare X/✓/Unfiled/note row, easy to mistake for an old,
+pre-Visual-Picker screen even though no such screen still exists
+anywhere in the codebase (confirmed: `"Add note (optional)..."` — the
+literal string visible in the blank state — appears in exactly one
+place, `ShareDrawerContent.noteField`, the current modern drawer).
+
+**Root cause — a rendering gap, not a routing/architecture split.**
+`ShareDrawerContent.previewArea` had exactly two branches:
+
+```swift
+if candidates.count > 1, !ready.isEmpty {
+    // carousel
+} else if let filename = singleDraft?.localFilename {
+    // plain MediaThumbnail
+}
+```
+
+But `urlResolution(for:)` returns `.single` ONLY for the total-failure
+fallback (a bare text draft when `resolveCandidates` finds nothing at
+all) — **every successfully-resolved URL, including a plain generic
+result with exactly one image and zero source enrichment, returns
+`.candidates(resolved)`.** For that ordinary, common case —
+`resolved.candidates.count == 1` — `candidates.count > 1` is false AND
+`singleDraft` is `nil` (wrong enum case), so **both branches skip** and
+`previewArea` renders nothing, even though a perfectly valid, already-
+prefetched image candidate exists in `previewImages` and ✓ is even
+already enabled (`isReady` doesn't care about candidate count). Darc
+Sport was never special-cased anywhere — it's simply the one URL, of
+the original six, whose page happens to carry real `Product` JSON-LD
+(from `ProductPageCandidateSource`), so it's always the one landing
+above the `> 1` threshold. Every other generic-only URL fell into a gap
+this codebase's own doc comment (`ShareDraftResolution`'s, directly
+above this bug) had already described the INTENDED behavior for —
+"a page with only one trustworthy candidate behaves completely
+unchanged" — a real bug, not a designed limitation, introduced during
+Link Cherry Visual Picker 01 and never caught because that milestone's
+own repeated physical-device testing only ever used the Darc Sport URL.
+
+**The fix** changes exactly one condition, in exactly one file
+(`Sources/Share/ShareViewController.swift`): `candidates.count > 1` →
+`!ready.isEmpty`. The single-candidate and multi-candidate cases now run
+through the identical rendering path — same WYSIWYG image treatment,
+same prefetch/`isReady` machinery — with the carousel-only chrome (peek
+neighbors at 68% width, the "Choose image / N of M" cue, swipe) simply
+turned off (`isCarousel = candidates.count > 1`) when there's only one
+image to show, since there's nothing to choose between. No source-
+specific branch, no Studio2am fix, no Pinterest fix, no Darc Sport
+exception — the same code path now correctly handles "how many
+candidates does this URL have," from zero (total failure → the existing
+text-only fallback, unchanged) through one (the now-fixed common case)
+through many (Darc Sport's carousel, unchanged).
+
+**Generic-candidate survival was already structurally correct** at the
+`URLCherryResolver` level (confirmed by inspection, not just this fix):
+`attemptResolveCandidates` always establishes the generic candidate via
+`fetchGenericImage` FIRST, before a matching `CandidateImageSource` is
+ever consulted, and `CandidateAssembly.merging` always keeps the
+existing (generic) candidates in place — a candidate source that throws,
+times out, or returns zero extra images can only ever fail to ADD to the
+list, never remove from it. The bug was entirely in the SwiftUI
+rendering condition downstream, not in candidate assembly itself.
+
+**DEBUG-only instrumentation** (`logResolutionDiagnostics`, gated
+`#if DEBUG`, removed from Release builds automatically): mirrors the
+existing `logShareInputDiagnostics` pattern (print + append to a small
+App Group debug log file, since `devicectl` can't stream console output
+from a process the OS itself launches via the real Share Sheet) —
+reports the candidate count and which presentation branch a real share
+actually reached, without re-instrumenting `URLCherryResolver` itself.
+
+**Confirmed on Device A** across the six-URL canary set: Studio2am and
+Pinterest both restored to a visible representative image with no blank
+state, Works in Progress/YouTube/Darc Sport all unaffected — all six
+URLs resolve to a real image through the identical modern pipeline.
+
+### Share Extension visual consistency follow-up
+
+Fixing the blank-preview regression surfaced two more findings in the
+same screenshot, initially mistaken for more routing damage but
+actually unrelated, pre-existing styling debt: an orange
+star/cross/triangle/circle/diamond folder-row treatment, and the
+`"Add note (optional)..."` field, both still visible underneath the
+now-working candidate picker.
+
+**Not a second routing bug — confirmed by inspection first, before any
+edit.** `ShareDrawerContent` is the Share Extension's only presentation;
+there is no second/legacy view for either artifact to belong to. Both
+were simply that one drawer's own, never-updated implementation:
+
+- `"Add note (optional)..."` — `ShareDrawerContent.noteField`, a plain
+  `TextField`.
+- The orange icons — `ShareDrawerContent`'s own private `folderRow`,
+  using `FolderIconView(icon:, color: ArkyvColor.accent)` per row.
+
+**Why earlier Import Cherry Drawer work never touched either:** the
+Share Extension (`ArkyvShare`) is a genuinely separate Xcode target from
+the app (`Arkyv`) — confirmed directly against `project.yml`, not
+assumed. `FolderSelectionRow` (the modern, icon-free row extracted from
+Item Detail's `FolderEditorView` during Import Cherry Drawer Refinement
+01) lived in `Sources/iOS/Components/ArkyvComponents.swift`, which
+`project.yml` only lists as a source path for the `Arkyv` target —
+structurally invisible to `ArkyvShare`, which only depends on the
+`ArkyvKit` Swift package. Make Cherry Unification 01 also explicitly
+scoped the Share Extension out of that whole redesign ("does not need
+to become the same literal view"), so this was never an oversight to
+begin with — just visual parity nobody had asked for yet.
+
+**The fix:** moved `FolderSelectionRow` into `ArkyvKit`
+(`Design/FolderSelectionRow.swift`) — the one dependency `Arkyv`,
+`ArkyvShare`, and `ArkyvMac` all three already share — and pointed
+`ShareDrawerContent`'s folder dropdown at it directly, wrapped in the
+same `ArkyvMotion.settle` animation every other Cherries folder picker
+already uses. Removed `noteField`, its `@State private var note`, and
+its `noteBody` assignment in `confirmSave()` entirely — `CaptureDraft`'s
+`.note` *kind* (a genuinely different concept: a plain-text share with
+no URL/image at all, e.g. sharing selected text) is untouched, only the
+capture-time note-authoring UI is gone, matching Make Cherry's own "no
+note authoring at capture time" precedent.
+
+Verified via `strings` against the rebuilt `ArkyvShare.appex` binary
+before ever installing: `FolderSelectionRow` present, `"Add note
+(optional)"` absent — confirming target membership at the binary level,
+not just by reading source. **Confirmed on Device A:** no orange folder
+symbols anywhere, no note field, modern grayscale folder selector
+(matching Item Detail/Import exactly), Link Cherry candidate picker and
+X/✓ unchanged.
+

@@ -155,11 +155,55 @@ final class ShareViewController: UIViewController {
     /// image at all) falls back to the exact same text-only draft this
     /// codebase has always produced for a bare URL.
     private func urlResolution(for url: URL) async -> ShareDraftResolution {
-        if let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS), !resolved.candidates.isEmpty {
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS)
+        #if DEBUG
+        logResolutionDiagnostics(url: url, resolved: resolved)
+        #endif
+        if let resolved, !resolved.candidates.isEmpty {
             return .candidates(resolved)
         }
         return .single(CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS))
     }
+
+    #if DEBUG
+    /// Link Cherry Pipeline Integrity 01: a concise, DEBUG-only trace of
+    /// what `resolveCandidates` actually produced for a real share-sheet
+    /// URL — same "print + append to the App Group debug log" mechanism
+    /// as `logShareInputDiagnostics` above, for the same reason (a real
+    /// share triggered through the system Share Sheet, not `devicectl`,
+    /// has no other way to surface console output). Deliberately doesn't
+    /// re-instrument `URLCherryResolver` itself (its own internal
+    /// `debugLog` calls are enough for a `devicectl`-launched debug
+    /// session, and adding a second logging path there risks drifting
+    /// out of sync with this one) — this only reports the OUTCOME this
+    /// view controller can already observe: which resolution branch was
+    /// reached and how many candidates it carries, which is exactly what
+    /// distinguishes "generic-only, single candidate" from "enriched/
+    /// multi-candidate" from "total failure, text-only fallback."
+    private func logResolutionDiagnostics(url: URL, resolved: ResolvedURLCherry?) {
+        var lines: [String] = []
+        func log(_ line: String) {
+            print(line)
+            lines.append(line)
+        }
+        log("[ResolveDiag] url=\(url.absoluteString)")
+        if let resolved {
+            log("[ResolveDiag]   candidates=\(resolved.candidates.count) title=\(resolved.title != nil ? "present" : "nil")")
+            log("[ResolveDiag]   presentation=\(resolved.candidates.isEmpty ? "single(fallback, empty candidates)" : "candidates")")
+        } else {
+            log("[ResolveDiag]   candidates=nil (resolveCandidates returned nil)")
+            log("[ResolveDiag]   presentation=single(fallback, total failure)")
+        }
+
+        let logURL = AppGroup.containerURL.appendingPathComponent("share-diag-debug.log")
+        let entry = (["", "=== \(Date()) ==="] + lines).joined(separator: "\n") + "\n"
+        if let existing = try? String(contentsOf: logURL, encoding: .utf8) {
+            try? (existing + entry).write(to: logURL, atomically: true, encoding: .utf8)
+        } else {
+            try? entry.write(to: logURL, atomically: true, encoding: .utf8)
+        }
+    }
+    #endif
 
     #if DEBUG
     /// URL → Cherry Physical QA Follow-Up 01, Section 5: characterizes
@@ -381,13 +425,12 @@ private struct ShareDrawerContent: View {
     /// to kick off a fetch.
     @State private var prefetchTask: Task<Void, Never>?
     /// Index 0 by default — "if the user never swipes, save candidate 0
-    /// exactly as today." Changing folder/note or opening/closing the
-    /// folder dropdown never touches this.
+    /// exactly as today." Changing folder or opening/closing the folder
+    /// dropdown never touches this.
     @State private var selectedCandidateIndex = 0
     /// Mirrors `selectedCandidateIndex` for `ScrollView`'s own
     /// `.scrollPosition(id:)` binding, which requires an `Optional`.
     @State private var scrollPositionID: Int?
-    @State private var note = ""
     @State private var showingPicker = false
     /// Chosen in the dropdown (see `folderPanel`'s row actions), not yet
     /// saved — ✓ is what actually files the share (see `confirmSave`).
@@ -473,10 +516,7 @@ private struct ShareDrawerContent: View {
                     // fixed reposition.
                     Spacer(minLength: 6)
                     previewArea(width: max(geometry.size.width - 40, 0))
-                    Spacer(minLength: 12)
-                    noteField
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 20)
+                    Spacer(minLength: 20)
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .opacity(showingPicker ? 0.3 : 1)
@@ -537,13 +577,35 @@ private struct ShareDrawerContent: View {
     /// built from (from the geometry fix) — only the carousel's OWN
     /// height varies, animated with `ArkyvMotion.settle`, the same calm
     /// "fast hands, settle here" token the Folder selector's own
-    /// selection state already uses; X/✓/folder/note stay pinned via the
+    /// selection state already uses; X/✓/folder stay pinned via the
     /// surrounding `VStack`'s `Spacer`s absorbing the difference.
+    /// Link Cherry Pipeline Integrity 01: was gated on `candidates.count
+    /// > 1` — meaning ANY URL whose resolution produced exactly ONE
+    /// candidate (the ordinary, generic-only case: no `SourceEnricher`
+    /// matched, and `ProductPageCandidateSource` found no `Product`
+    /// JSON-LD/Shopify gallery to append from, e.g. Pinterest, or an
+    /// ordinary product/article page without that structured data) fell
+    /// through BOTH branches — `candidates.count > 1` false, and
+    /// `singleDraft` also nil (`resolution` is `.candidates`, not
+    /// `.single`, for any successfully-resolved URL — see
+    /// `urlResolution(for:)`) — rendering nothing at all, a blank preview
+    /// area above a bare X/✓/folder row that read as an old,
+    /// pre-Visual-Picker screen even though it wasn't one. Darc Sport
+    /// worked throughout because it happens to be the one canary URL
+    /// with real `Product` JSON-LD, always producing >1 candidates; nothing
+    /// else in the six-URL set does. The fix is `!ready.isEmpty` instead
+    /// of `candidates.count > 1` — the exact same rendering path now
+    /// handles 1 candidate exactly as gracefully as many, just without
+    /// the multi-candidate-only chrome (peek neighbors, the "Choose
+    /// image" selection cue, swipe) when there's only one to show. A
+    /// generic-only resolution is no longer a degraded case; it's simply
+    /// this same UI with the carousel-specific affordances turned off.
     @ViewBuilder
     private func previewArea(width: CGFloat) -> some View {
         let ready = readyCandidates
-        if candidates.count > 1, !ready.isEmpty {
-            let slotWidth = width * Self.activeSlotFraction
+        if !ready.isEmpty {
+            let isCarousel = candidates.count > 1
+            let slotWidth = isCarousel ? width * Self.activeSlotFraction : width
             let height = carouselHeight(forWidth: slotWidth)
             // Final visual pass: a little more breathing room between the
             // carousel and the "Choose image" label beneath it (16, up
@@ -562,6 +624,7 @@ private struct ShareDrawerContent: View {
                 .frame(width: width, height: height)
                 .scrollTargetBehavior(.viewAligned)
                 .scrollPosition(id: $scrollPositionID)
+                .scrollDisabled(!isCarousel)
                 .onChange(of: scrollPositionID) { _, newIndex in
                     guard let newIndex, candidates.indices.contains(newIndex) else { return }
                     withAnimation(ArkyvMotion.settle) { selectedCandidateIndex = newIndex }
@@ -574,18 +637,20 @@ private struct ShareDrawerContent: View {
                 // semantic cue — "Choose image" + a precise "N of M"
                 // position — replaces the prior plain dot row entirely,
                 // since dots and an exact count would just be two
-                // indicators saying the same thing. The visual hierarchy
-                // (centered/full-opacity = selected) still does the
-                // primary work; this just removes any ambiguity about
-                // WHAT the swiping is for.
-                VStack(spacing: 1) {
-                    Text("Choose image")
-                        .font(ArkyvFont.publicSans(size: 11, weight: .semibold))
-                        .tracking(1)
-                        .foregroundStyle(ArkyvColor.textSecondary)
-                    Text("\(selectedCandidateIndex + 1) of \(candidates.count)")
-                        .font(ArkyvFont.publicSans(size: 10))
-                        .foregroundStyle(ArkyvColor.subdued)
+                // indicators saying the same thing. Only shown when
+                // there's an actual choice to make — a single-candidate
+                // result has nothing to select between, so this cue
+                // would be pure noise.
+                if isCarousel {
+                    VStack(spacing: 1) {
+                        Text("Choose image")
+                            .font(ArkyvFont.publicSans(size: 11, weight: .semibold))
+                            .tracking(1)
+                            .foregroundStyle(ArkyvColor.textSecondary)
+                        Text("\(selectedCandidateIndex + 1) of \(candidates.count)")
+                            .font(ArkyvFont.publicSans(size: 10))
+                            .foregroundStyle(ArkyvColor.subdued)
+                    }
                 }
             }
             .padding(.horizontal, 20)
@@ -624,7 +689,7 @@ private struct ShareDrawerContent: View {
     /// any given active candidate (never `.infinity`/flexible) — these
     /// are the bounds that number is clamped within, so one extreme
     /// source aspect ratio can't collapse the drawer's vertical rhythm
-    /// (a very wide banner) or push X/✓/note off a small screen (a very
+    /// (a very wide banner) or push X/✓ off a small screen (a very
     /// tall portrait). Within these bounds the ACTIVE candidate's own
     /// ratio is always honored exactly — clamping only ever adds
     /// letterboxing, never crops.
@@ -782,19 +847,24 @@ private struct ShareDrawerContent: View {
         .padding(.horizontal, 24)
     }
 
+    /// Share Extension Visual Consistency 01: rebuilt on the shared
+    /// `FolderSelectionRow` (`ArkyvKit`, moved there from the app target
+    /// specifically so this separate compilation target could finally
+    /// reach it) instead of this drawer's own independent, never-updated
+    /// row — the orange `FolderIconView`/star-cross-triangle-circle-
+    /// diamond glyphs and orange checkmark visible on physical-device QA
+    /// were this exact private `folderRow`, which the app-target-only
+    /// Import Cherry Drawer refinements could never have touched. Same
+    /// two behavioral rules Import's own dropdown already established:
+    /// "Unfiled" only appears as a row once a real folder is already
+    /// selected (never pre-highlighted as a choice the user made), and
+    /// tapping the already-selected row clears back to Unfiled
+    /// (`FolderSelectionUX`).
     private var folderPanel: some View {
         VStack(spacing: 4) {
-            // Context + Single-Folder UX 01, Section 10: "Unfiled" is not
-            // another `StoredFolder` — it only appears as a selectable row
-            // once a real folder is chosen, so there's a way back to it
-            // (previously there was none: this dropdown only ever listed
-            // real folders, and re-tapping the selected one just re-chose
-            // itself). Same reuse-the-tap-target pattern Item Detail's
-            // FolderEditorView already established for this.
             if selectedFolder != nil {
-                folderRow(icon: nil, name: "Unfiled", isSelected: false) {
-                    selectedFolder = nil
-                    showingPicker = false
+                FolderSelectionRow(name: "Unfiled", isSelected: false) {
+                    selectFolder(nil)
                 }
             }
             if folders.isEmpty {
@@ -804,14 +874,13 @@ private struct ShareDrawerContent: View {
                     .padding(.vertical, 10)
             } else {
                 ForEach(folders) { folder in
-                    folderRow(icon: folder.icon, name: folder.name, isSelected: folder.id == selectedFolder?.id) {
+                    FolderSelectionRow(name: folder.name, isSelected: folder.id == selectedFolder?.id) {
                         // Tapping the already-selected row clears back to
                         // Unfiled — same toggle-to-nil mechanism Item
                         // Detail's picker uses, so there's always a way
                         // back without a separate control.
                         let resultID = FolderSelectionUX.toggling(current: selectedFolder?.id, tapped: folder.id)
-                        selectedFolder = resultID == folder.id ? folder : nil
-                        showingPicker = false
+                        selectFolder(resultID == folder.id ? folder : nil)
                     }
                 }
             }
@@ -825,53 +894,16 @@ private struct ShareDrawerContent: View {
         .shadow(color: .black.opacity(0.5), radius: 12, y: 12)
     }
 
-    /// Context + Single-Folder UX 01, Section 9: exactly ONE selection
-    /// cue — a trailing checkmark — replacing the prior combination of
-    /// checkmark + tinted background + leading accent bar, which put
-    /// three simultaneous, independently-styled signals on a single
-    /// state. A Cherry is always in zero or one folder (never more), and
-    /// only one row is ever `isSelected` at a time by construction
-    /// (`selectedFolder` is a single optional, never a set) — the
-    /// simplification is about removing redundant/competing visual
-    /// language, not fixing a multi-selection bug at the state level.
-    /// `icon == nil` (the synthetic "Unfiled" row) simply omits the
-    /// leading glyph rather than inventing a placeholder one.
-    private func folderRow(icon: FolderIcon?, name: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                if let icon {
-                    FolderIconView(icon: icon, size: 13, color: ArkyvColor.accent)
-                }
-                Text(name)
-                    .font(ArkyvFont.mono(.regular, size: 13))
-                    .foregroundStyle(isSelected ? ArkyvColor.textPrimary : ArkyvColor.textPrimary.opacity(0.75))
-                    .italic(icon == nil)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(ArkyvColor.accent)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
+    /// Same "fast hands, calm room" settle every other Cherries folder
+    /// picker uses (`FolderEditorView.select(_:)`, the app-target Import
+    /// drawer's own `selectFolder(_:)`) — the row's font/color/scale/
+    /// checkmark change all ride this one `withAnimation` block, plus
+    /// closing the dropdown.
+    private func selectFolder(_ folder: StoredFolder?) {
+        withAnimation(ArkyvMotion.settle) {
+            selectedFolder = folder
         }
-        .buttonStyle(.plain)
-    }
-
-    private var noteField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "text.cursor").foregroundStyle(ArkyvColor.subdued).font(.system(size: 13))
-            TextField("Add note (optional)...", text: $note, axis: .vertical)
-                .font(.arkyvBody)
-                .foregroundStyle(ArkyvColor.textPrimary)
-                .lineLimit(1...2)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .arkyvOutlinedSurface(fill: ArkyvColor.surface, stroke: ArkyvColor.divider)
+        showingPicker = false
     }
 
     // MARK: Save
@@ -895,14 +927,11 @@ private struct ShareDrawerContent: View {
         isSaving = true
         saveError = false
         Task {
-            guard let finalDraft = await resolveDraftForSaving() else {
+            guard let draftToSave = await resolveDraftForSaving() else {
                 isSaving = false
                 saveError = true
                 return
             }
-            var draftToSave = finalDraft
-            let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { draftToSave.noteBody = trimmed }
             do {
                 if let selectedFolder {
                     try Repository(context: context).fileCapture(draftToSave, into: selectedFolder)
