@@ -4,6 +4,43 @@ import ArkyvKit
 // FolderIconView / ArkyvMarkView / ArkyvWordmarkView live in ArkyvKit
 // (Design/BrandViews.swift) so the Share Extension and macOS app share them.
 
+/// Item Detail's refined single-folder row language (first established in
+/// `FolderEditorView`), extracted so any other Cherries folder picker can
+/// reuse the exact same visual grammar instead of recreating it: pure
+/// typography (no icon, no color-coded dot) — selected reads Semibold at
+/// full `textPrimary` with a small leading-anchored scale-up, everything
+/// else Medium at 75% opacity — with a trailing checkmark as the one
+/// selection signal. Callers are responsible for wrapping their own
+/// selection-state mutation in `withAnimation(ArkyvMotion.settle)`, same as
+/// `FolderEditorView.select(_:)`, so the row's font/color/scale/checkmark
+/// all settle together under Cherries' one "fast hands, calm room" token
+/// rather than snapping.
+struct FolderSelectionRow: View {
+    let name: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(name)
+                    .font(isSelected ? ArkyvFont.sans(size: 16, weight: .semibold) : ArkyvFont.mono(.medium, size: 16))
+                    .tracking(1)
+                    .foregroundStyle(isSelected ? ArkyvColor.textPrimary : ArkyvColor.textPrimary.opacity(0.75))
+                    .scaleEffect(isSelected ? 17 / 16 : 1, anchor: .leading)
+                Spacer()
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ArkyvColor.textPrimary)
+                    .opacity(isSelected ? 1 : 0)
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Loads a capture image from the local MediaStore by filename, off the main
 /// thread, with a graceful placeholder while missing/loading.
 ///

@@ -63,16 +63,23 @@ struct RootView: View {
         }
         .background(ArkyvColor.canvas)
         .sheet(item: $capture.drawer) { drawer in
-            // v0.02: the screenshot flow should read as "no unnecessary app
-            // chrome" — no grabber, no rounded sheet corners pretending
-            // there's something underneath. Add-mode keeps the softer sheet
-            // treatment since it's a genuine in-app action, not a borrowed
-            // moment.
+            // Make Cherry Unification 01: "+"/Photo Library import and
+            // Action Button capture are now the same conceptual flow —
+            // `CaptureSheetView` hands add-mode off to the exact same
+            // `ScreenshotCaptureFlowView` the screenshot path uses the
+            // instant an image exists — so both cases share this same
+            // full, chromeless presentation: no grabber, no rounded sheet
+            // corners pretending there's something underneath. This
+            // supersedes Import Cherry Drawer 01/Refinement 01/02's
+            // "drawer, not room" framing for a fresh, more specific
+            // product decision: the two entry points should be
+            // indistinguishable once an image is in hand, which starts
+            // with them presenting identically from the first frame.
             CaptureSheetView(drawer: drawer)
                 .presentationDetents([.large])
-                .presentationDragIndicator(drawer.isAdd ? .visible : .hidden)
+                .presentationDragIndicator(.hidden)
                 .presentationBackground(ArkyvColor.canvas)
-                .presentationCornerRadius(drawer.isAdd ? ArkyvRadius.screen : 0)
+                .presentationCornerRadius(0)
         }
         .overlay(alignment: .bottom) {
             if let toast = capture.savedToast {

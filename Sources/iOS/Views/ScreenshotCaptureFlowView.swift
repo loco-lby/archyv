@@ -6,8 +6,16 @@ import UIKit
 #endif
 
 /// The v0.04 capture flow — canonical destination for the Action Button /
-/// Share Extension / screenshot-detector paths. One continuous capture
-/// surface, no separate crop-then-folder wizard:
+/// screenshot-detector paths, and, since Make Cherry Unification 01, the
+/// "+"/Photo Library import path too: `CaptureSheetView` hands add-mode
+/// off to this exact view the instant a picked photo is saved to
+/// `MediaStore` and wrapped in a `CaptureDraft`, so a Photo Library import
+/// and a screenshot capture are — from that point on — the identical view
+/// instance running the identical code, not two implementations kept in
+/// sync by convention. (The Share Extension is a separate compilation
+/// target and can't literally share this view, but follows the same
+/// visual grammar — see `ShareViewController.swift`'s own doc comments.)
+/// One continuous capture surface, no separate crop-then-folder wizard:
 ///
 ///   1. `.loadingImage` — brief, loads the original screenshot off disk so
 ///                        the real `CropEditorView` has pixels to work with.

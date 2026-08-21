@@ -281,12 +281,12 @@ struct FolderEditorView: View {
                     // is deliberately the entire mechanism for "return to
                     // Unfiled" — no separate control was added for it.
                     if selectedFolderID == nil {
-                        folderRow(name: "Unfiled", isSelected: true) {
+                        FolderSelectionRow(name: "Unfiled", isSelected: true) {
                             select(nil)
                         }
                     }
                     ForEach(folders) { folder in
-                        folderRow(name: folder.name, isSelected: folder.id == selectedFolderID) {
+                        FolderSelectionRow(name: folder.name, isSelected: folder.id == selectedFolderID) {
                             select(FolderSelectionUX.toggling(current: selectedFolderID, tapped: folder.id))
                         }
                     }
@@ -328,69 +328,13 @@ struct FolderEditorView: View {
     /// under one coordinated "fast hands, calm room" transition
     /// (`ArkyvMotion.settle`) rather than snapping. Purely a local draft
     /// change; `Repository.move` still only happens on this room's own ✓.
+    /// Row rendering itself now lives in the shared `FolderSelectionRow`
+    /// (`Components/ArkyvComponents.swift`) — reused directly by the
+    /// Import Cherry drawer's own folder selector so both pickers can
+    /// never visually drift apart again.
     private func select(_ id: UUID?) {
         withAnimation(ArkyvMotion.settle) {
             selectedFolderID = id
         }
-    }
-
-    /// One Archive's own filter-rail convention: selected reads as
-    /// Semibold at full `textPrimary`; everything else is Medium at 75%
-    /// of that same color — contrast alone carries the distinction, same
-    /// as Archive's filter rail, no card/background/icon. The trailing
-    /// selection indicator reuses that same rail's active-state dot
-    /// exactly — a 4×4 `Circle` filled `ArkyvColor.textPrimary` — rather
-    /// than a checkmark, which reads as too strong a "confirmed" signal
-    /// here: the dot means "currently the local draft," the room's large
-    /// ✓ is the only control that actually means "apply this." (Reusing
-    /// `ArchiveFilterRail`'s dot as a standalone view isn't practical
-    /// without editing that untouched file — its dot is coupled to a
-    /// vertical label-then-dot layout, this one needs a trailing position
-    /// — so the geometry/token are reproduced verbatim here instead: same
-    /// size, same fill color, same "always-present, opacity toggled"
-    /// approach, which also — unlike this row's previous conditionally-
-    /// inserted checkmark — keeps every row's height identical whether
-    /// selected or not.)
-    ///
-    /// "Fast hands, calm room" (`ArkyvMotion.settle`, applied at the
-    /// selection-mutation site in `select(_:)`): the color and dot
-    /// opacity fade genuinely smoothly (`Color`/`.opacity` are both
-    /// natively interpolatable — the dot needs no `.transition` of its
-    /// own since it's always present and its opacity change rides the
-    /// same `withAnimation` block as everything else), but two
-    /// *discrete* custom `Font` values — Medium vs. Semibold, 16pt either
-    /// way — don't smoothly cross-fade a size change between themselves
-    /// the way a plain `.system` font can. A `.scaleEffect` on top of the
-    /// (always-16pt) text is what actually delivers the requested
-    /// ~1pt-equivalent smooth size settle, leading anchored so it grows
-    /// from the text's own left edge, not its center.
-    @ViewBuilder
-    private func folderRow(name: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Text(name)
-                    .font(isSelected ? ArkyvFont.sans(size: 16, weight: .semibold) : ArkyvFont.mono(.medium, size: 16))
-                    .tracking(1)
-                    .foregroundStyle(isSelected ? ArkyvColor.textPrimary : ArkyvColor.textPrimary.opacity(0.75))
-                    .scaleEffect(isSelected ? 17 / 16 : 1, anchor: .leading)
-                Spacer()
-                // Context + Single-Folder UX 01, Section 9: a checkmark,
-                // not a dot — the Share Extension's picker already used a
-                // checkmark for the identical "this is the current
-                // single-folder selection" concept, and having two
-                // different indicator glyphs for the same state across
-                // Cherries' two folder pickers is exactly the "separate
-                // dot/check meanings" this milestone asks to avoid. The
-                // weight/color/scale treatment on the text above still
-                // reinforces the same one state, not a second signal.
-                Image(systemName: "checkmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(ArkyvColor.textPrimary)
-                    .opacity(isSelected ? 1 : 0)
-            }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }

@@ -30,8 +30,6 @@ final class CaptureCoordinator {
             case .add: return "add"
             }
         }
-
-        var isAdd: Bool { if case .add = self { return true }; return false }
     }
 
     var drawer: Drawer?
@@ -76,11 +74,20 @@ final class CaptureCoordinator {
         drawer = .add
     }
 
-    /// One-tap save from the drawer.
-    func file(_ draft: CaptureDraft, into folder: StoredFolder) {
+    /// One-tap save from the drawer. Import Cherry Drawer 01: `folder ==
+    /// nil` files Unfiled — the same canonical zero-membership shape
+    /// `ScreenshotCaptureFlowView` and the Share Extension already default
+    /// to, so the "+" import drawer follows the same universal contract
+    /// (folder is an optional enhancement to the save, never a
+    /// prerequisite) instead of requiring a folder tap to save at all.
+    func file(_ draft: CaptureDraft, into folder: StoredFolder? = nil) {
         do {
-            try repo.fileCapture(draft, into: folder)
-            savedToast = SavedToast(folderName: folder.name, icon: folder.icon)
+            if let folder {
+                try repo.fileCapture(draft, into: folder)
+            } else {
+                try repo.fileCapture(draft, folders: [])
+            }
+            savedToast = SavedToast(folderName: folder?.name ?? "Unfiled", icon: folder?.icon ?? .symbol("tray"))
         } catch {
             // DATA INTEGRITY: unlike ScreenshotCaptureFlowView/
             // ShareViewController, this path dismisses the drawer
