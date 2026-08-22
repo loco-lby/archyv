@@ -107,42 +107,68 @@ final class ShareViewController: UIViewController {
     private func extractDraft() async -> ShareDraftResolution? {
         guard let item = extensionContext?.inputItems.first as? NSExtensionItem,
               let providers = item.attachments else {
-            return .single(CaptureDraft(kind: .note, sourceDevice: .iOS))
+            return .single(CaptureDraft(kind: .note, sourceDevice: .iOS, acquisitionOrigin: .shareExtension))
         }
 
         #if DEBUG
         await logShareInputDiagnostics()
         #endif
 
+        // Image + URL Provenance Fix 01 (Provenance Foundation Implementation
+        // 01): resolved BEFORE branching on image presence, so a
+        // provenance-carrying URL supplied in the SAME share as an image
+        // provider is never silently discarded — see
+        // `extractProvenanceURL`'s own doc comment for the precedence rule.
+        // This was Provenance Foundation Recon 01's "REAL BUT UNSEEN" hazard:
+        // the old code returned from the image branch before the URL/
+        // plain-text providers were ever inspected.
+        let provenanceURL = await extractProvenanceURL(from: providers)
+
         let imageProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
         if !imageProviders.isEmpty {
             for provider in imageProviders {
-                if let draft = await imageDraft(from: provider) { return .single(draft) }
+                if let draft = await imageDraft(from: provider, sourceURL: provenanceURL) { return .single(draft) }
             }
             return nil
         }
 
+        if let provenanceURL {
+            return await urlResolution(for: provenanceURL)
+        }
+
+        // No image, no recognized URL anywhere in this share — fall back to
+        // ordinary arbitrary-text note behavior, unchanged from before this
+        // milestone.
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+            if let text = try? await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String {
+                return .single(CaptureDraft(kind: .note, noteBody: text, sourceDevice: .iOS, acquisitionOrigin: .shareExtension))
+            }
+        }
+        return .single(CaptureDraft(kind: .note, sourceDevice: .iOS, acquisitionOrigin: .shareExtension))
+    }
+
+    /// Image + URL Provenance Fix 01: deterministic URL-carrier precedence
+    /// for a single logical share (Provenance Foundation Implementation 01,
+    /// section 8) — `public.url` is the strongest, unambiguous signal and is
+    /// tried first; `public.plain-text` is used ONLY when
+    /// `PlainTextURLRecognizer` confirms its content is an exact, bare URL,
+    /// never arbitrary prose. Evaluated once, independently of whether an
+    /// image provider is also present, so `extractDraft()`'s image branch
+    /// can attach this result to the image draft instead of discarding it.
+    /// Provider array ORDER is never the discriminator — type precedence is.
+    private func extractProvenanceURL(from providers: [NSItemProvider]) async -> URL? {
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
             if let url = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
-                return await urlResolution(for: url)
+                return url
             }
         }
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-            if let text = try? await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String {
-                // Link Cherry Ingestion + Source Semantics 01: some apps'
-                // native Share Sheet (confirmed for YouTube) hand this
-                // extension the link as plain text rather than a
-                // URL-typed attachment — a bare URL with nothing else in
-                // the payload is treated exactly as if it HAD arrived
-                // URL-typed. Any surrounding text falls through to the
-                // existing note behavior unchanged, below.
-                if let url = PlainTextURLRecognizer.recognizedURL(from: text) {
-                    return await urlResolution(for: url)
-                }
-                return .single(CaptureDraft(kind: .note, noteBody: text, sourceDevice: .iOS))
+            if let text = try? await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String,
+               let url = PlainTextURLRecognizer.recognizedURL(from: text) {
+                return url
             }
         }
-        return .single(CaptureDraft(kind: .note, sourceDevice: .iOS))
+        return nil
     }
 
     /// Link Cherry Visual Picker 01: "a user does not save a link, they
@@ -162,7 +188,7 @@ final class ShareViewController: UIViewController {
         if let resolved, !resolved.candidates.isEmpty {
             return .candidates(resolved)
         }
-        return .single(CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS))
+        return .single(CaptureDraft(kind: .text, title: url.host, sourceURL: url.absoluteString, sourceDevice: .iOS, acquisitionOrigin: .shareExtension))
     }
 
     #if DEBUG
@@ -276,8 +302,8 @@ final class ShareViewController: UIViewController {
     /// `jpegFastPathDraft`'s own doc comment for why this matters —
     /// this function's *behavior* (what ends up filed) is unchanged;
     /// only how it gets there for the common JPEG case is narrower.
-    private func imageDraft(from provider: NSItemProvider) async -> CaptureDraft? {
-        if let draft = await jpegFastPathDraft(from: provider) { return draft }
+    private func imageDraft(from provider: NSItemProvider, sourceURL: URL? = nil) async -> CaptureDraft? {
+        if let draft = await jpegFastPathDraft(from: provider, sourceURL: sourceURL) { return draft }
 
         let loaded = try? await provider.loadItem(forTypeIdentifier: UTType.image.identifier)
         var image: UIImage?
@@ -292,7 +318,13 @@ final class ShareViewController: UIViewController {
             kind: .screenshot,
             localFilename: saved.filename,
             pixelSize: saved.size,
-            sourceDevice: .iOS
+            // Image + URL Provenance Fix 01: `nil` for the ordinary
+            // image-only share (unchanged behavior); set only when the SAME
+            // share also carried a recognized provenance URL — see
+            // `extractProvenanceURL`. Never derived from image content.
+            sourceURL: sourceURL?.absoluteString,
+            sourceDevice: .iOS,
+            acquisitionOrigin: .shareExtension
         )
     }
 
@@ -310,7 +342,7 @@ final class ShareViewController: UIViewController {
     /// materializes. Returns `nil` (never throws) on anything short of
     /// full success, so `imageDraft(from:)` can fall back to the
     /// original path with no special-casing.
-    private func jpegFastPathDraft(from provider: NSItemProvider) async -> CaptureDraft? {
+    private func jpegFastPathDraft(from provider: NSItemProvider, sourceURL: URL? = nil) async -> CaptureDraft? {
         guard provider.hasItemConformingToTypeIdentifier(UTType.jpeg.identifier),
               let loaded = try? await provider.loadItem(forTypeIdentifier: UTType.jpeg.identifier) else {
             return nil
@@ -331,7 +363,14 @@ final class ShareViewController: UIViewController {
         }
 
         guard let filename, let pixelSize else { return nil }
-        return CaptureDraft(kind: .screenshot, localFilename: filename, pixelSize: pixelSize, sourceDevice: .iOS)
+        return CaptureDraft(
+            kind: .screenshot,
+            localFilename: filename,
+            pixelSize: pixelSize,
+            sourceURL: sourceURL?.absoluteString,
+            sourceDevice: .iOS,
+            acquisitionOrigin: .shareExtension
+        )
     }
 
     /// Share/Capture Reliability Foundation 01: `didComplete` guards
@@ -960,7 +999,7 @@ private struct ShareDrawerContent: View {
             guard candidates.indices.contains(selectedCandidateIndex) else { return nil }
             return await URLCherryResolver.materializeCandidate(
                 candidates[selectedCandidateIndex], title: resolved.title, sourceURL: resolved.sourceURL,
-                sourceDevice: .iOS, isEditorial: resolved.isEditorial
+                sourceDevice: .iOS, isEditorial: resolved.isEditorial, acquisitionOrigin: .shareExtension
             )
         case nil:
             return nil

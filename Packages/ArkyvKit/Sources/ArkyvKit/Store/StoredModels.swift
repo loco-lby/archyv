@@ -205,6 +205,16 @@ public final class StoredItem {
     public var cropHeight: Double = 1
 
     public var sourceDeviceRaw: String = SourcePlatform.unknown.rawValue
+    /// Provenance Foundation 01: same additive shape as `isEditorial`
+    /// above — an inline default at declaration (required for CloudKit's
+    /// own materialization path, which bypasses `init()`), no new
+    /// `VersionedSchema`/migration stage. Every pre-existing item reads
+    /// as `.unknown` — correctly: no old item was ever classified, and
+    /// this is NEVER backfilled by inference (see `acquisitionOrigin`'s
+    /// own doc comment on `AcquisitionOrigin`). Set 1:1 from
+    /// `CaptureDraft.acquisitionOrigin` by `Repository.fileCapture` —
+    /// the repository never infers this from `kind`/`sourceURL`.
+    public var acquisitionOriginRaw: String = AcquisitionOrigin.unknown.rawValue
     public var createdAt: Date = Date.now
     public var updatedAt: Date = Date.now
 
@@ -243,6 +253,7 @@ public final class StoredItem {
         aspectWidth: Double = 0,
         aspectHeight: Double = 0,
         sourceDevice: SourcePlatform = .unknown,
+        acquisitionOrigin: AcquisitionOrigin = .unknown,
         createdAt: Date = .now
     ) {
         self.id = id
@@ -262,6 +273,7 @@ public final class StoredItem {
         self.aspectWidth = aspectWidth
         self.aspectHeight = aspectHeight
         self.sourceDeviceRaw = sourceDevice.rawValue
+        self.acquisitionOriginRaw = acquisitionOrigin.rawValue
         self.createdAt = createdAt
         self.updatedAt = createdAt
         self.dirty = true
@@ -273,6 +285,11 @@ public final class StoredItem {
     public var kind: ItemKind {
         get { ItemKind(rawValue: kindRaw) ?? .image }
         set { kindRaw = newValue.rawValue }
+    }
+
+    public var acquisitionOrigin: AcquisitionOrigin {
+        get { AcquisitionOrigin(rawValue: acquisitionOriginRaw) ?? .unknown }
+        set { acquisitionOriginRaw = newValue.rawValue }
     }
 
     /// Convenience wrapper over `cropX`/`cropY`/`cropWidth`/`cropHeight`

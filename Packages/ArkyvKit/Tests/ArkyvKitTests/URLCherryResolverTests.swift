@@ -70,6 +70,26 @@ final class URLCherryResolverTests: XCTestCase {
         }
     }
 
+    /// Provenance Foundation Implementation 01 regression specimen: the
+    /// exact Spotify "Playlist" share shape found during the Spotify A/B
+    /// recon (`pi=` + `si=` + `utm_source=`, all real query params from a
+    /// genuine device share). `resolve()`'s `sourceURL` must remain
+    /// byte-for-byte identical to what was shared, even though
+    /// `LPMetadataProvider`'s OWN internal `metadata.url` (set to the same
+    /// value here, matching real `LPLinkMetadata` behavior in the fixture)
+    /// is never read by anything that persists.
+    func testResolvePreservesSpotifyStyleQueryStateExactly() async {
+        let raw = "https://open.spotify.com/playlist/3zgrbZpFHQSiW1VypLCVmw?si=OyIn40MRRkS8qpaMrhANyQ&utm_source=native-share-menu&pi=Vo9m4mEkRquhv"
+        let url = URL(string: raw)!
+        let metadata = makeMetadata(url: url, title: ".funSucker", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let (mediaStore, root) = makeIsolatedMediaStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
+        XCTAssertEqual(draft?.sourceURL, raw, "pi=/si=/utm_source= must all survive — this exact query state carries real user intent, not just tracking noise")
+    }
+
     func testResolveCarriesTitleThrough() async {
         let url = URL(string: "https://example.com/thing")!
         let metadata = makeMetadata(url: url, title: "Exact Title", imageProvider: imageProvider(bytes: Self.validPNGBytes))
@@ -281,6 +301,32 @@ final class URLCherryResolverTests: XCTestCase {
         XCTAssertEqual(resolved?.candidates.count, 1, "a throwing candidate source must never break resolution — just contribute zero extras")
     }
 
+    /// Provenance Foundation Implementation 01, test K: a matched
+    /// source-specific enricher (representative of Pinterest/Instagram/
+    /// YouTube/etc.) falling back to generic resolution still preserves
+    /// the exact original URL — proven directly, not just asserted, since
+    /// `EnrichedLinkContent` structurally has no URL field at all (only
+    /// `title`/`imageURL`), so no enricher, successful or not, can ever
+    /// substitute its own URL for `attemptResolveCandidates`'s original
+    /// `url` parameter. (A successfully-enriched draft's own `sourceURL`
+    /// is not independently re-verifiable here without a real network
+    /// fetch for the enricher's image — same limitation
+    /// `testNilTitleStillProducesDraft`'s doc comment already notes for
+    /// this suite; that path is confirmed on Device A instead.)
+    func testMatchedButFailingEnricherFallsBackWithOriginalSourceURLIntact() async {
+        let raw = "https://www.instagram.com/p/DbEB5nilGqS/?img_index=1"
+        let url = URL(string: raw)!
+        let metadata = makeMetadata(url: url, title: "Generic Title", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let enricher = FakeEnricher(matchesResult: true, result: .failure(FakeEnricher.Error.boom))
+
+        let resolved = await URLCherryResolver.resolveCandidates(
+            url, sourceDevice: .iOS, fetcher: fetcher, enrichers: [enricher], candidateSources: [], editorialDetector: FakeArticleDetector(result: nil)
+        )
+
+        XCTAssertEqual(resolved?.sourceURL, url)
+    }
+
     // MARK: - Editorial Cover V1
 
     /// Article Metadata hierarchy (Section 4): a clean JSON-LD headline
@@ -368,6 +414,37 @@ final class URLCherryResolverTests: XCTestCase {
 
         XCTAssertNotNil(draft?.localFilename)
         XCTAssertEqual(draft?.sourceURL, "https://example.com/thing")
+    }
+
+    /// Provenance Foundation Implementation 01: `materializeCandidate`
+    /// threads its caller-supplied `acquisitionOrigin` straight through —
+    /// `ShareViewController.resolveDraftForSaving()` is the real
+    /// production caller and always passes `.shareExtension`; defaults to
+    /// `.unknown` for every other caller (matching every other new field's
+    /// own default-value precedent) so this is opt-in, never inferred.
+    func testMaterializeCandidateThreadsAcquisitionOriginThrough() async {
+        let (mediaStore, root) = makeIsolatedMediaStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let candidate = ResolvedImageCandidate(id: "primary", source: .bytes(Self.validPNGBytes, typeHint: "png"))
+
+        let draft = await URLCherryResolver.materializeCandidate(
+            candidate, title: "T", sourceURL: URL(string: "https://example.com/thing")!, sourceDevice: .iOS,
+            acquisitionOrigin: .shareExtension, mediaStore: mediaStore
+        )
+
+        XCTAssertEqual(draft?.acquisitionOrigin, .shareExtension)
+    }
+
+    func testMaterializeCandidateDefaultsAcquisitionOriginToUnknown() async {
+        let (mediaStore, root) = makeIsolatedMediaStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let candidate = ResolvedImageCandidate(id: "primary", source: .bytes(Self.validPNGBytes, typeHint: "png"))
+
+        let draft = await URLCherryResolver.materializeCandidate(
+            candidate, title: "T", sourceURL: URL(string: "https://example.com/thing")!, sourceDevice: .iOS, mediaStore: mediaStore
+        )
+
+        XCTAssertEqual(draft?.acquisitionOrigin, .unknown)
     }
 }
 

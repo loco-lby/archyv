@@ -148,7 +148,8 @@ final class CaptureCoordinator {
                     kind: .screenshot,
                     localFilename: saved.filename,
                     pixelSize: CGSize(width: CGFloat(asset.pixelWidth), height: CGFloat(asset.pixelHeight)),
-                    sourceDevice: .iOS
+                    sourceDevice: .iOS,
+                    acquisitionOrigin: .actionCapture
                 )
                 Task { @MainActor in self.present(draft) }
             }

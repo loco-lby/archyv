@@ -148,7 +148,7 @@ struct CaptureSheetView: View {
         guard let data = try? await pickerItem.loadTransferable(type: Data.self),
               let image = UIImage(data: data),
               let saved = try? MediaStore.shared.save(image: image) else { return }
-        let draft = CaptureDraft(kind: .image, localFilename: saved.filename, pixelSize: saved.size, sourceDevice: .iOS)
+        let draft = CaptureDraft(kind: .image, localFilename: saved.filename, pixelSize: saved.size, sourceDevice: .iOS, acquisitionOrigin: .photoLibraryImport)
         capture.refreshSuggestion(for: draft)
         pickedDraft = draft
     }

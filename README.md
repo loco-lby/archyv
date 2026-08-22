@@ -2088,6 +2088,22 @@ app-target-only view this session) — verification is physical-device QA
 across this milestone's full round-trip plus code review, not an
 automated UI test.
 
+**Known follow-up — folder-selection UI has since drifted from this
+section's own description (found during Provenance Foundation
+Implementation 01's physical QA, unrelated to that milestone's actual
+change):** this section describes Action Button capture and Photo
+Library import sharing the modern, icon-free, grayscale
+`FolderSelectionRow` language (the same one the Share Extension's own
+drawer was later migrated to — see "Share Extension visual consistency
+follow-up" below). Confirmed on Device A that `ScreenshotCaptureFlowView`
+currently still presents the OLDER Arkyv-era treatment instead — orange
+folder icons, a floating folder panel, and a larger X/✓ treatment — for
+both Action Capture and Photo Library import. Not investigated further
+or fixed here; deliberately out of scope for Provenance Foundation. A
+future UI-unification pass should reconcile `ScreenshotCaptureFlowView`
+with the `FolderSelectionRow` language this section already claims it
+uses, the same way the Share Extension's own drawer was fixed.
+
 ## Link Cherry Pipeline Integrity (Foundation 01)
 
 **The regression:** physical-device re-testing of the original six
@@ -2633,3 +2649,58 @@ sources, not acted on yet:**
 **Verdict: GREEN for V1 as-is.** No Spotify production code exists or
 is planned; revisit only if real-world usage (not further
 reconnaissance) surfaces an actual problem.
+
+## Provenance Foundation (Implementation 01)
+
+Following Provenance Foundation Recon 01's Model A recommendation: every
+`StoredItem` now carries a durable historical fact — **how did this
+Cherry enter Cherries** — separate from what it visually is (`ItemKind`)
+and where it points (`sourceURL`).
+
+- **`StoredItem.acquisitionOrigin`** (`acquisitionOriginRaw: String` +
+  computed enum, same shape as `kindRaw`/`ItemKind` and
+  `sourceDeviceRaw`/`SourcePlatform`): `.actionCapture`,
+  `.photoLibraryImport`, `.shareExtension`, `.unknown`. Set once, at the
+  producer (`ScreenshotDetector`, `CaptureSheetView`,
+  `ShareViewController`), and carried through `CaptureDraft` into
+  `Repository.fileCapture` unchanged — the repository never infers it
+  from `kind`/`sourceURL`. **Producer assigns truth; repository preserves
+  truth.**
+- **`.unknown` means genuinely unknown** — the CloudKit-required inline
+  default every pre-existing record reads as, primarily for legacy/
+  migrated items. It is never assigned to a new capture whose mechanism
+  is actually known, and legacy items are never backfilled by inference
+  (recon proved `kind == .screenshot && sourceURL == nil` can be EITHER
+  a real Action Capture OR a Share-Extension image receipt — genuinely
+  ambiguous, so it stays `.unknown` rather than guessed).
+- **Source family stays derived, not persisted** — Instagram/Pinterest/
+  Spotify/etc. remain computable from `sourceURL` at read time
+  (`LinkCherryContext`) whenever needed; no per-source enum case was
+  added.
+- **Public eligibility does not exist yet.** This milestone only
+  preserves the historical facts a future policy could derive from
+  later — no `isPublic`/`isPublicEligible`/attribution/copyright concept
+  was added.
+- **Same-share image + URL now preserves both.** The recon's "REAL BUT
+  UNSEEN" hazard — `extractDraft()`'s image-provider branch returned
+  before URL/plain-text providers were ever inspected, silently
+  discarding a provenance URL supplied in the same share — is fixed.
+  `extractProvenanceURL(from:)` resolves the URL (deterministic
+  precedence: `public.url` first, then a `PlainTextURLRecognizer`-
+  confirmed `public.plain-text` URL — never arbitrary prose) BEFORE the
+  image branch runs, so an image+URL share now retains the source image
+  AND the exact URL AND `acquisitionOrigin: .shareExtension` together.
+  URL-only and image-only shares are behaviorally unchanged.
+- **Exact `sourceURL` remains immutable provenance** — protected, not
+  newly built: `PlainTextURLRecognizer` does zero normalization,
+  `EnrichedLinkContent` (every source enricher's return type) has no URL
+  field at all, so no enricher can ever substitute its own URL. Spotify's
+  `pi=`/`si=`/`utm_source=` query state is the concrete regression
+  specimen now covered by a dedicated test.
+- **Multi-`NSExtensionItem` sharing remains deferred** — `extractDraft()`
+  still only reads `inputItems.first`; multiple images/URLs/extension
+  items may represent multiple intended Cherries, a distinct problem
+  deliberately not solved here.
+- **Schema impact: none.** `ArkyvSchemaV1` is untouched — no version
+  bump, no migration stage, matching the `isEditorial`/`isFavorite`
+  precedent exactly (additive inline-defaulted field only).

@@ -176,6 +176,85 @@ final class RepositoryTests: XCTestCase {
         XCTAssertNil(item.imageData)
     }
 
+    // MARK: - Provenance Foundation 01: acquisitionOrigin persistence
+    //
+    // Repository.fileCapture must map CaptureDraft.acquisitionOrigin 1:1
+    // into StoredItem — never infer it from kind/sourceURL. "Producer
+    // assigns truth, repository preserves truth."
+
+    @MainActor
+    func testFileCaptureMapsActionCaptureOriginExactly() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .screenshot, acquisitionOrigin: .actionCapture),
+            into: folder
+        )
+        XCTAssertEqual(item.acquisitionOrigin, .actionCapture)
+    }
+
+    @MainActor
+    func testFileCaptureMapsPhotoLibraryImportOriginExactly() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .image, acquisitionOrigin: .photoLibraryImport),
+            into: folder
+        )
+        XCTAssertEqual(item.acquisitionOrigin, .photoLibraryImport)
+    }
+
+    @MainActor
+    func testFileCaptureMapsShareExtensionOriginExactly() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .screenshot, sourceURL: nil, acquisitionOrigin: .shareExtension),
+            into: folder
+        )
+        XCTAssertEqual(item.acquisitionOrigin, .shareExtension)
+    }
+
+    /// Repository never inspects kind/sourceURL to guess origin — a draft
+    /// with a sourceURL but an explicit non-shareExtension origin still
+    /// persists exactly what the producer said, proving there's no hidden
+    /// inference happening underneath the 1:1 mapping.
+    @MainActor
+    func testFileCaptureNeverInfersOriginFromSourceURLPresence() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(
+            CaptureDraft(kind: .image, sourceURL: "https://example.com/x", acquisitionOrigin: .photoLibraryImport),
+            into: folder
+        )
+        XCTAssertEqual(item.acquisitionOrigin, .photoLibraryImport)
+        XCTAssertEqual(item.sourceURL, "https://example.com/x")
+    }
+
+    /// A draft that never states its origin (every debug/test-harness
+    /// caller that predates this milestone) files as `.unknown` — the
+    /// same additive-default behavior as `isEditorial`/`isFavorite`.
+    @MainActor
+    func testFileCaptureWithoutExplicitOriginDefaultsToUnknown() throws {
+        let repo = try makeRepo()
+        let folder = try repo.createFolder(name: "Test", icon: .symbol("star"))
+        let item = try repo.fileCapture(CaptureDraft(kind: .screenshot), into: folder)
+        XCTAssertEqual(item.acquisitionOrigin, .unknown)
+    }
+
+    /// Legacy-item simulation: a StoredItem constructed the way a
+    /// pre-migration CloudKit row would decode — no acquisitionOrigin
+    /// ever supplied — must read back as `.unknown`, never guessed from
+    /// kind or sourceURL.
+    @MainActor
+    func testLegacyStoredItemWithoutOriginFieldReadsAsUnknown() throws {
+        let item = StoredItem(kind: .screenshot, localFilename: "legacy.jpg")
+        XCTAssertEqual(item.acquisitionOrigin, .unknown)
+
+        let itemWithURL = StoredItem(kind: .image, sourceURL: "https://example.com/legacy")
+        XCTAssertEqual(itemWithURL.acquisitionOrigin, .unknown)
+    }
+
     // MARK: - Crop foundation: CaptureDraft/Repository persistence
 
     /// A draft that never sets cropRegion (every current producer) files

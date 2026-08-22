@@ -196,7 +196,8 @@ public struct Repository {
             isEditorial: draft.isEditorial,
             aspectWidth: draft.pixelSize.map { Double($0.width) } ?? 0,
             aspectHeight: draft.pixelSize.map { Double($0.height) } ?? 0,
-            sourceDevice: draft.sourceDevice
+            sourceDevice: draft.sourceDevice,
+            acquisitionOrigin: draft.acquisitionOrigin
         )
         // Crop foundation: persists draft.cropRegion onto the new item.
         // draft.cropRegion defaults to .fullImage, so any draft that

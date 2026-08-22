@@ -244,7 +244,8 @@ final class ScreenshotDetector {
                     kind: .screenshot,
                     localFilename: saved.filename,
                     pixelSize: CGSize(width: CGFloat(asset.pixelWidth), height: CGFloat(asset.pixelHeight)),
-                    sourceDevice: .iOS
+                    sourceDevice: .iOS,
+                    acquisitionOrigin: .actionCapture
                 )
                 self.log("CaptureDraft created: \(draft.id)")
 

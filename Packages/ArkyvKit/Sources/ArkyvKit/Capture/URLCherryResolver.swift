@@ -133,6 +133,7 @@ public enum URLCherryResolver {
         sourceURL: URL,
         sourceDevice: SourcePlatform,
         isEditorial: Bool = false,
+        acquisitionOrigin: AcquisitionOrigin = .unknown,
         mediaStore: MediaStore = .shared
     ) async -> CaptureDraft? {
         let data: Data
@@ -179,7 +180,8 @@ public enum URLCherryResolver {
             title: title,
             sourceURL: sourceURL.absoluteString,
             sourceDevice: sourceDevice,
-            isEditorial: isEditorial
+            isEditorial: isEditorial,
+            acquisitionOrigin: acquisitionOrigin
         )
     }
 

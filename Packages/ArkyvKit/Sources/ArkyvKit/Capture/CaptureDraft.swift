@@ -16,6 +16,13 @@ public struct CaptureDraft: Identifiable, Sendable {
     public var sourceURL: String?
     public var tags: [String]
     public var sourceDevice: SourcePlatform
+    /// Provenance Foundation 01: how this draft's mechanism of entry into
+    /// Cherries is known at the moment of capture — see
+    /// `AcquisitionOrigin`'s own doc comment. Defaults to `.unknown` only
+    /// for callers that genuinely don't have a stronger truth to state
+    /// (debug/test harnesses); every real producer (`ScreenshotDetector`,
+    /// `CaptureSheetView`, `ShareViewController`) sets this explicitly.
+    public var acquisitionOrigin: AcquisitionOrigin
     /// Editorial Cover V1: `true` only when `URLCherryResolver` found a
     /// real, standards-based article signal (schema.org `Article`/
     /// `NewsArticle`/`BlogPosting` JSON-LD, or an `og:type="article"`
@@ -45,7 +52,8 @@ public struct CaptureDraft: Identifiable, Sendable {
         tags: [String] = [],
         sourceDevice: SourcePlatform = .unknown,
         cropRegion: CropRegion = .fullImage,
-        isEditorial: Bool = false
+        isEditorial: Bool = false,
+        acquisitionOrigin: AcquisitionOrigin = .unknown
     ) {
         self.id = id
         self.kind = kind
@@ -59,10 +67,17 @@ public struct CaptureDraft: Identifiable, Sendable {
         self.sourceDevice = sourceDevice
         self.cropRegion = cropRegion
         self.isEditorial = isEditorial
+        self.acquisitionOrigin = acquisitionOrigin
     }
 
-    /// A text/note draft from the quick-capture field.
-    public static func note(_ body: String, sourceDevice: SourcePlatform = .iOS) -> CaptureDraft {
-        CaptureDraft(kind: .note, noteBody: body, sourceDevice: sourceDevice)
+    /// A text/note draft from the quick-capture field. Provenance
+    /// Foundation Recon 01 found no current live call site for this
+    /// helper — every real `.note`-kind draft today is actually produced
+    /// inside `ShareViewController`'s own fallback branches, which set
+    /// `.shareExtension` directly rather than going through here. Kept at
+    /// `.unknown` rather than guessing a mechanism this unused helper has
+    /// never actually had.
+    public static func note(_ body: String, sourceDevice: SourcePlatform = .iOS, acquisitionOrigin: AcquisitionOrigin = .unknown) -> CaptureDraft {
+        CaptureDraft(kind: .note, noteBody: body, sourceDevice: sourceDevice, acquisitionOrigin: acquisitionOrigin)
     }
 }
