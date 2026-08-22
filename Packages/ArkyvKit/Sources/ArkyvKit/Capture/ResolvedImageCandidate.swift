@@ -43,11 +43,18 @@ public struct ResolvedURLCherry: Sendable {
     public let sourceURL: URL
     /// Ordered by confidence — index 0 is always the best single guess.
     public let candidates: [ResolvedImageCandidate]
+    /// Editorial Cover V1: `true` only when `EditorialArticleDetector`
+    /// found a real standards-based article signal for `sourceURL`.
+    /// Always `false` when an enricher (YouTube/Instagram/Pinterest)
+    /// produced this result — the detector never runs in that branch,
+    /// keeping those sources distinct from Editorial by construction.
+    public let isEditorial: Bool
 
-    public init(title: String?, sourceURL: URL, candidates: [ResolvedImageCandidate]) {
+    public init(title: String?, sourceURL: URL, candidates: [ResolvedImageCandidate], isEditorial: Bool = false) {
         self.title = title
         self.sourceURL = sourceURL
         self.candidates = candidates
+        self.isEditorial = isEditorial
     }
 }
 

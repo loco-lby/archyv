@@ -168,6 +168,18 @@ public final class StoredItem {
     public var sourceURL: String?
     public var tags: [String] = []
     public var isFavorite: Bool = false
+    /// Editorial Cover V1: `true` only when `URLCherryResolver` found a
+    /// real, standards-based article signal for this item's `sourceURL`
+    /// at capture time — see `CaptureDraft.isEditorial` and
+    /// `EditorialArticleDetector`. Same additive shape as `isFavorite`
+    /// above: an inline default value at declaration, no new
+    /// `VersionedSchema`/migration stage, every pre-existing item reads
+    /// as `false` (correctly — no old item was ever classified). One
+    /// Archive's masonry (`MasonryGrid`'s `aspect` closure) and cell
+    /// rendering (`ArchiveView`) are the only readers; `ItemDetailView`
+    /// deliberately never reads this — Item Detail always shows the
+    /// original hero image regardless.
+    public var isEditorial: Bool = false
 
     /// Aspect ratio hint for masonry layout (width/height), 0 if unknown.
     public var aspectWidth: Double = 0
@@ -227,6 +239,7 @@ public final class StoredItem {
         sourceURL: String? = nil,
         tags: [String] = [],
         isFavorite: Bool = false,
+        isEditorial: Bool = false,
         aspectWidth: Double = 0,
         aspectHeight: Double = 0,
         sourceDevice: SourcePlatform = .unknown,
@@ -245,6 +258,7 @@ public final class StoredItem {
         self.sourceURL = sourceURL
         self.tags = tags
         self.isFavorite = isFavorite
+        self.isEditorial = isEditorial
         self.aspectWidth = aspectWidth
         self.aspectHeight = aspectHeight
         self.sourceDeviceRaw = sourceDevice.rawValue

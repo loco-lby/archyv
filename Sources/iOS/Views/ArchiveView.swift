@@ -176,6 +176,19 @@ struct ArchiveView: View {
                         // title, date, or favorite badge. Content is the
                         // color and texture of this surface; anything more
                         // belongs in Item Detail.
+                        // Editorial Cover V1: a DERIVED presentation, not
+                        // a different stored item — `EditorialCoverView`
+                        // renders the exact same original hero bytes
+                        // `LocalImageView` always has, plus a live
+                        // overlay. Item Detail (below, via `ItemRoute`)
+                        // is completely unaffected by this branch — it
+                        // always renders the plain `LocalImageView` path,
+                        // never this cover.
+                        if item.isEditorial {
+                            EditorialCoverView(item: item)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
+                        } else {
                         // Performance Foundation 01: masonry tiles decode
                         // a small thumbnail (native ImageIO downsampling,
                         // cached) rather than a full-resolution bitmap for
@@ -202,6 +215,7 @@ struct ArchiveView: View {
                             // which other, unrelated UI still uses.
                             .clipShape(Rectangle())
                             .contentShape(Rectangle())
+                        }
                     }
                     .buttonStyle(.plain)
                 }

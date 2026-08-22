@@ -959,7 +959,8 @@ private struct ShareDrawerContent: View {
         case .candidates(let resolved):
             guard candidates.indices.contains(selectedCandidateIndex) else { return nil }
             return await URLCherryResolver.materializeCandidate(
-                candidates[selectedCandidateIndex], title: resolved.title, sourceURL: resolved.sourceURL, sourceDevice: .iOS
+                candidates[selectedCandidateIndex], title: resolved.title, sourceURL: resolved.sourceURL,
+                sourceDevice: .iOS, isEditorial: resolved.isEditorial
             )
         case nil:
             return nil

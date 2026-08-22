@@ -193,6 +193,7 @@ public struct Repository {
             title: draft.title,
             sourceURL: draft.sourceURL,
             tags: draft.tags,
+            isEditorial: draft.isEditorial,
             aspectWidth: draft.pixelSize.map { Double($0.width) } ?? 0,
             aspectHeight: draft.pixelSize.map { Double($0.height) } ?? 0,
             sourceDevice: draft.sourceDevice

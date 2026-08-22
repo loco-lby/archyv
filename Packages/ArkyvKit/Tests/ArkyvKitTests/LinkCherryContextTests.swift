@@ -215,4 +215,47 @@ final class LinkCherryContextTests: XCTestCase {
         let title = LinkCherryContext.displayTitle(title: "Welcome to the official Aeon homepage", sourceURL: "https://aeon.co/x")
         XCTAssertNil(title)
     }
+
+    // MARK: - Vice Editorial Title Anomaly 01
+    //
+    // Link Cherry Title Quality Repair 01 only recognized the
+    // registrable name as a TRAILING suffix ("Headline | Publication").
+    // Vice's real JSON-LD headline puts the name LEADING instead — real
+    // editorial house style, not decorative boilerplate — and was still
+    // being wrongly suppressed.
+
+    /// The exact real bug: Vice's real JSON-LD `headline`, confirmed via
+    /// direct fetch of the real page — previously suppressed the entire
+    /// title because "vice" (the registrable name) leads the sentence
+    /// with no separator for the existing trailing-suffix check to find.
+    func testViceRealHeadlineSurvives() {
+        let title = LinkCherryContext.displayTitle(
+            title: "VICE Album Reviews, August 21: Brandon Flowers, Sam Smith, GB and More",
+            sourceURL: "https://www.vice.com/en/article/vice-album-reviews-august-21-brandon-flowers-sam-smith-gb-and-more/"
+        )
+        XCTAssertEqual(title, "VICE Album Reviews, August 21: Brandon Flowers, Sam Smith, GB and More")
+    }
+
+    /// A bare site name with nothing after it must still be suppressed —
+    /// the length check on the remaining content after the leading name
+    /// is what tells "VICE" (alone) apart from "VICE Album Reviews...".
+    func testBareSiteNameAloneStillSuppressed() {
+        XCTAssertNil(LinkCherryContext.displayTitle(title: "VICE", sourceURL: "https://www.vice.com/x"))
+    }
+
+    /// A leading site name followed by only a tiny fragment must still
+    /// be suppressed — the same `minimumSuffixPrefixLength` threshold
+    /// the trailing-suffix case already uses, applied symmetrically.
+    func testLeadingSiteNamePlusTinyFragmentStillSuppressed() {
+        XCTAssertNil(LinkCherryContext.displayTitle(title: "VICE - Home", sourceURL: "https://www.vice.com/x"))
+    }
+
+    /// Word-boundary guard: the registrable name must lead as a whole
+    /// word, not merely as a prefix substring of a longer word.
+    func testLeadingNameMustBeWholeWordNotPrefixOfLongerWord() {
+        XCTAssertNil(LinkCherryContext.displayTitle(
+            title: "Vicereine's Guide to Everything Wonderful and Strange",
+            sourceURL: "https://www.vice.com/x"
+        ))
+    }
 }

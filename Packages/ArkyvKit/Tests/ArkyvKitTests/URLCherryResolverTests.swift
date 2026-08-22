@@ -43,7 +43,7 @@ final class URLCherryResolverTests: XCTestCase {
         let (mediaStore, root) = makeIsolatedMediaStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
 
         XCTAssertNotNil(draft)
         XCTAssertEqual(draft?.kind, .image)
@@ -65,7 +65,7 @@ final class URLCherryResolverTests: XCTestCase {
             let (mediaStore, root) = makeIsolatedMediaStore()
             defer { try? FileManager.default.removeItem(at: root) }
 
-            let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+            let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
             XCTAssertEqual(draft?.sourceURL, raw, "original URL string must survive unchanged")
         }
     }
@@ -77,7 +77,7 @@ final class URLCherryResolverTests: XCTestCase {
         let (mediaStore, root) = makeIsolatedMediaStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
         XCTAssertEqual(draft?.title, "Exact Title")
     }
 
@@ -89,7 +89,7 @@ final class URLCherryResolverTests: XCTestCase {
         let (mediaStore, root) = makeIsolatedMediaStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
         XCTAssertNil(draft)
     }
 
@@ -100,7 +100,7 @@ final class URLCherryResolverTests: XCTestCase {
         let (mediaStore, root) = makeIsolatedMediaStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
         XCTAssertNil(draft)
     }
 
@@ -113,7 +113,7 @@ final class URLCherryResolverTests: XCTestCase {
         let (mediaStore, root) = makeIsolatedMediaStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
         XCTAssertNil(draft)
     }
 
@@ -125,7 +125,7 @@ final class URLCherryResolverTests: XCTestCase {
         let (mediaStore, root) = makeIsolatedMediaStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
         XCTAssertNil(draft)
 
         // No orphaned MediaStore write for bytes that never validated as an image.
@@ -143,7 +143,7 @@ final class URLCherryResolverTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let start = Date()
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, timeout: 0.3)
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil), timeout: 0.3)
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertNil(draft)
@@ -166,7 +166,7 @@ final class URLCherryResolverTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let enricher = FakeEnricher(matchesResult: true, result: .failure(FakeEnricher.Error.boom))
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, enrichers: [enricher])
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, enrichers: [enricher], editorialDetector: FakeArticleDetector(result: nil))
 
         XCTAssertNotNil(draft, "generic resolution must still succeed after enrichment fails")
         XCTAssertEqual(draft?.title, "Generic Title")
@@ -182,7 +182,7 @@ final class URLCherryResolverTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let enricher = FakeEnricher(matchesResult: false, result: .failure(FakeEnricher.Error.boom))
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, enrichers: [enricher])
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, enrichers: [enricher], editorialDetector: FakeArticleDetector(result: nil))
 
         XCTAssertFalse(enricher.enrichWasCalled, "a non-matching enricher must never have enrich(_:) invoked")
         XCTAssertEqual(draft?.title, "Generic Title")
@@ -207,7 +207,7 @@ final class URLCherryResolverTests: XCTestCase {
         let (mediaStore, root) = makeIsolatedMediaStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore)
+        let draft = await URLCherryResolver.resolve(url, sourceDevice: .iOS, fetcher: fetcher, mediaStore: mediaStore, editorialDetector: FakeArticleDetector(result: nil))
 
         XCTAssertNotNil(draft?.localFilename)
         XCTAssertNil(draft?.title)
@@ -220,7 +220,7 @@ final class URLCherryResolverTests: XCTestCase {
         let metadata = makeMetadata(url: url, title: "T", imageProvider: imageProvider(bytes: Self.validPNGBytes))
         let fetcher = FakeFetcher(result: .success(metadata))
 
-        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [])
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [], editorialDetector: FakeArticleDetector(result: nil))
 
         XCTAssertEqual(resolved?.candidates.count, 1)
     }
@@ -232,7 +232,7 @@ final class URLCherryResolverTests: XCTestCase {
         let extraURLs = [URL(string: "https://example.com/alt1.jpg")!, URL(string: "https://example.com/alt2.jpg")!]
         let source = FakeCandidateSource(matchesResult: true, result: .success(extraURLs))
 
-        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source])
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source], editorialDetector: FakeArticleDetector(result: nil))
 
         XCTAssertEqual(resolved?.candidates.count, 3)
         XCTAssertEqual(resolved?.candidates.first?.id, "primary")
@@ -262,7 +262,7 @@ final class URLCherryResolverTests: XCTestCase {
         let fetcher = FakeFetcher(result: .success(metadata))
         let source = FakeCandidateSource(matchesResult: true, result: .success([URL(string: "https://example.com/possibly-the-same-photo.jpg")!]))
 
-        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source])
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source], editorialDetector: FakeArticleDetector(result: nil))
 
         XCTAssertEqual(
             resolved?.candidates.count, 2,
@@ -276,9 +276,85 @@ final class URLCherryResolverTests: XCTestCase {
         let fetcher = FakeFetcher(result: .success(metadata))
         let source = FakeCandidateSource(matchesResult: true, result: .failure(FakeEnricher.Error.boom))
 
-        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source])
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [source], editorialDetector: FakeArticleDetector(result: nil))
 
         XCTAssertEqual(resolved?.candidates.count, 1, "a throwing candidate source must never break resolution — just contribute zero extras")
+    }
+
+    // MARK: - Editorial Cover V1
+
+    /// Article Metadata hierarchy (Section 4): a clean JSON-LD headline
+    /// outranks the generic `LPMetadataProvider` title, and `isEditorial`
+    /// is set — the two things One Archive's rendering needs.
+    func testEditorialSignalOverridesGenericTitleAndSetsIsEditorial() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "Generic LPMetadataProvider Title", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let detector = FakeArticleDetector(result: EditorialSignal(headline: "The Clean JSON-LD Headline"))
+
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [], editorialDetector: detector)
+
+        XCTAssertEqual(resolved?.title, "The Clean JSON-LD Headline")
+        XCTAssertEqual(resolved?.isEditorial, true)
+    }
+
+    /// The `og:type="article"` fallback case: `EditorialSignal(headline:
+    /// nil)` still sets `isEditorial`, but never overrides the generic
+    /// title — only a real JSON-LD `headline` is trusted for that
+    /// (matches Real Life's real shape: no JSON-LD, only `og:type`).
+    func testEditorialSignalWithNoHeadlineStillSetsIsEditorialButKeepsGenericTitle() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "Generic Title", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let detector = FakeArticleDetector(result: EditorialSignal(headline: nil))
+
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [], editorialDetector: detector)
+
+        XCTAssertEqual(resolved?.title, "Generic Title")
+        XCTAssertEqual(resolved?.isEditorial, true)
+    }
+
+    /// No editorial signal at all (the real shape for It's Nice That,
+    /// National Geographic's photo gallery, and every ecommerce page
+    /// tested) — `isEditorial` stays `false`, title is untouched.
+    func testNoEditorialSignalLeavesGenericTitleAndIsEditorialFalse() async {
+        let url = URL(string: "https://example.com/thing")!
+        let metadata = makeMetadata(url: url, title: "Generic Title", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let detector = FakeArticleDetector(result: nil)
+
+        let resolved = await URLCherryResolver.resolveCandidates(url, sourceDevice: .iOS, fetcher: fetcher, candidateSources: [], editorialDetector: detector)
+
+        XCTAssertEqual(resolved?.title, "Generic Title")
+        XCTAssertEqual(resolved?.isEditorial, false)
+    }
+
+    /// Six-families-distinct guard: a THROWING enricher match falls
+    /// through to the generic path (existing, unchanged behavior — see
+    /// `testThrowingEnricherFallsBackToGenericResolution`), so the
+    /// editorial detector correctly DOES run there. A successfully
+    /// MATCHED-and-enriched URL never reaches that fallback at all —
+    /// provable directly from `attemptResolveCandidates`'s own control
+    /// flow (the enricher-success branch `return`s before the editorial
+    /// detector is ever referenced), not something a network-free unit
+    /// test can independently re-verify, since `fetchEnrichedImage` has
+    /// no injectable seam for its own image fetch (matching every other
+    /// enricher test in this codebase, which stop at the enricher's own
+    /// pure `matches`/meta-parsing functions rather than a full
+    /// `resolveCandidates` round-trip).
+    func testEditorialDetectorStillRunsWhenEnricherThrowsAndFallsBackToGeneric() async {
+        let url = URL(string: "https://example.com/thing")!
+        let enricher = FakeEnricher(matchesResult: true, result: .failure(FakeEnricher.Error.boom))
+        let metadata = makeMetadata(url: url, title: "Generic Title", imageProvider: imageProvider(bytes: Self.validPNGBytes))
+        let fetcher = FakeFetcher(result: .success(metadata))
+        let detector = FakeArticleDetector(result: EditorialSignal(headline: "Clean Headline"))
+
+        let resolved = await URLCherryResolver.resolveCandidates(
+            url, sourceDevice: .iOS, fetcher: fetcher, enrichers: [enricher], candidateSources: [], editorialDetector: detector
+        )
+
+        XCTAssertEqual(resolved?.isEditorial, true, "a failed enricher correctly falls through to the generic path, where editorial detection still applies")
+        XCTAssertEqual(resolved?.title, "Clean Headline")
     }
 
     func testMaterializeCandidateFromBytesNeedsNoNetworkAndSavesToMediaStore() async {
@@ -359,6 +435,22 @@ private final class FakeEnricher: SourceEnricher, @unchecked Sendable {
         case .failure(let error): throw error
         }
     }
+}
+
+/// Editorial Cover V1. `nil` (the default every pre-existing test above
+/// now passes explicitly) means "no editorial signal" — matches
+/// `EditorialArticleDetector`'s own real behavior for a page with no
+/// article markup, and keeps every test that predates this milestone
+/// from making a real, non-deterministic network call to whatever
+/// `FakeFetcher` URL it happens to use.
+private final class FakeArticleDetector: ArticleDetecting, @unchecked Sendable {
+    private let result: EditorialSignal?
+
+    init(result: EditorialSignal?) {
+        self.result = result
+    }
+
+    func detect(for url: URL) async -> EditorialSignal? { result }
 }
 
 private final class FakeCandidateSource: CandidateImageSource, @unchecked Sendable {

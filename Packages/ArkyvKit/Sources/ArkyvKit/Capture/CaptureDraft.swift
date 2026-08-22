@@ -16,6 +16,15 @@ public struct CaptureDraft: Identifiable, Sendable {
     public var sourceURL: String?
     public var tags: [String]
     public var sourceDevice: SourcePlatform
+    /// Editorial Cover V1: `true` only when `URLCherryResolver` found a
+    /// real, standards-based article signal (schema.org `Article`/
+    /// `NewsArticle`/`BlogPosting` JSON-LD, or an `og:type="article"`
+    /// fallback) for this capture's `sourceURL` — see
+    /// `EditorialArticleDetector`. Never inferred from merely having a
+    /// `sourceURL` + `title`, never a domain allowlist. Defaults to
+    /// `false` so every non-URL draft producer (screenshots, Photos
+    /// import, notes) needs no change.
+    public var isEditorial: Bool
     /// The user's point of view into `localFilename`'s original pixels —
     /// see `CropRegion`. Defaults to `.fullImage`, so a draft that never
     /// sets this behaves exactly as every capture does today: the whole
@@ -35,7 +44,8 @@ public struct CaptureDraft: Identifiable, Sendable {
         sourceURL: String? = nil,
         tags: [String] = [],
         sourceDevice: SourcePlatform = .unknown,
-        cropRegion: CropRegion = .fullImage
+        cropRegion: CropRegion = .fullImage,
+        isEditorial: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -48,6 +58,7 @@ public struct CaptureDraft: Identifiable, Sendable {
         self.tags = tags
         self.sourceDevice = sourceDevice
         self.cropRegion = cropRegion
+        self.isEditorial = isEditorial
     }
 
     /// A text/note draft from the quick-capture field.

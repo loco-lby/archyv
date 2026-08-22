@@ -42,6 +42,14 @@ public enum URLCherryResolver {
     /// so there is nothing for a candidate source to usefully add there.
     public static let defaultCandidateSources: [CandidateImageSource] = [ProductPageCandidateSource()]
 
+    /// Editorial Cover V1: checked only in the same generic-fallback
+    /// branch `candidateSources` already runs in — never for a URL an
+    /// enricher (YouTube/Instagram/Pinterest) already matched, keeping
+    /// those three sources distinct exactly as before. See
+    /// `EditorialArticleDetector`'s own doc comment for the detection
+    /// rule and its evidence.
+    public static let defaultEditorialDetector = EditorialArticleDetector()
+
     /// Attempts to resolve `url` into an image-backed draft using ONLY
     /// the single best-guess candidate — the exact behavior this type
     /// has always had, and still what every existing caller/test uses.
@@ -57,14 +65,19 @@ public enum URLCherryResolver {
         fetcher: LinkMetadataFetching = LPMetadataProvider(),
         mediaStore: MediaStore = .shared,
         enrichers: [SourceEnricher] = defaultEnrichers,
+        editorialDetector: any ArticleDetecting = defaultEditorialDetector,
         timeout: TimeInterval = defaultTimeout
     ) async -> CaptureDraft? {
         guard let resolved = await resolveCandidates(
-            url, sourceDevice: sourceDevice, fetcher: fetcher, enrichers: enrichers, candidateSources: [], timeout: timeout
+            url, sourceDevice: sourceDevice, fetcher: fetcher, enrichers: enrichers, candidateSources: [],
+            editorialDetector: editorialDetector, timeout: timeout
         ), let primary = resolved.candidates.first else {
             return nil
         }
-        return await materializeCandidate(primary, title: resolved.title, sourceURL: url, sourceDevice: sourceDevice, mediaStore: mediaStore)
+        return await materializeCandidate(
+            primary, title: resolved.title, sourceURL: url, sourceDevice: sourceDevice,
+            isEditorial: resolved.isEditorial, mediaStore: mediaStore
+        )
     }
 
     /// Link Cherry Visual Picker 01: resolves `url` into an ORDERED list
@@ -87,11 +100,15 @@ public enum URLCherryResolver {
         fetcher: LinkMetadataFetching = LPMetadataProvider(),
         enrichers: [SourceEnricher] = defaultEnrichers,
         candidateSources: [CandidateImageSource] = defaultCandidateSources,
+        editorialDetector: any ArticleDetecting = defaultEditorialDetector,
         timeout: TimeInterval = defaultTimeout
     ) async -> ResolvedURLCherry? {
         await withTaskGroup(of: ResolvedURLCherry?.self) { group in
             group.addTask {
-                await attemptResolveCandidates(url, fetcher: fetcher, enrichers: enrichers, candidateSources: candidateSources)
+                await attemptResolveCandidates(
+                    url, fetcher: fetcher, enrichers: enrichers, candidateSources: candidateSources,
+                    editorialDetector: editorialDetector
+                )
             }
             group.addTask {
                 try? await Task.sleep(for: .seconds(timeout))
@@ -115,6 +132,7 @@ public enum URLCherryResolver {
         title: String?,
         sourceURL: URL,
         sourceDevice: SourcePlatform,
+        isEditorial: Bool = false,
         mediaStore: MediaStore = .shared
     ) async -> CaptureDraft? {
         let data: Data
@@ -160,7 +178,8 @@ public enum URLCherryResolver {
             pixelSize: pixelSize,
             title: title,
             sourceURL: sourceURL.absoluteString,
-            sourceDevice: sourceDevice
+            sourceDevice: sourceDevice,
+            isEditorial: isEditorial
         )
     }
 
@@ -168,7 +187,8 @@ public enum URLCherryResolver {
         _ url: URL,
         fetcher: LinkMetadataFetching,
         enrichers: [SourceEnricher],
-        candidateSources: [CandidateImageSource]
+        candidateSources: [CandidateImageSource],
+        editorialDetector: any ArticleDetecting
     ) async -> ResolvedURLCherry? {
         if let enricher = enrichers.first(where: { $0.matches(url) }) {
             if let primary = await fetchEnrichedImage(url, enricher: enricher) {
@@ -181,14 +201,31 @@ public enum URLCherryResolver {
         guard let primary = await fetchGenericImage(url, fetcher: fetcher) else { return nil }
         var candidates = [ResolvedImageCandidate(id: "primary", source: .bytes(primary.data, typeHint: primary.ext))]
 
-        if let source = candidateSources.first(where: { $0.matches(url) }) {
-            if let extraURLs = try? await source.candidateImageURLs(for: url), !Task.isCancelled {
-                let extraCandidates = extraURLs.map { ResolvedImageCandidate(id: CandidateAssembly.dedupeKey(for: $0), source: .url($0)) }
-                candidates = CandidateAssembly.merging(candidates, with: extraCandidates)
-                debugLog("candidate source found \(extraCandidates.count) additional, \(candidates.count) total after merge for \(url.absoluteString)")
-            }
+        // The two independent page-HTML fetches below (ecommerce
+        // candidate images, editorial article detection) run
+        // concurrently — neither depends on the other's result, and
+        // serializing them would double the added latency for no reason.
+        async let extraURLsTask: [URL]? = {
+            guard let source = candidateSources.first(where: { $0.matches(url) }) else { return nil }
+            return try? await source.candidateImageURLs(for: url)
+        }()
+        async let editorialSignalTask: EditorialSignal? = editorialDetector.detect(for: url)
+
+        if let extraURLs = await extraURLsTask, !Task.isCancelled {
+            let extraCandidates = extraURLs.map { ResolvedImageCandidate(id: CandidateAssembly.dedupeKey(for: $0), source: .url($0)) }
+            candidates = CandidateAssembly.merging(candidates, with: extraCandidates)
+            debugLog("candidate source found \(extraCandidates.count) additional, \(candidates.count) total after merge for \(url.absoluteString)")
         }
-        return ResolvedURLCherry(title: primary.title, sourceURL: url, candidates: candidates)
+
+        let editorialSignal = await editorialSignalTask
+        // Article Metadata hierarchy (Editorial Cover V1): a clean
+        // standards-based JSON-LD headline outranks whatever the generic
+        // `LPMetadataProvider` title happened to be — Editorial Eden
+        // Recon 01 found JSON-LD `headline` clean in 11/11 real cases it
+        // was present. Falls back to the unmodified generic title
+        // otherwise, exactly as before this milestone.
+        let title = editorialSignal?.headline ?? primary.title
+        return ResolvedURLCherry(title: title, sourceURL: url, candidates: candidates, isEditorial: editorialSignal != nil)
     }
 
     /// A matched enricher gets exactly one attempt; ANY failure (thrown

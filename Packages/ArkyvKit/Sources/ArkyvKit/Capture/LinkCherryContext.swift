@@ -65,6 +65,16 @@ public enum LinkCherryContext {
     /// rely on it: the answer must be "is this title genuinely
     /// content-free," never "does this title mention the source" — see
     /// `hasSubstantialContentBeforeSourceSuffix`.
+    ///
+    /// Vice Editorial Title Anomaly 01: that repair only recognized the
+    /// registrable name as a TRAILING "Headline | Publication" suffix.
+    /// Vice's real JSON-LD headline, "VICE Album Reviews, August 21:
+    /// Brandon Flowers, Sam Smith, GB and More," puts the name LEADING
+    /// instead — real editorial house style (matching "BuzzFeed
+    /// Explains", "WIRED Presents"), not decorative boilerplate — and
+    /// was still being wrongly suppressed for want of a separator to
+    /// find. See `hasSubstantialContentAfterLeadingSourceName`, the
+    /// mirror image of the trailing check.
     public static func displayTitle(title: String?, sourceURL: String?) -> String? {
         guard let domain = displayDomain(sourceURL: sourceURL) else { return nil }
         guard let title else { return nil }
@@ -88,6 +98,9 @@ public enum LinkCherryContext {
         // separator anywhere — and the original, more cautious
         // suppression still applies.
         if hasSubstantialContentBeforeSourceSuffix(trimmed, sourceName: name) {
+            return trimmed
+        }
+        if hasSubstantialContentAfterLeadingSourceName(trimmed, sourceName: name) {
             return trimmed
         }
         return nil
@@ -127,6 +140,29 @@ public enum LinkCherryContext {
         let suffix = trimmed[trimmed.index(after: separatorIndex)...]
         guard prefix.count >= minimumSuffixPrefixLength else { return false }
         return suffix.range(of: sourceName, options: .caseInsensitive) != nil
+    }
+
+    /// Vice Editorial Title Anomaly 01: the mirror image of the
+    /// trailing-suffix case above — the registrable name leads the
+    /// title as a whole word (a real word-boundary check, so "Vice"
+    /// never matches inside "Vicereine"), followed by substantial real
+    /// content. Real evidence: Vice's own JSON-LD `headline`, "VICE
+    /// Album Reviews, August 21: Brandon Flowers, Sam Smith, GB and
+    /// More" — the publication's name integrated into the headline
+    /// itself as house style (a real, recurring editorial convention —
+    /// "BuzzFeed Explains", "WIRED Presents" are the same shape), not
+    /// decorative suffix boilerplate and not Instagram's "<name>
+    /// Documented on Instagram" template (which has no substantial
+    /// content at all, leading or trailing).
+    private static func hasSubstantialContentAfterLeadingSourceName(_ trimmed: String, sourceName: String) -> Bool {
+        guard let range = trimmed.range(of: sourceName, options: [.caseInsensitive, .anchored]) else { return false }
+        let rest = trimmed[range.upperBound...]
+        // The title is just the bare name (nothing follows), or the
+        // "match" is really the prefix of a longer word ("Vicereine")
+        // — neither is a genuine leading-name-then-content shape.
+        guard let nextChar = rest.first, !nextChar.isLetter, !nextChar.isNumber else { return false }
+        let remaining = rest.trimmingCharacters(in: .whitespaces)
+        return remaining.count >= minimumSuffixPrefixLength
     }
 
     /// A rough, non-PSL-aware "second-to-last label" heuristic —

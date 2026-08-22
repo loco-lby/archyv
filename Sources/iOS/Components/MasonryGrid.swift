@@ -47,6 +47,11 @@ struct MasonryGrid<Item: Identifiable, Content: View>: View {
         self.availableWidth = availableWidth
         self.content = content
         self.aspect = { item in
+            // Editorial Cover V1: intentionally 1:1, regardless of the
+            // original hero image's own aspect ratio — checked first,
+            // ahead of the ordinary kind-based sizing below, matching
+            // `EditorialCoverView`'s own square frame exactly.
+            if item.isEditorial { return 1 }
             switch item.kind {
             case .screenshot, .image: return CGFloat(item.aspectRatio > 0 ? item.aspectRatio : 1)
             case .note, .text: return 1.15 // roughly square-ish text card
