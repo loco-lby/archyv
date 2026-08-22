@@ -2552,3 +2552,84 @@ product/environment photos remain selectable; Darc Sport's real
 multi-photo gallery remains intact. **GREEN** — "expose ambiguity only
 when the ambiguity is meaningful." `hasVariant`/colorway-aware
 selection remains explicitly out of scope for a future pass.
+
+## Spotify Listening Room — V1 Decision (Recon 01)
+
+**Closed for V1: Spotify stays on the fully generic Link Cherry path.
+No Spotify-specific code was written or is currently planned.** This
+section records why, so the question isn't re-litigated from scratch
+next time Spotify comes up.
+
+Three rounds of reconnaissance — public-page/oEmbed research, then two
+real-device passes on Device A using the actual Spotify iOS Share
+Sheet — found the existing generic pipeline (`PlainTextURLRecognizer` →
+`URLCherryResolver` → `LPMetadataProvider`) already credible enough for
+tracks and albums, with playlists carrying one real, evidence-backed
+nuance worth understanding but not worth building around yet:
+
+- **Real share shape, confirmed on-device:** Spotify's iOS Share Sheet
+  hands the extension exactly one `public.plain-text` provider — never
+  `public.url`, never a raw image payload — carrying an ordinary
+  `open.spotify.com/{track,album,playlist}/…` URL (`spotify.link` short
+  links never appeared in testing). The existing
+  YouTube-precedent `PlainTextURLRecognizer` fallback already handles
+  this with zero changes. No candidate picker ever appeared — candidate
+  count was 1 for every real Spotify share tested.
+- **Tracks:** generic `LPMetadataProvider` returns clean canonical
+  square artwork and a correct title; artist is not present in stored
+  metadata (only the bare track name). Accepted as a real but tolerable
+  V1 gap, not a defect.
+- **Albums:** strong out of the box — `LPMetadataProvider`'s own title
+  already bakes in `"<Album> - Album by <Artist>"`, so artist context
+  survives for free. **GREEN**, no changes wanted.
+- **Playlists — the one genuinely interesting finding:** Spotify's own
+  Share UI offers two representations, "Playlist" and "Playlist
+  artwork." A real device A/B test (same playlist, same session) found
+  both are still ordinary `public.plain-text` URL-only shares — Spotify
+  never hands over a raw image payload either way — but the URL itself
+  differs: "Playlist" includes a `pi=` query parameter, "Playlist
+  artwork" omits it. `LPMetadataProvider`'s independent fetch resolves
+  those two URL shapes to visibly different images (a 1024×1024
+  Spotify-branded share-card composite with `pi=` present vs. a
+  smaller, plainer ~300×300 representation without it). Cherries
+  therefore already respects whichever representation the user picked
+  in Spotify, automatically, with zero Spotify-specific code — the
+  right move is to leave this alone, not build a picker or reconstruct
+  artwork ourselves.
+- **Provenance:** `StoredItem.sourceURL` preserves the exact originally
+  shared URL byte-for-byte, `pi=` and all — confirmed directly on
+  every real specimen tested, never a canonicalized/stripped
+  substitute.
+- **30-second previews:** technically reachable opportunistically (a
+  public, unauthenticated `og:audio` preview clip was present on 7 of 8
+  real tracks tested) but not through any sanctioned mechanism — the
+  Web API's `preview_url` is effectively deprecated. Deferred; not part
+  of this decision.
+- **Explicitly rejected for V1, all of them:** Spotify oEmbed, the
+  Spotify Web API, the Spotify iOS SDK, a Spotify-specific
+  resolver/enricher, CDN artwork URL rewriting, and any Spotify
+  branding/attribution logic. None are necessary given how well the
+  generic path already performs, and Spotify's own developer-platform
+  terms (mandatory logo/link-back, no cropping or overlaying artwork)
+  sit in real, unresolved tension with Cherries' plain-artwork visual
+  philosophy — not worth taking on for a V1 that doesn't need it.
+
+**Two broader architectural lessons surfaced, kept here for future
+sources, not acted on yet:**
+
+1. Meaningful user intent can live entirely inside a shared URL's own
+   query string (Spotify's `pi=`) rather than in the payload's type or
+   shape. Never casually normalize/canonicalize a shared URL down to
+   something "cleaner" — the exact string can be the signal.
+2. `extractDraft()`'s existing provider-selection order (image
+   providers checked before URL/plain-text ones) would silently
+   discard a source URL if a future share ever attached both a real
+   `public.image` provider *and* a separate provenance-carrying URL
+   provider in the same payload. Not a Spotify bug — Spotify never
+   triggers this today — but a real, general risk for a future source
+   that does. Tracked for the next chapter, **Provenance Foundation**,
+   not fixed here.
+
+**Verdict: GREEN for V1 as-is.** No Spotify production code exists or
+is planned; revisit only if real-world usage (not further
+reconnaissance) surfaces an actual problem.
