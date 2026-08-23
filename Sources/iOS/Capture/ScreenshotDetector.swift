@@ -227,23 +227,46 @@ final class ScreenshotDetector {
                     completion(false)
                     return
                 }
-                guard let image = UIImage(data: data) else {
+                // Media Preservation Foundation 01: `data` here is Photos'
+                // own real encoded bytes for this asset — this previously
+                // decoded them to `UIImage` only to validate decodability,
+                // then discarded them and re-encoded via
+                // `MediaStore.save(image:)`'s unconditional JPEG path
+                // (the same anti-pattern the Long Tail recon found and
+                // physically confirmed for Photos import/Share Extension).
+                // Real screenshots are typically opaque PNG, so the
+                // practical damage here has been smaller than the GIF/PNG
+                // cases — but the fix is the exact same generalized
+                // machinery, applied consistently rather than left as the
+                // one remaining silent-JPEG-flatten path. Falls back to
+                // the previous decode-then-JPEG behavior only if the bytes
+                // are genuinely undecodable as an image at all.
+                // Original behavior preserved: pixel size still comes from
+                // the PHAsset's own reported dimensions, not re-derived —
+                // only WHICH bytes get persisted, and how, changes below.
+                let assetPixelSize = CGSize(width: CGFloat(asset.pixelWidth), height: CGFloat(asset.pixelHeight))
+                let filename: String?
+                if ImageDecoding.pixelSize(ofData: data) != nil {
+                    let ext = ImageDecoding.fileExtension(ofData: data)
+                    filename = try? MediaStore.shared.save(data: data, ext: ext)
+                } else if let image = UIImage(data: data), let saved = try? MediaStore.shared.save(image: image) {
+                    filename = saved.filename
+                } else {
                     self.log("UIImage decode FAILED for \(asset.localIdentifier) (\(data.count) bytes)")
                     completion(false)
                     return
                 }
-                self.log("image data loaded OK (\(data.count) bytes)")
-                guard let saved = try? MediaStore.shared.save(image: image) else {
+                guard let filename else {
                     self.log("MediaStore.save FAILED for \(asset.localIdentifier)")
                     completion(false)
                     return
                 }
-                self.log("MediaStore staged as \(saved.filename)")
+                self.log("image data loaded OK (\(data.count) bytes), staged as \(filename)")
 
                 let draft = CaptureDraft(
                     kind: .screenshot,
-                    localFilename: saved.filename,
-                    pixelSize: CGSize(width: CGFloat(asset.pixelWidth), height: CGFloat(asset.pixelHeight)),
+                    localFilename: filename,
+                    pixelSize: assetPixelSize,
                     sourceDevice: .iOS,
                     acquisitionOrigin: .actionCapture
                 )

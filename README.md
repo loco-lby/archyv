@@ -2772,3 +2772,62 @@ none of these should trigger opportunistic source-specific fixes.
 understand or perfectly display something, but it must never silently
 destroy information the user gave it. The raw-image ingestion bug is
 the one concrete violation of that invariant found this session.
+
+## Media Preservation Foundation 01
+
+Fixes the Long Tail recon's HULL BREACH: Camera Roll import
+(`CaptureSheetView`) and Share Extension raw-image receipt
+(`ShareViewController`) both routed through `MediaStore.save(image:)`,
+which unconditionally calls `UIImage.jpegData()` — silently flattening
+an animated GIF to its first frame and stripping a transparent PNG's
+alpha, confirmed both by code inspection and physical Device A testing.
+Action Capture (`ScreenshotDetector`) had the identical anti-pattern —
+real encoded bytes already loaded, then discarded and re-encoded — and
+was fixed the same way, since it's literally the same generalized
+machinery being shared, not a new one.
+
+**Core invariant:** encoded media supplied to Cherries should remain
+encoded media. Decoding is for presentation; it must not automatically
+become persistence. All three producers now route through
+`MediaStore.save(data:)` — already byte-preserving, the same mechanism
+the Link Cherry / URL-based media path has always used — whenever a
+real encoded representation is available, falling back to the previous
+decode-then-JPEG behavior only when genuinely no encoded bytes exist
+(e.g. an already-decoded `UIImage` with nothing behind it). The true
+format is read from the bytes themselves via a new shared
+`ImageDecoding.fileExtension(ofData:)` (ImageIO's `CGImageSourceGetType`
+— never a filename guess or a possibly-generic declared content type),
+so PNG/GIF/WebP/JPEG all get their real, truthful extension.
+
+**Preserved today:** JPEG, PNG (including alpha), GIF (including all
+animation frames), static and animated WebP. Deliberately not extended
+to HEIC or other formats not named in the recon — same mechanism would
+trivially cover HEIC later, but wasn't asked for and has no regression
+fixture yet.
+
+**Known, accepted limitation:** the renderer (`ImageDecoding.decode()` /
+`UIImage(data:)`, used everywhere including `LocalImageView`) is
+single-frame only — a perfectly-preserved animated GIF still displays
+as a static first frame today. This is deliberate and deferred, not an
+oversight: **Animation Rendering 01** is explicitly queued as the next
+high-priority media milestone — real playback (One Archive tasteful
+movement without a "casino" effect, faithful Item Detail playback, no
+autoplay audio, performance/battery-aware) requires its own product and
+design pass and is not part of this foundation.
+
+**Legacy items cannot be recovered** — a GIF already flattened to JPEG
+before this milestone has no frames left to restore. No migration was
+run or is planned; this affects new saves going forward only.
+
+**Verified:** a dedicated `MediaPreservationTests.swift` proves
+byte-identity (SHA-256) end to end for JPEG/PNG/GIF/WebP through
+`MediaStore.save(data:)`, alpha survival, frame-count survival, that
+cropping never rewrites original bytes, and that the existing Link
+Cherry path handles a real animated GIF exactly like Camera Roll/Share
+Extension now do. **Confirmed on a real device** (Sammy's iPhone 14
+Max, substituting for Device A which was unreachable that session): a
+Camera Roll-imported transparent PNG read back with `hasAlpha: true`,
+and an imported animated GIF read back with `frameCount: 37` — both via
+a temporary on-demand readback diagnostic, not just the (deliberately
+still-static) UI. No `StoredItem`/CloudKit schema change was needed —
+`ArkyvSchema.swift` is untouched, confirmed directly.

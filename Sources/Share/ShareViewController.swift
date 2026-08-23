@@ -293,17 +293,23 @@ final class ShareViewController: UIViewController {
     }
     #endif
 
-    /// Share/Capture Reliability Foundation 01: prefers a decode-free
-    /// fast path (`jpegFastPathDraft`) when the shared attachment is
-    /// already a JPEG, and only falls back to the original
-    /// decode-then-re-encode path for anything else (HEIC, PNG, an
-    /// already-decoded `UIImage` handed back directly, or if the fast
-    /// path couldn't get usable bytes for any reason). See
-    /// `jpegFastPathDraft`'s own doc comment for why this matters —
-    /// this function's *behavior* (what ends up filed) is unchanged;
-    /// only how it gets there for the common JPEG case is narrower.
+    /// Media Preservation Foundation 01: prefers a decode-free fast path
+    /// (`encodedFastPathDraft`) for any format Cherries knows it can
+    /// safely persist as-is — JPEG, PNG, GIF, WebP, in that order — and
+    /// only falls back to the decode-then-re-encode path below for a
+    /// provider that genuinely offers nothing more specific than generic
+    /// `public.image` (HEIC and other formats not yet on the preservable
+    /// list, or an already-decoded `UIImage` handed back directly with no
+    /// encoded representation at all). Was JPEG-only
+    /// (`jpegFastPathDraft`); generalized because the exact same
+    /// anti-pattern this fast path already existed to avoid for JPEG —
+    /// decode to `UIImage` then `jpegData()` back — was silently
+    /// destroying GIF animation and PNG/WebP transparency for every other
+    /// format (Long Tail · Universal Capture Recon 01, confirmed on
+    /// Device A). This function's fallback *behavior* is unchanged; only
+    /// how many formats take the byte-preserving path is broader.
     private func imageDraft(from provider: NSItemProvider, sourceURL: URL? = nil) async -> CaptureDraft? {
-        if let draft = await jpegFastPathDraft(from: provider, sourceURL: sourceURL) { return draft }
+        if let draft = await encodedFastPathDraft(from: provider, sourceURL: sourceURL) { return draft }
 
         let loaded = try? await provider.loadItem(forTypeIdentifier: UTType.image.identifier)
         var image: UIImage?
@@ -328,49 +334,72 @@ final class ShareViewController: UIViewController {
         )
     }
 
+    /// Media Preservation Foundation 01: the closed, ordered list of
+    /// encoded image formats Cherries currently knows how to both persist
+    /// AND later decode safely — first match wins, same "deterministic
+    /// precedence, not provider-array-order" discipline Provenance
+    /// Foundation's `extractProvenanceURL` already established for URL
+    /// carriers. Deliberately narrow (matches exactly the four formats
+    /// the Long Tail recon actually tested and named — JPEG/PNG/GIF/
+    /// WebP) rather than every `UTType.conforms(to: .image)` case; HEIC
+    /// and anything else not on this list falls through to the existing
+    /// decode-then-JPEG path below, which remains the correct, honest
+    /// fallback for genuinely-generated or not-yet-preservable content —
+    /// not silently "supported," not a lie about format.
+    private static let preservableImageTypes: [(UTType, String)] = [
+        (.jpeg, "jpg"),
+        (.png, "png"),
+        (.gif, "gif"),
+        (.webP, "webp"),
+    ]
+
     /// A large modern photo (24-48MP is common) decoded to a full bitmap
     /// just to be immediately re-encoded back to JPEG costs real peak
     /// memory in a Share Extension's much tighter memory ceiling than
-    /// the main app has — and, since `UIImage.jpegData` re-compresses,
-    /// it also throws away the original bytes/metadata for no reason
-    /// when the source was already a JPEG. When the provider can hand
-    /// back JPEG bytes directly, this copies/writes them completely
-    /// unmodified (original fidelity, including EXIF orientation, exactly
-    /// preserved — more faithfully than the decode/re-encode path even
-    /// does today) and reads only the pixel dimensions from the file's
-    /// header via `ImageDecoding.pixelSize` — no bitmap ever
+    /// the main app has — and re-encoding throws away the original
+    /// bytes/metadata for no reason when the source was already in a
+    /// format Cherries can store and later decode as-is. When the
+    /// provider can hand back one of `preservableImageTypes`'s formats
+    /// directly, this copies/writes those bytes completely unmodified
+    /// (original fidelity — including animation frames and alpha, not
+    /// just EXIF orientation — more faithfully than the decode/re-encode
+    /// path even does today) and reads only the pixel dimensions from
+    /// the file's header via `ImageDecoding.pixelSize` — no bitmap ever
     /// materializes. Returns `nil` (never throws) on anything short of
-    /// full success, so `imageDraft(from:)` can fall back to the
-    /// original path with no special-casing.
-    private func jpegFastPathDraft(from provider: NSItemProvider, sourceURL: URL? = nil) async -> CaptureDraft? {
-        guard provider.hasItemConformingToTypeIdentifier(UTType.jpeg.identifier),
-              let loaded = try? await provider.loadItem(forTypeIdentifier: UTType.jpeg.identifier) else {
-            return nil
-        }
+    /// full success for every type tried, so `imageDraft(from:)` can fall
+    /// back to the original path with no special-casing.
+    private func encodedFastPathDraft(from provider: NSItemProvider, sourceURL: URL? = nil) async -> CaptureDraft? {
+        for (utType, ext) in Self.preservableImageTypes {
+            guard provider.hasItemConformingToTypeIdentifier(utType.identifier),
+                  let loaded = try? await provider.loadItem(forTypeIdentifier: utType.identifier) else {
+                continue
+            }
 
-        let filename: String?
-        let pixelSize: CGSize?
-        switch loaded {
-        case let url as URL:
-            filename = try? MediaStore.shared.save(copyingFileAt: url)
-            pixelSize = ImageDecoding.pixelSize(ofFileAt: url)
-        case let data as Data:
-            filename = try? MediaStore.shared.save(data: data)
-            pixelSize = ImageDecoding.pixelSize(ofData: data)
-        default:
-            filename = nil
-            pixelSize = nil
-        }
+            let filename: String?
+            let pixelSize: CGSize?
+            switch loaded {
+            case let url as URL:
+                filename = try? MediaStore.shared.save(copyingFileAt: url, ext: ext)
+                pixelSize = ImageDecoding.pixelSize(ofFileAt: url)
+            case let data as Data:
+                filename = try? MediaStore.shared.save(data: data, ext: ext)
+                pixelSize = ImageDecoding.pixelSize(ofData: data)
+            default:
+                filename = nil
+                pixelSize = nil
+            }
 
-        guard let filename, let pixelSize else { return nil }
-        return CaptureDraft(
-            kind: .screenshot,
-            localFilename: filename,
-            pixelSize: pixelSize,
-            sourceURL: sourceURL?.absoluteString,
-            sourceDevice: .iOS,
-            acquisitionOrigin: .shareExtension
-        )
+            guard let filename, let pixelSize else { continue }
+            return CaptureDraft(
+                kind: .screenshot,
+                localFilename: filename,
+                pixelSize: pixelSize,
+                sourceURL: sourceURL?.absoluteString,
+                sourceDevice: .iOS,
+                acquisitionOrigin: .shareExtension
+            )
+        }
+        return nil
     }
 
     /// Share/Capture Reliability Foundation 01: `didComplete` guards

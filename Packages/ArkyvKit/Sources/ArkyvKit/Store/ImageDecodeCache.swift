@@ -2,6 +2,7 @@ import Foundation
 #if canImport(UIKit)
 import UIKit
 import ImageIO
+import UniformTypeIdentifiers
 
 /// Native (ImageIO-based) decoding for `MediaStore`'s raw bytes, with an
 /// optional downsampled path that decodes directly to a target pixel
@@ -82,6 +83,25 @@ public enum ImageDecoding {
             return nil
         }
         return CGSize(width: width, height: height)
+    }
+
+    /// Media Preservation Foundation 01: the true encoded format of
+    /// `data`, read from the bytes themselves via ImageIO — never guessed
+    /// from a filename, a `PhotosPickerItem`'s declared content type, or
+    /// an `NSItemProvider`'s registered type identifier, any of which can
+    /// be generic or absent. This is the one shared, trustworthy
+    /// extension source every preservation call site routes through,
+    /// rather than each reverse-engineering its own answer. Falls back to
+    /// `"jpg"` only when ImageIO cannot identify the data at all —
+    /// matching every existing `MediaStore.save` default — never a lie
+    /// about a format that couldn't be determined.
+    public static func fileExtension(ofData data: Data) -> String {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let typeString = CGImageSourceGetType(source) as String?,
+              let utType = UTType(typeString) else {
+            return "jpg"
+        }
+        return utType.preferredFilenameExtension ?? "jpg"
     }
 }
 

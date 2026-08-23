@@ -141,14 +141,46 @@ struct CaptureSheetView: View {
     /// folder suggestion against the real image before presenting — the
     /// only reason `startAdd()` couldn't already do this is that it runs
     /// before any image exists to suggest against.
+    ///
+    /// Media Preservation Foundation 01: `pickerItem.loadTransferable(type:
+    /// Data.self)` was already loading Photos' own real encoded bytes —
+    /// this previously decoded them to `UIImage` only to immediately
+    /// discard them and re-encode as JPEG via `MediaStore.save(image:)`,
+    /// silently flattening an animated GIF to its first frame or stripping
+    /// a transparent PNG's alpha (Long Tail · Universal Capture Recon 01,
+    /// confirmed on Device A). Now persists exactly what Photos handed
+    /// over, unmodified, via `MediaStore.save(data:)`, with the real
+    /// extension read from the bytes themselves
+    /// (`ImageDecoding.fileExtension(ofData:)`) rather than assumed. This
+    /// does not claim byte-identity with the user's original Camera Roll
+    /// asset — only that Cherries no longer re-encodes what it was
+    /// actually given. Falls back to the previous decode-then-JPEG path
+    /// only if the bytes are genuinely undecodable as an image at all
+    /// (`ImageDecoding.pixelSize(ofData:)` returning `nil`) — the safest
+    /// existing behavior, not a new one.
     private func loadPickedPhoto() async {
         guard let pickerItem else { return }
         isLoadingPhoto = true
         defer { isLoadingPhoto = false }
-        guard let data = try? await pickerItem.loadTransferable(type: Data.self),
-              let image = UIImage(data: data),
-              let saved = try? MediaStore.shared.save(image: image) else { return }
-        let draft = CaptureDraft(kind: .image, localFilename: saved.filename, pixelSize: saved.size, sourceDevice: .iOS, acquisitionOrigin: .photoLibraryImport)
+        guard let data = try? await pickerItem.loadTransferable(type: Data.self) else { return }
+
+        let draft: CaptureDraft?
+        if let pixelSize = ImageDecoding.pixelSize(ofData: data) {
+            let ext = ImageDecoding.fileExtension(ofData: data)
+            if let filename = try? MediaStore.shared.save(data: data, ext: ext) {
+                draft = CaptureDraft(kind: .image, localFilename: filename, pixelSize: pixelSize, sourceDevice: .iOS, acquisitionOrigin: .photoLibraryImport)
+            } else {
+                draft = nil
+            }
+        } else if let image = UIImage(data: data), let saved = try? MediaStore.shared.save(image: image) {
+            // Safest existing fallback — only reached when ImageIO can't
+            // read dimensions from what Photos supplied at all.
+            draft = CaptureDraft(kind: .image, localFilename: saved.filename, pixelSize: saved.size, sourceDevice: .iOS, acquisitionOrigin: .photoLibraryImport)
+        } else {
+            draft = nil
+        }
+
+        guard let draft else { return }
         capture.refreshSuggestion(for: draft)
         pickedDraft = draft
     }
