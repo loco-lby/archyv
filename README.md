@@ -2704,3 +2704,71 @@ and where it points (`sourceURL`).
 - **Schema impact: none.** `ArkyvSchemaV1` is untouched — no version
   bump, no migration stage, matching the `isEditorial`/`isFavorite`
   precedent exactly (additive inline-defaulted field only).
+
+## The Long Tail — Universal Capture Recon 01 (Findings)
+
+Reconnaissance across ~30 real specimens (creative platforms, music
+services, general web writing, commerce, direct media formats, URL
+topology) testing what the GENERIC capture path already handles with
+zero source-specific code. No adapters were built; this records what
+was found.
+
+**Generic Cherries already handles a surprisingly large share of the
+web.** Confirmed GREEN with zero source-specific tuning: Behance,
+Bandcamp (artist embedded in the title for free — arguably better than
+Spotify's own default), Wikipedia, Substack, MDN, a brand-new
+independent standards-first Shopify store never used during ecommerce
+development, and every URL-topology case tested (redirects, UTM params,
+fragments, percent-encoding — `sourceURL` preserved exactly every
+time). **Product strategy this reinforces:** long-tail failures should
+be answered with reusable, generic failure-class improvements first —
+never by reflexively building a named-service adapter for each site
+that struggles.
+
+**Highest-priority finding — HULL BREACH, raw image ingestion data
+loss.** Camera Roll import and Share Extension raw-image receipt both
+route through `MediaStore.save(image:)`, which unconditionally
+JPEG-encodes the `UIImage` it's given. Confirmed consequences: an
+animated GIF becomes a first-frame-only JPEG, a transparent PNG loses
+its alpha channel, an animated WebP loses both animation and
+transparency — silently, and irreversibly for the saved Cherry (the
+original on-device asset is untouched; only what Cherries kept is
+degraded). **Confirmed on Device A**, not just by code/ImageIO
+inspection: saving a real animated GIF this way produced exactly one
+static JPEG frame. Important distinction: the Link Cherry / URL-based
+media path (`URLCherryResolver.materializeCandidate`, via
+`MediaStore.save(data:)`) already preserves original bytes correctly —
+this is NOT a `StoredItem`/schema problem, and NOT a general media
+architecture failure. The destructive behavior is narrowly concentrated
+in the raw-image ingestion path specifically.
+
+**Recommended next milestone: Media Preservation Foundation 01.**
+Primary goal — preserve the original bytes/media semantics Photos and
+the Share Extension's raw image providers actually supply, rather than
+unconditionally flattening them to JPEG (the same "don't re-encode what
+doesn't need it" pattern `ShareViewController`'s existing
+`jpegFastPathDraft` already proves for JPEG specifically, extended to
+PNG/GIF/WebP). Explicitly NOT the same milestone as animated playback:
+the first requirement is that Cherries correctly KEEPS what it was
+given; rendering it back animated is separate, later work — preserved
+GIF/WebP bytes today still display only a static frame, since
+`ImageDecoding.decode()` (`UIImage(data:)`) and `LocalImageView` are
+fundamentally single-frame throughout the rendering stack.
+
+**Explicitly deferred, not V1 blockers:** direct-media-URL first-class
+recognition (partially working today via the generic Link Cherry path);
+animated rendering; SVG support (ImageIO cannot decode SVG at all —
+`frameCount=0, type=unknown` — but the failure is non-destructive,
+narrow, and falls back safely to a text-only Cherry); and source-side
+imperfections (Are.na returning one generic branding image for every
+block/channel regardless of content, confirmed physically as a "weird
+cropped version" and requiring account sign-up just to share; Dribbble
+and Hacker News failing metadata fetch entirely but degrading safely;
+Apple Music's generic art being landscape rather than square and
+playlists exposing no image at all; Etsy's keyword-stuffed titles) —
+none of these should trigger opportunistic source-specific fixes.
+
+**Product invariant this recon reinforced:** Cherries may fail to
+understand or perfectly display something, but it must never silently
+destroy information the user gave it. The raw-image ingestion bug is
+the one concrete violation of that invariant found this session.
