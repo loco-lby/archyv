@@ -2088,21 +2088,10 @@ app-target-only view this session) — verification is physical-device QA
 across this milestone's full round-trip plus code review, not an
 automated UI test.
 
-**Known follow-up — folder-selection UI has since drifted from this
-section's own description (found during Provenance Foundation
-Implementation 01's physical QA, unrelated to that milestone's actual
-change):** this section describes Action Button capture and Photo
-Library import sharing the modern, icon-free, grayscale
-`FolderSelectionRow` language (the same one the Share Extension's own
-drawer was later migrated to — see "Share Extension visual consistency
-follow-up" below). Confirmed on Device A that `ScreenshotCaptureFlowView`
-currently still presents the OLDER Arkyv-era treatment instead — orange
-folder icons, a floating folder panel, and a larger X/✓ treatment — for
-both Action Capture and Photo Library import. Not investigated further
-or fixed here; deliberately out of scope for Provenance Foundation. A
-future UI-unification pass should reconcile `ScreenshotCaptureFlowView`
-with the `FolderSelectionRow` language this section already claims it
-uses, the same way the Share Extension's own drawer was fixed.
+**Folder-selection UI:** fixed by One Cherries · Capture UI Unification
+01 (below) — `ScreenshotCaptureFlowView` now uses the same
+`FolderSelectionRow` language this section describes, the same one the
+Share Extension's own drawer was migrated to.
 
 ## Link Cherry Pipeline Integrity (Foundation 01)
 
@@ -3066,3 +3055,64 @@ concurrency cap being genuinely full, not a detection or preservation
 bug. No `StoredItem`/CloudKit schema change — `ArkyvSchema.swift` is
 untouched, confirmed directly. Deferred: no further animation-specific
 performance optimization identified as necessary at this time.
+
+## One Cherries · Capture UI Unification 01
+
+Closes the "known follow-up" flagged back during Provenance Foundation
+Implementation 01's physical QA: Action Capture and Photo Library
+import still visibly read as legacy Arkyv rather than current Cherries.
+
+A full-repo audit (every capture-time surface — `ScreenshotCaptureFlowView`,
+`CaptureSheetView`, the Action Capture entry point, the Share Extension's
+own drawer, every `FolderSelectionRow`/`FolderIconView` call site, every
+`ArkyvColor.accent` reference) found exactly **one** remaining legacy
+surface: `ScreenshotCaptureFlowView`'s own private `folderRow` — an
+independent, never-updated implementation rendering an orange
+`FolderIconView` glyph, orange checkmark, orange suggestion dot, an
+orange-tinted selected-row background, and an orange left accent bar.
+Since `CaptureSheetView` is a thin dispatcher that hands both Action
+Capture and Photo Library import to this exact same view (not two
+implementations kept in sync by convention), fixing it once fixed both
+entry points. Everything else audited — the shared `CherriesCancelControl`/
+`CherriesConfirmControl` X/✓ marks, the crop UI, the panel container's
+structure, typography (`ArkyvFont.mono` already resolves to Lora) — was
+already unified with current Cherries and needed no change.
+
+**Fix:** `ScreenshotCaptureFlowView`'s folder rows now render through
+the shared `FolderSelectionRow` (ArkyvKit) — the identical component
+the Share Extension and Item Detail's folder editor already use, not a
+second "modern" picker built alongside it. `FolderSelectionRow` gained
+two small, backward-compatible optional parameters rather than being
+forked: `foregroundColor` (defaults to the existing adaptive
+`ArkyvColor.textPrimary`; `ScreenshotCaptureFlowView` passes its
+fixed-white darkroom color instead, since that screen is a deliberate
+non-adaptive black-canvas exception shared with `CropEditorView`) and
+`isSuggested` (a small neutral-gray dot at 35% opacity — the capture
+flow's smart-folder suggestion is real product signal, not decoration,
+so it needed a non-orange way to stay visible, never a second accent
+color). Selection itself is unmistakable without any color: Semibold
+at full opacity plus a trailing checkmark versus Medium at 75%
+opacity — the same hierarchy-via-typography language already used
+everywhere else in Cherries.
+
+**Unchanged, confirmed by construction (only folder-row rendering was
+ever touched):** acquisition origin/provenance behavior, Action Capture
+and Photo Import semantics, crop persistence and geometry, full-image
+preservation, animated GIF preservation and playback, `sourceURL`
+handling, the folder data model, single-folder V1 semantics, CloudKit,
+One Archive layout, Item Detail, folder order, Unfiled behavior.
+
+**Verified:** full app clean build succeeded across all targets
+(including the Share Extension, which shares `FolderSelectionRow`
+cross-module). `ArkyvKit` `build-for-testing` succeeded, confirming no
+compile regressions anywhere the extended component is used.
+**Confirmed on real Device A** (Sammy's iPhone 17 Pro Max): Action
+Capture, Photo Import, animated GIF import, Cancel on each flow, and
+folder selection across multiple folders — physical QA GREEN, no
+orange Arkyv language remaining, both capture entry points read as one
+system, selection unmistakable without decorative color, no behavior
+regression observed. Two non-blocking future polish notes recorded
+(not addressed in this milestone): the X/✓ glyphs may deserve a
+lighter/smaller treatment later, and the folder-popover container may
+be revisited only if a broader Cherries container-treatment evolution
+warrants it.

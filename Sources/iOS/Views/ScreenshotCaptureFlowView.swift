@@ -329,10 +329,32 @@ struct ScreenshotCaptureFlowView: View {
         .allowsHitTesting(!didSave)
     }
 
+    /// One Cherries · Capture UI Unification 01: rebuilt on the shared
+    /// `FolderSelectionRow` (`ArkyvKit`) instead of this drawer's own
+    /// independent, never-updated row — the orange `FolderIconView` glyph,
+    /// orange checkmark, orange suggestion dot, orange row tint, and
+    /// orange left accent bar this used to render were the last remaining
+    /// Arkyv-era capture surface in the app (confirmed by a full-repo
+    /// audit — the Share Extension and `FolderEditorView` already made
+    /// this exact move during Share Extension Visual Consistency 01).
+    /// `foregroundColor: DarkroomColor.textPrimary` is the one required
+    /// adaptation — see `FolderSelectionRow`'s own doc comment — since
+    /// this screen is a deliberate fixed-black darkroom exception where
+    /// the row's default adaptive `ArkyvColor.textPrimary` would be
+    /// illegible in Light mode. Position/order is untouched (`folders` is
+    /// still the same stable `sortOrder` query); only suggestion/selection
+    /// EMPHASIS was ever styling, never layout.
     private var folderPanel: some View {
         VStack(spacing: 4) {
             ForEach(folders) { folder in
-                folderRow(folder)
+                FolderSelectionRow(
+                    name: folder.name,
+                    isSelected: folder.id == selectedFolder?.id,
+                    isSuggested: folder.id == capture.suggestion?.id,
+                    foregroundColor: DarkroomColor.textPrimary
+                ) {
+                    chooseFolder(folder)
+                }
             }
         }
         .padding(8)
@@ -342,48 +364,6 @@ struct ScreenshotCaptureFlowView: View {
                 .strokeBorder(DarkroomColor.divider, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.5), radius: 12, y: 12)
-    }
-
-    private func folderRow(_ folder: StoredFolder) -> some View {
-        // Emphasis may change. Position never does — `folders` is the stable
-        // sortOrder query; suggestion only ever affects this row's styling.
-        let isSuggested = folder.id == capture.suggestion?.id
-        let isSelected = folder.id == selectedFolder?.id
-        let isHighlighted = isSuggested || isSelected
-        return Button {
-            chooseFolder(folder)
-        } label: {
-            HStack(spacing: 10) {
-                FolderIconView(icon: folder.icon, size: 13, color: ArkyvColor.accent)
-                Text(folder.name)
-                    .font(ArkyvFont.mono(isSuggested ? .bold : .regular, size: 13))
-                    .foregroundStyle(DarkroomColor.textPrimary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(ArkyvColor.accent)
-                } else if isSuggested {
-                    Circle().fill(ArkyvColor.accent).frame(width: 6, height: 6)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                isHighlighted ? ArkyvColor.accent.opacity(0.06) : Color.clear,
-                in: RoundedRectangle(cornerRadius: ArkyvRadius.row)
-            )
-            .overlay(alignment: .leading) {
-                if isHighlighted {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(ArkyvColor.accent)
-                        .frame(width: 2)
-                        .padding(.vertical, 2)
-                }
-            }
-        }
-        .disabled(didSave)
     }
 
     /// Tapping a folder row *selects* it — closes the dropdown and returns
