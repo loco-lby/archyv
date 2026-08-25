@@ -95,7 +95,15 @@ struct ItemDetailView: View {
                             withAnimation(.easeInOut(duration: 0.2)) { showingFullContext.toggle() }
                         }
                     ) {
-                        LocalImageView(
+                        // Animation Rendering 01: faithful playback lives
+                        // here, not in `LocalImageView` — every other
+                        // LocalImageView call site (Archive, Editorial
+                        // covers, Folder grids) is unaffected. A genuinely
+                        // static source renders identically to before,
+                        // through the same `ImageDecoding`/`CropRegion`
+                        // primitives, just via `AnimatedLocalImageView`'s
+                        // own (non-cached) static path.
+                        AnimatedLocalImageView(
                             filename: item.localFilename,
                             fallbackImageData: { item.imageData },
                             contentMode: .fit,

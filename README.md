@@ -2831,3 +2831,123 @@ and an imported animated GIF read back with `frameCount: 37` — both via
 a temporary on-demand readback diagnostic, not just the (deliberately
 still-static) UI. No `StoredItem`/CloudKit schema change was needed —
 `ArkyvSchema.swift` is untouched, confirmed directly.
+
+## Animation Rendering 01
+
+Closes Media Preservation Foundation 01's known limitation: a preserved
+animated GIF survived on disk as a real multi-frame file but rendered
+as a static first frame everywhere. Traced the exact cause before
+writing any code — it wasn't `UIImage` itself (which can carry
+multiple frames); it was `ImageDecoding.decode()` (`UIImage(data:)` /
+an ImageIO thumbnail at index 0, both single-frame by construction)
+feeding a plain SwiftUI `Image(uiImage:)`, which is architecturally
+static regardless of what the `UIImage` contains.
+
+**Core invariant, unchanged from Media Preservation Foundation:**
+source bytes are the archive; rendering is presentation-only. Nothing
+in this milestone writes, re-encodes, or rasterizes a source file —
+`AnimatedImageDecoding` only ever reads.
+
+**Architecture:** a new `AnimatedImageDecoding` (ArkyvKit) is a
+deliberate *sibling* to `ImageDecoding`, not a modification of it —
+every static-image call site (`LocalImageView`: One Archive, Editorial
+covers, Folder grids) is byte-for-byte unchanged and physically cannot
+be affected, since it never touches the new type. `AnimatedImageDecoding`
+decodes every frame of a genuinely multi-frame source via ImageIO
+(`CGImageSourceCreateThumbnailAtIndex`/`CGImageSourceCreateImageAtIndex`
+per frame index) and reads each frame's real authored delay and the
+container's real loop count directly from ImageIO metadata — GIF via
+the public `kCGImagePropertyGIFDictionary` constants, animated WebP via
+an empirically-discovered (no public Swift constant exists for it in
+this SDK) but stable `"{WebP}"` container key, in the same
+`LoopCount`/`FrameInfo` shape GIF uses. Nothing is manufactured: no
+fixed "0.1s per frame," no assumed infinite loop — a real fixture's
+`LoopCount` of `65536` is preserved exactly, not rounded down to `0`.
+
+A new `AnimatedLocalImageView` (`Sources/iOS/Components`) is the
+presentation layer, wired into **Item Detail only**
+(`ItemDetailView.swift`, replacing that one `LocalImageView` call site).
+It checks the cheap, byte-truth `AnimatedImageDecoding.frameCount(ofData:)`
+before doing anything else — a `.gif` filename with exactly one real
+frame takes the ordinary static path, never a fabricated animation.
+For a genuinely animated source, the first frame renders instantly
+while the full frame set decodes, then `TimelineView(.animation)` drives
+playback by mapping wall-clock elapsed time onto the source's own
+authored per-frame timing (`AnimatedImageDecoding.currentFrame(in:elapsed:)`,
+public and directly unit-tested) — pure SwiftUI, no `UIViewRepresentable`/
+`UIImageView` bridging. Looping wraps forever when the source specifies
+infinite looping (the overwhelming common case); a source with a real
+finite loop count holds on its final frame once that count completes
+rather than looping past what the source actually specifies. No
+play/pause control, no animation badge, no chrome — a static Cherry
+looks the same as always, an animated one simply moves.
+
+**Crop behavior:** identical `CropRegion.renderTransform` math to
+`LocalImageView`'s own crop rendering, applied to whichever frame is
+currently showing — the crop window is geometry laid over the full
+image, never a rasterization of it, so it holds steady across every
+frame rather than drifting or only applying to frame 1. The full-image
+toggle already in Item Detail works unchanged for animated sources.
+
+**Reduce Motion:** gated via SwiftUI's `@Environment(\.accessibilityReduceMotion)`
+(reacts live if toggled while a Cherry is open, not a one-time launch
+check) — when on, Item Detail shows the source's real first decoded
+frame, statically, and never starts the frame clock.
+
+**Performance:** a hard pre-decode memory budget
+(`AnimatedImageDecoding.maxDecodedBytesBudget`, 80MB) is computed from
+the source's own container-reported canvas size *before* any pixel is
+decoded — a source that would exceed it is skipped in favor of the
+ordinary static single-frame path, never a crash or a silently
+truncated animation. Measured against real fixtures: a 44-frame,
+400×400 GIF decodes in single-digit milliseconds at an estimated ~28MB
+of frame memory — comfortable headroom under the budget, and that
+memory is released the moment the Item Detail view is dismissed (one
+instance at a time, no cross-view cache). **Animated WebP: classified
+GREEN** — the same architecture renders it correctly with zero
+WebP-specific code beyond the metadata-key reading above, confirmed
+against two real specimens (12-frame and 100-frame). One real,
+documented caveat: a 100-frame photographic WebP specimen took ~1.8s
+to decode at Item Detail's resolution cap, versus single-digit
+milliseconds for a comparable GIF — a real per-frame ImageIO cost
+specific to WebP's decoder, still well inside the memory budget, but
+a noticeably longer "before it starts moving" pause for a large,
+photographic animated WebP specifically.
+
+**One Archive: deliberately not implemented this milestone.**
+`AnimatedImageDecoding`/`AnimatedLocalImageView` eagerly decode and
+hold every frame of one source with no cross-instance cache or
+eviction — correct and safe for Item Detail's one-view-at-a-time
+lifecycle, but applying it unchanged to a scrolling masonry grid with
+many simultaneous/recycled cells would multiply both the ~28MB-per-source
+memory cost and (for a heavy WebP) the ~1.8s decode cost across however
+many animated Cherries happen to be visible at once — genuine
+architectural work (a shared decode budget, visibility-gated playback,
+cell-reuse-aware caching, a concurrent-animation cap) that doesn't
+exist yet. Recommended for a follow-up **Animation Rendering 02**,
+along with a proposed policy: animate only cells within (or very near)
+the visible viewport, cap simultaneous animations to a small fixed
+number, pause/discard decoded frames for any cell that scrolls
+offscreen, and never animate during fast/high-velocity scrolling
+(begin only once a cell visually settles) — "One Archive is not a
+casino."
+
+**Verified:** a new `AnimationRenderingTests.swift` (ArkyvKit) covers
+`frameCount`/`decodeAnimated`'s real frame count, per-frame delay, and
+loop count against a real 3-frame fixture; the pre-decode memory-budget
+guard (both just-under and exactly-at the boundary); and
+`currentFrame(in:elapsed:)`'s timing — frame advancement, infinite-loop
+wraparound, and finite-loop-count hold-on-last-frame. As with every
+other ArkyvKit test suite this session, `xcodebuild test` cannot
+actually *execute* these — the package's scheme has no Test action
+configured, confirmed not fixable via `project.yml`/XcodeGen 2.46.0
+(tried and reverted two documented approaches). Compilation was
+verified via `build-for-testing`, and every hardcoded expectation in
+the new tests was cross-checked against real ImageIO output for the
+exact same fixture bytes (a standalone script, not the test runner)
+before being written down. **Confirmed on a real device** (Sammy's
+iPhone 14 Max, Device A substitute): the previously-preserved animated
+GIF from Media Preservation Foundation's own QA round now visibly
+animates in Item Detail; the transparent PNG and an ordinary JPEG were
+re-checked for regressions and found unchanged. No `StoredItem`/CloudKit
+schema change — `ArkyvSchema.swift` is untouched, confirmed directly.
