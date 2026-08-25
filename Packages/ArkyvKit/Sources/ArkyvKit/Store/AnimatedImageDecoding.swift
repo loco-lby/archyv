@@ -224,4 +224,34 @@ public enum AnimatedImageDecoding {
         return nil
     }
 }
+
+/// One Archive Motion 01: a thread-safe, per-filename cache of "is this
+/// source genuinely multi-frame" — `AnimatedImageDecoding.frameCount(ofData:)`
+/// is cheap (header-only, no pixel decode) but still requires reading the
+/// file's bytes off disk, which ordinary masonry scrolling would otherwise
+/// repeat every time a cell re-mounts. Filenames are write-once (see
+/// `ImageDecodeCache`'s own doc comment for why), so a cached answer never
+/// needs invalidating for the lifetime of the app process. Booleans only —
+/// negligible memory even across a very large archive, so unlike
+/// `ImageDecodeCache` this deliberately has no eviction/size limit.
+public final class AnimationEligibilityCache: @unchecked Sendable {
+    public static let shared = AnimationEligibilityCache()
+
+    private let lock = NSLock()
+    private var cache: [String: Bool] = [:]
+
+    private init() {}
+
+    public func isAnimated(forFilename filename: String) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache[filename]
+    }
+
+    public func store(_ isAnimated: Bool, forFilename filename: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        cache[filename] = isAnimated
+    }
+}
 #endif

@@ -72,6 +72,22 @@ struct ArchiveView: View {
     @State private var searching = false
     @State private var query = ""
 
+    /// One Archive Motion 01: owned here (not injected via `.environment`)
+    /// since nothing outside this view's own subtree needs it — every
+    /// `ArchiveAnimatedCell` this view creates gets it passed explicitly.
+    @State private var animationCoordinator = ArchiveAnimationCoordinator()
+    /// Debounced scroll-settle detection — see `scrollOffsetChanged(to:)`.
+    /// A single stable top-of-content anchor's offset in the
+    /// `"archiveScroll"` coordinate space, not an aggregate over every
+    /// cell's own (lazily mounting/unmounting) frame, which would read a
+    /// cell's first-ever appearance as "still scrolling."
+    @State private var lastKnownScrollOffset: CGFloat = 0
+    @State private var scrollSettleTask: Task<Void, Never>?
+    /// Physical QA Follow-Up §D — see `ArchiveAnimationCoordinator
+    /// .resumeIfNeeded()`'s own doc comment for why backgrounding and
+    /// returning needs an explicit nudge.
+    @Environment(\.scenePhase) private var scenePhase
+
     #if DEBUG
     /// Option 2 Validation Gate 01 (two-device test) — DEBUG-only,
     /// read-only, no UI. See `OptionTwoValidationLog`. Seeded on first
@@ -130,6 +146,28 @@ struct ArchiveView: View {
         }
     }
 
+    /// "ACTIVE / FAST SCROLL → animations pause or avoid starting; SCROLL
+    /// SETTLES → eligible animations resume." No iOS 18 `onScrollPhaseChange`
+    /// needed (this app's deployment target is iOS 17): a single stable
+    /// anchor's offset (`ScrollOffsetPreferenceKey`) debounces on ordinary
+    /// structured concurrency — cancel-and-restart a short sleep on every
+    /// change, only calling `setScrollSettled(true)` once it actually
+    /// completes. 120ms was chosen to feel perceptually instant once
+    /// scrolling genuinely stops (per the brief's own "keep it
+    /// perceptually invisible") while still reliably NOT firing between
+    /// individual frames of a continuous scroll gesture.
+    private func scrollOffsetChanged(to offset: CGFloat) {
+        guard offset != lastKnownScrollOffset else { return }
+        lastKnownScrollOffset = offset
+        animationCoordinator.setScrollSettled(false)
+        scrollSettleTask?.cancel()
+        scrollSettleTask = Task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            animationCoordinator.setScrollSettled(true)
+        }
+    }
+
     var body: some View {
         // One Archive Bottom Scroll / Safe Area 01: `MasonryGrid` reports
         // a FIXED, self-computed height via its own `.frame(height:
@@ -150,6 +188,19 @@ struct ArchiveView: View {
         // device/orientation — no iPhone-model-specific magic number.
         GeometryReader { geometry in
             ScrollView {
+                // One Archive Motion 01: a single, always-present, zero-
+                // height anchor purely for scroll-settle detection — see
+                // `scrollOffsetChanged(to:)`'s own doc comment for why
+                // this is a dedicated anchor rather than derived from the
+                // (lazily mounting/unmounting) cell frames already being
+                // aggregated below.
+                Color.clear
+                    .frame(height: 0)
+                    .background(
+                        GeometryReader { anchorGeometry in
+                            Color.clear.preference(key: ScrollOffsetPreferenceKey.self, value: anchorGeometry.frame(in: .named("archiveScroll")).minY)
+                        }
+                    )
                 if searching {
                     searchField
                 }
@@ -200,13 +251,16 @@ struct ArchiveView: View {
                         // tall portrait screenshots. Purely a decode-
                         // resolution change — same crop, same content,
                         // same everything else.
-                        LocalImageView(
-                            filename: item.localFilename,
-                            fallbackImageData: { item.imageData },
-                            cropRegion: item.cropRegion,
-                            decodeTarget: .thumbnail(shortEdgeTarget: LocalImageView.masonryThumbnailShortEdge),
-                            originalPixelSize: CGSize(width: item.aspectWidth, height: item.aspectHeight)
-                        )
+                        //
+                        // One Archive Motion 01: `ArchiveAnimatedCell`
+                        // renders this EXACT `LocalImageView` call
+                        // internally, unchanged, as its always-present
+                        // poster layer — every modifier below (aspect
+                        // ratio, frame, clip shape, content shape) applies
+                        // identically regardless of whether the item ever
+                        // animates, so a static Cherry's on-screen
+                        // footprint is provably unchanged.
+                        ArchiveAnimatedCell(item: item, coordinator: animationCoordinator, viewportSize: geometry.size)
                             .aspectRatio(item.aspectRatio, contentMode: .fit)
                             .frame(maxWidth: .infinity)
                             // Sharp-tile experiment: 0pt corner radius,
@@ -242,6 +296,10 @@ struct ArchiveView: View {
             // transient during-scroll-only indicator is a separate, later
             // experiment.
             .scrollIndicators(.hidden)
+            .coordinateSpace(name: "archiveScroll")
+            .onPreferenceChange(ScrollOffsetPreferenceKey.self) { offset in
+                scrollOffsetChanged(to: offset)
+            }
             .background(ArkyvColor.canvas)
             .safeAreaInset(edge: .top) {
                 topBar
@@ -258,6 +316,26 @@ struct ArchiveView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
+        .onChange(of: scenePhase) { old, new in
+            if new == .active && old != .active {
+                animationCoordinator.resumeIfNeeded()
+            }
+        }
+        // QA Follow-Up 02 §3: `scenePhase` alone only covers true app
+        // backgrounding. Returning from Item Detail (`NavigationStack`
+        // pop) and dismissing the capture/import sheet both reveal this
+        // same `ArchiveView` again without necessarily moving `scenePhase`
+        // at all — `.onAppear` is the one lifecycle signal SwiftUI
+        // guarantees fires on EVERY one of those re-entries (cold launch,
+        // Back-navigation, and sheet/fullScreenCover dismissal alike),
+        // which is why this — not scattering triggers across every
+        // individual event in §3's list — is "the smallest coherent
+        // lifecycle contract": one shared `resumeIfNeeded()` mechanism,
+        // fed by the two signals that together cover every case in the
+        // brief's own desired-contract list (§7).
+        .onAppear {
+            animationCoordinator.resumeIfNeeded()
+        }
         #if DEBUG
         .onAppear {
             if optionTwoValidationSeenIDs.isEmpty {

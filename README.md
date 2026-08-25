@@ -2951,3 +2951,118 @@ GIF from Media Preservation Foundation's own QA round now visibly
 animates in Item Detail; the transparent PNG and an ordinary JPEG were
 re-checked for regressions and found unchanged. No `StoredItem`/CloudKit
 schema change — `ArkyvSchema.swift` is untouched, confirmed directly.
+
+## One Archive Motion 01
+
+Closes Animation Rendering 01's own deferred follow-up: animated
+Cherries now move in One Archive's masonry grid too, not just Item
+Detail — restrained by a dedicated visibility/concurrency policy so
+"the archive breathes" without becoming, in the milestone's own framing,
+"a casino."
+
+**Core invariant, unchanged again:** original media bytes are the
+archival source of truth; every mechanism below is presentation-only.
+`ArchiveAnimatedCell` never writes, re-encodes, or rasterizes anything —
+it only ever decodes for display, exactly like `AnimatedLocalImageView`
+before it. Source/acquisition path (Photos import, Share Extension raw
+image, or a Link Cherry resolved from a shared URL) never determines
+animation capability — only the media's own real, byte-truth frame
+count does.
+
+**Architecture:** `ArchiveAnimatedCell` (`Sources/iOS/Components`)
+wraps the exact same `LocalImageView` masonry-thumbnail call every
+static Cherry already used, unchanged, as an always-present poster
+layer — so a static Cherry's on-screen footprint and behavior are
+provably identical to before, and there is never a blank tile, layout
+jump, or reload flash at any point in the eligibility lifecycle. A
+cheap, cached-forever-per-filename check
+(`AnimationEligibilityCache`, ArkyvKit) gates everything else: only a
+confirmed genuinely-animated item (real `AnimatedImageDecoding
+.frameCount(ofData:) > 1`, never a filename/extension guess) ever
+registers for animation at all. An optional `TimelineView(.animation)`
+overlay — the same playback primitive Item Detail uses — is added on
+top only once actually granted.
+
+**Visibility + concurrency policy**, enforced by one shared
+`ArchiveAnimationCoordinator`/`ArchiveAnimationPolicy` (the latter a
+pure, ArkyvKit-side decision function, fully unit-tested):
+- A cell becomes eligible once ≥55% of its tile is visible in the
+  scroll viewport, and stays eligible until visibility drops below
+  40% — Pinterest's own reported ~50% starting hypothesis, with modest
+  hysteresis so a cell straddling the threshold during a slow scroll
+  doesn't flicker in and out.
+- **Maximum 3 concurrent Archive animations**, enforced by a hard cap —
+  the entire "not a casino" guarantee. When more than 3 real candidates
+  are simultaneously eligible, a deterministic priority selects the
+  winners: highest visible percentage, then nearest viewport center,
+  then (new in this milestone's own physical QA follow-up) an
+  already-playing candidate wins an exact tie outright, then a stable
+  id-based tiebreak as the final fallback — real device evidence showed
+  ties broken by incidental `Dictionary`/`Array` iteration order could
+  otherwise flicker between recomputes with no visibility change at
+  all. Some animated Cherries reading as static when many are
+  simultaneously visible at once is this cap working as designed, not
+  a bug — confirmed directly with Sammy against a real, intentionally
+  GIF-dense stress archive.
+- **Active/fast scrolling pauses/avoids starting animation entirely** —
+  a single stable scroll-offset anchor, debounced 120ms, gates a
+  `isScrollSettled` flag the policy checks unconditionally.
+- **Visibility is reported directly**, not via SwiftUI's
+  `PreferenceKey`/`.onPreferenceChange`: real device evidence (a live
+  diagnostic capture during an Item Detail → Back repro) proved that
+  path silently drops a reappearing cell's report whenever its
+  geometry happens to exactly match what was last delivered — the
+  callback simply never fires again, leaving the coordinator believing
+  the cell doesn't exist. Each cell now calls
+  `coordinator.updateVisibility(...)` directly from `.onAppear`/
+  `.onChange`, which has no such value-equality suppression.
+- **Eligible animations resume automatically** — no scroll gesture
+  required — via one `resumeIfNeeded()` mechanism fed by two signals:
+  `scenePhase` becoming `.active` (true app backgrounding) and
+  `ArchiveView.onAppear` (the one lifecycle signal SwiftUI guarantees
+  fires on every re-entry: cold launch, returning from Item Detail,
+  and capture/import sheet dismissal alike — deliberately not
+  scattering triggers across every individual event).
+- **Reduce Motion**: read live via `@Environment(\.accessibilityReduceMotion)`
+  (reacts immediately if toggled mid-session, not just at launch) —
+  when on, a cell never even attempts to decode or grant animation;
+  the static poster frame is all that's ever shown.
+- **Low Power Mode**: concurrency clamps to 1 rather than fully
+  suppressing motion — real per-instance decode cost is modest enough
+  (see Animation Rendering 01's own findings) that full suppression
+  felt like overcorrection.
+- **Offscreen cells release their decoded frames** — `animatedSource`
+  is set to `nil` on both revocation (losing a concurrency slot) and
+  `onDisappear`, so scrolling away frees the memory immediately rather
+  than accumulating across a long scroll session.
+- **Crop** applies the identical `CropRegion.renderTransform` math
+  Item Detail and the static poster both already use, to whichever
+  frame is currently showing — the crop window holds steady across
+  the animation.
+
+**Performance:** real device RSS measured under an intentional
+50-item, 3-concurrent stress garden: ~250MB total process footprint,
+stable-to-decreasing over 10s idle (no leak, no unbounded growth
+across a long session).
+
+**Verified:** `ArchiveAnimationPolicyTests.swift` (ArkyvKit) covers the
+product invariants directly against the pure `ArchiveAnimationPolicy
+.computeGrants` function — scroll-phase gating, visibility threshold +
+hysteresis, the concurrency cap never being exceeded, deterministic
+priority (including the already-playing-wins-ties case and repeated-
+call stability under exact ties), and Low Power Mode's effect on
+concurrency — the same `xcodebuild test` execution gap as every other
+ArkyvKit suite this session applies; verified via `build-for-testing`
+plus real device evidence for everything SwiftUI-lifecycle-dependent
+(traced live via temporary diagnostic instrumentation, fully removed
+before this commit). **Confirmed on a real device** (Sammy's iPhone 14
+Max, Device A substitute) across multiple physical QA rounds,
+including two real Pinterest specimens specifically (a direct Share
+Extension share and a Photos-saved-then-imported GIF) — both proven
+via real device diagnostics to be genuinely, correctly animated end to
+end (30 real frames each, surviving persistence intact), with the
+earlier appearance of one reading as "static" traced to the
+concurrency cap being genuinely full, not a detection or preservation
+bug. No `StoredItem`/CloudKit schema change — `ArkyvSchema.swift` is
+untouched, confirmed directly. Deferred: no further animation-specific
+performance optimization identified as necessary at this time.
