@@ -4,6 +4,10 @@ import ArkyvKit
 /// Minimal settings surface. Sign in with Apple + sync status land in Phase 2.
 struct SettingsView: View {
     @Environment(CaptureCoordinator.self) private var capture
+    /// Core Loop Hardening 02 §8-9: `nil` while the one-shot check is in
+    /// flight — the row shows "Checking…" rather than a stale default, so
+    /// it never has a moment where it's showing something untrue.
+    @State private var iCloudStatus: ICloudAvailability?
 
     var body: some View {
         ScrollView {
@@ -12,7 +16,7 @@ struct SettingsView: View {
 
                 section("ACCOUNT") {
                     row(icon: "person.crop.circle", title: "Sign in with Apple", detail: "Phase 2")
-                    row(icon: "arrow.triangle.2.circlepath", title: "Sync", detail: "Local only")
+                    row(icon: "arrow.triangle.2.circlepath", title: "iCloud", detail: iCloudStatus?.description ?? "Checking…")
                 }
 
                 section("CAPTURE") {
@@ -59,6 +63,9 @@ struct SettingsView: View {
             .background(ArkyvColor.canvas)
         }
         .toolbar(.hidden, for: .navigationBar)
+        .task {
+            iCloudStatus = await ICloudAvailability.current()
+        }
     }
 
     private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
