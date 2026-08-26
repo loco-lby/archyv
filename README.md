@@ -3116,3 +3116,94 @@ regression observed. Two non-blocking future polish notes recorded
 lighter/smaller treatment later, and the folder-popover container may
 be revisited only if a broader Cherries container-treatment evolution
 warrants it.
+
+## Core Loop Hardening 01 (Recon)
+
+Past ~70% toward MVP, the goal shifted from "prove Cherries can do more
+things" to "make the existing core loop trustworthy." Pure recon/QA: a
+full core-loop map, a permanent ~500-item real V1 Acceptance Garden
+seeded on Device A across archive scales, save/retrieval/edit/lifecycle/
+cross-device stress testing, a failure-UX classification matrix (CLEAR
+FAILURE / SAFE FALLBACK / SILENT FAILURE / FALSE SUCCESS / CRASH), and a
+data-integrity audit. Produced a ranked damage report (2 Blocker / 9
+Major / 4 Minor / 2 Quirk) and a proposed trust contract — see Core Loop
+Hardening 02 below for the 10 items promoted to fixes. **Production
+files changed: none** — the seeding tool was reverted from source after
+use; the seeded data remains in the real archive as the standing QA
+corpus.
+
+## Core Loop Hardening 02 (Trust Repairs)
+
+Product rule: **a confusing source/platform imperfection is acceptable;
+Cherries lying to the user is not.** A website exposing an ugly
+thumbnail, a source providing no image, a platform blocking metadata —
+fine. Cherries claiming something saved when it didn't, silently
+swallowing an edit, crashing on a known fallback path, giving no
+indication iCloud is unavailable — not fine. Ten items from Hardening
+01's damage report were fixed, and nothing else — no broad Major/Minor/
+Quirk cleanup, no draft-restoration/autosave work (losing an unsaved
+edit to forced termination remains an accepted V1 limitation), no sync
+telemetry infrastructure.
+
+**Fixes:**
+- **Share Extension false success** — `extractDraft()` returned an
+  empty note (a false "saved") on malformed/unparseable share content;
+  now returns `nil`, and `ShareViewController` shows the same
+  "Couldn't load — nothing to save" text the loadFailed path already
+  used.
+- **Naked `try!` init crash** — `ArkyvStore.makeModelContainer()`'s
+  fallback-of-fallback force-unwrap was the app's last unconditional
+  crash path; now throws, and both `ArkyvApp`/`ShareViewController`
+  reach a small honest "couldn't start" state instead.
+- **Text-only-link timeout** — traced the actual mechanism (a single
+  `withTaskGroup` timeout race; `LPMetadataProvider` has no timeout of
+  its own) and reduced 8s → 4s, grounded in real Hardening 01 resolution
+  timing rather than an arbitrary number.
+- **Item Detail mutation failures** — all four sideroom editors (Notes/
+  Source/Tags/Folder) plus the Favorite toggle now surface a visible
+  inline failure signal on a failed save instead of silently reverting
+  with no feedback. Reused `ContextEditorChrome`'s existing chrome and
+  the same inline-text language already established by the Share
+  Extension, no new toast framework.
+- **Photos import failures** — `CaptureSheetView.loadPickedPhoto()`'s
+  three silent-failure paths now show "Couldn't import that photo — try
+  again" and reset the picker selection for a real retry.
+- **Orphaned media on folder-creation failure** — `createFolderAndFile`
+  now cleans up the draft's already-staged `MediaStore` file and shows
+  an error toast on failure, mirroring `file(_:into:)`'s existing
+  handling instead of silently abandoning the file.
+- **Minimal iCloud availability** — new `ICloudAvailability` (ArkyvKit)
+  wraps a single `CKAccountStatus` check; Settings now shows that
+  instead of a hardcoded, stale, and by this point actively false
+  "Sync: Local only." Deliberately not sync telemetry — no last-sync
+  timestamp, no record counts, no "Synced" claim the app has no way to
+  back up.
+
+**Investigated, not shipped — full production `IntegrityCheck`:**
+measured **133ms at ~508 real items** on Device A (main thread,
+dominated by per-item `FileManager` existence checks), scaling linearly
+with archive size — too expensive to wire into every foreground
+unconditionally. The cheap, useful part already ships today:
+`FolderMembershipReconciler.reconcileAll()` runs on every foreground and
+already detects *and self-heals* the real production conflict class
+(concurrent cross-device folder moves) that `IntegrityCheck`'s
+in-memory fields exist to catch. No new code needed.
+
+**Verified:** full clean build after every change and again after final
+revert of all temporary diagnostics. **Physical Device A ↔ Device B
+trust gauntlet, all phases GREEN:** 5 items created on Device A with
+full metadata recorded, all received naturally on Device B within
+~10-15 minutes with full fidelity (also serving as the real CloudKit
+export timing measurement — no artificial waits); a Device B mutation
+(folder move + tag) synced back to Device A correctly; a full lifecycle
+stress sequence (save → background → lock → switch apps → mutate →
+background) preserved every save and edit; a deliberate simultaneous
+conflicting folder move from both devices self-healed to a consistent
+state on both devices within 1-2 minutes via the existing reconciler,
+confirming no conflict-resolution redesign was warranted; forced
+termination immediately after save preserved the item twice in a row.
+Acceptance Garden regression on the real ~508-item archive: no
+regressions observed. One non-blocking finding logged, not fixed: an
+Airplane Mode Link Cherry share resolves to a blank (but honest and
+fully functional — confirm control stays live) canvas with no "no image
+available" acknowledgment.
