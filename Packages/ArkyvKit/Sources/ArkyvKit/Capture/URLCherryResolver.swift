@@ -14,12 +14,26 @@ import UniformTypeIdentifiers
 public enum URLCherryResolver {
     /// Single bounded budget for the whole resolution attempt — small and
     /// defensible for a Share Extension's tight lifetime, not tuned
-    /// per-step. Slightly larger than Production Foundation 01's original
-    /// 6s: a matched source enricher can add up to two extra network
-    /// round-trips (its own lookup, then a thumbnail fetch) before ever
-    /// falling back to the generic path, and both must still fit inside
-    /// one bounded attempt.
-    public static let defaultTimeout: TimeInterval = 8
+    /// per-step.
+    ///
+    /// Core Loop Hardening 02 §3: lowered from 8s after tracing exactly
+    /// where those 8 seconds went. There is no retry, no multi-step
+    /// sequential wait, and no per-source timeout anywhere in this file —
+    /// this ONE constant is the sole timeout in the whole resolution
+    /// path, racing `LPMetadataProvider.fetchMetadata(for:)` (which has
+    /// no timeout parameter of its own — external cancellation, wired via
+    /// `LinkMetadataFetching.cancel()` below, is the only lever Apple's
+    /// API offers). Real device evidence (Hardening 01's Acceptance
+    /// Garden seeding, 9 real URLs across 7 source families): every
+    /// SUCCESSFUL resolution — including enricher-matched, multi-round-
+    /// trip ones (Pinterest, Instagram) — completed in well under the old
+    /// 8s ceiling; the ceiling was, in practice, almost entirely "spent"
+    /// only by the genuine no-image failure case (a URL with nothing to
+    /// find still has to wait out however long `LPMetadataProvider`
+    /// itself takes to give up). 4s keeps meaningful headroom for a real,
+    /// slightly-slow-but-successful fetch while roughly halving the
+    /// worst-case "is this frozen?" wait for the common no-image case.
+    public static let defaultTimeout: TimeInterval = 4
 
     /// Checked in order; the first enricher whose `matches(_:)` returns
     /// `true` gets one attempt before the generic path runs. Not a

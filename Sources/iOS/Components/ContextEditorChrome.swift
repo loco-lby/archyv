@@ -16,6 +16,16 @@ import ArkyvKit
 /// ways out, by construction.
 struct ContextEditorChrome<Content: View>: View {
     var title: String?
+    /// Core Loop Hardening 02 §4: the smallest shared visible-failure
+    /// signal for every sideroom mutation — `nil` (the default) changes
+    /// nothing for a caller that doesn't pass one. Before this, a failed
+    /// save already correctly rolled back and kept the room open (see
+    /// `ItemDetailView`'s own `onConfirm` handlers), but gave the user no
+    /// signal beyond "nothing happened when I tapped ✓" — this reuses the
+    /// exact same inline-text/`ArkyvColor.accent` language the Share
+    /// Extension's own `saveError` state already uses, rather than a new
+    /// toast/alert framework.
+    var errorMessage: String? = nil
     var onCancel: () -> Void
     var onConfirm: () -> Void
     var isConfirmEnabled: Bool = true
@@ -40,8 +50,17 @@ struct ContextEditorChrome<Content: View>: View {
             .padding(.top, 16)
             .padding(.bottom, 8)
 
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(ArkyvFont.mono(.regular, size: 12))
+                    .foregroundStyle(ArkyvColor.accent)
+                    .padding(.bottom, 8)
+                    .transition(.opacity)
+            }
+
             content()
         }
         .background(ArkyvColor.canvas.ignoresSafeArea())
+        .animation(.easeOut(duration: 0.2), value: errorMessage)
     }
 }

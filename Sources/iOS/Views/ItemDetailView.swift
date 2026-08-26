@@ -31,6 +31,20 @@ struct ItemDetailView: View {
         var id: Self { self }
     }
     @State private var activeRoom: EditingRoom?
+    /// Core Loop Hardening 02 §4: the single shared visible-failure
+    /// signal for every sideroom mutation — set in each `onConfirm`
+    /// handler's `catch` below, reset whenever a room opens fresh (via
+    /// `.onChange(of: activeRoom)`) so a stale error from a previous
+    /// session never lingers into a new one. `nil` renders nothing (see
+    /// `ContextEditorChrome`).
+    @State private var mutationErrorMessage: String?
+    private static let mutationErrorText = "Couldn't save that change — try again"
+    /// Core Loop Hardening 02 §5: the Favorite button lives in the plain
+    /// header row, not a sideroom, so it gets its own small transient
+    /// signal rather than `mutationErrorMessage` — same copy, same
+    /// reasoning, just auto-dismissing since there's no persistent room
+    /// for it to live in.
+    @State private var favoriteErrorVisible = false
 
     /// The item's actual image, loaded on demand for the crop editor — a
     /// single `Identifiable` payload, presented via `.fullScreenCover(item:)`
@@ -164,6 +178,7 @@ struct ItemDetailView: View {
             case .notes:
                 NotesEditorView(
                     item: item,
+                    errorMessage: mutationErrorMessage,
                     onConfirm: { draft in
                         // LIFECYCLE / FAULT INJECTION FOUNDATION 01: only
                         // dismiss the room on a successful save — mirrors
@@ -181,11 +196,16 @@ struct ItemDetailView: View {
                         // simply means the user sees their own unsaved
                         // edit again and can retry — never a false
                         // "saved" outcome, never a lost edit.
+                        //
+                        // Core Loop Hardening 02 §4: `mutationErrorMessage`
+                        // now makes that "stays open" state visible rather
+                        // than only inferrable from nothing happening.
                         do {
                             try repo.updateNote(item, body: draft)
                             activeRoom = nil
                         } catch {
                             log("notes save FAILED, room stays open: \(error)")
+                            mutationErrorMessage = Self.mutationErrorText
                         }
                     },
                     onCancel: { activeRoom = nil }
@@ -193,12 +213,14 @@ struct ItemDetailView: View {
             case .source:
                 SourceEditorView(
                     item: item,
+                    errorMessage: mutationErrorMessage,
                     onConfirm: { draft in
                         do {
                             try repo.updateSourceURL(item, to: draft)
                             activeRoom = nil
                         } catch {
                             log("source save FAILED, room stays open: \(error)")
+                            mutationErrorMessage = Self.mutationErrorText
                         }
                     },
                     onCancel: { activeRoom = nil }
@@ -206,12 +228,14 @@ struct ItemDetailView: View {
             case .tags:
                 TagsEditorView(
                     item: item,
+                    errorMessage: mutationErrorMessage,
                     onConfirm: { tags in
                         do {
                             try repo.updateTags(item, to: tags)
                             activeRoom = nil
                         } catch {
                             log("tags save FAILED, room stays open: \(error)")
+                            mutationErrorMessage = Self.mutationErrorText
                         }
                     },
                     onCancel: { activeRoom = nil }
@@ -220,6 +244,7 @@ struct ItemDetailView: View {
                 FolderEditorView(
                     item: item,
                     modelContext: context,
+                    errorMessage: mutationErrorMessage,
                     onConfirm: { folder in
                         do {
                             if let folder {
@@ -250,11 +275,15 @@ struct ItemDetailView: View {
                             activeRoom = nil
                         } catch {
                             log("folder save FAILED, room stays open: \(error)")
+                            mutationErrorMessage = Self.mutationErrorText
                         }
                     },
                     onCancel: { activeRoom = nil }
                 )
             }
+        }
+        .onChange(of: activeRoom) { _, newRoom in
+            if newRoom != nil { mutationErrorMessage = nil }
         }
         .fullScreenCover(item: $cropEditingSession) { session in
             CropEditorView(
@@ -340,7 +369,30 @@ struct ItemDetailView: View {
             // trailing edge, Share's to its frame's leading edge.
             HStack(spacing: 14) {
                 Button {
-                    try? repo.toggleFavorite(item)
+                    // Core Loop Hardening 02 §5: was `try?`, the one
+                    // silently-swallowed mutation in this file — every
+                    // other Item Detail edit already does explicit
+                    // do/catch. `item.isFavorite` itself can't diverge
+                    // from the persisted value on failure: `Repository
+                    // .save()`'s rollback (see its own doc comment)
+                    // already reverts the in-memory toggle right along
+                    // with the failed write, so the heart icon — which
+                    // reads `item.isFavorite` directly — was already
+                    // correct either way. This only adds the missing
+                    // visible signal.
+                    do {
+                        try repo.toggleFavorite(item)
+                    } catch {
+                        log("favorite toggle FAILED: \(error)")
+                        #if canImport(UIKit)
+                        UINotificationFeedbackGenerator().notificationOccurred(.error)
+                        #endif
+                        withAnimation(.easeOut(duration: 0.2)) { favoriteErrorVisible = true }
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            withAnimation(.easeOut(duration: 0.2)) { favoriteErrorVisible = false }
+                        }
+                    }
                 } label: {
                     Image(systemName: item.isFavorite ? "heart.fill" : "heart")
                         .font(.system(size: 18))
@@ -361,6 +413,15 @@ struct ItemDetailView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
         .background(ArkyvColor.canvas)
+        .overlay(alignment: .bottom) {
+            if favoriteErrorVisible {
+                Text(Self.mutationErrorText)
+                    .font(ArkyvFont.mono(.regular, size: 11))
+                    .foregroundStyle(ArkyvColor.accent)
+                    .transition(.opacity)
+                    .offset(y: 20)
+            }
+        }
     }
 
     private var shareText: String {

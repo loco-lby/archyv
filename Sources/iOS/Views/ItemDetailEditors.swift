@@ -19,19 +19,23 @@ struct NotesEditorView: View {
     let item: StoredItem
     let onConfirm: (String) -> Void
     let onCancel: () -> Void
+    /// Core Loop Hardening 02 §4 — see `ContextEditorChrome`'s own doc
+    /// comment. `ItemDetailView` sets this after a failed `onConfirm`.
+    var errorMessage: String? = nil
 
     @State private var draft: String
     @FocusState private var focused: Bool
 
-    init(item: StoredItem, onConfirm: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(item: StoredItem, errorMessage: String? = nil, onConfirm: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         self.item = item
+        self.errorMessage = errorMessage
         self.onConfirm = onConfirm
         self.onCancel = onCancel
         _draft = State(initialValue: item.noteBody ?? "")
     }
 
     var body: some View {
-        ContextEditorChrome(title: "Notes", onCancel: onCancel, onConfirm: { onConfirm(draft) }) {
+        ContextEditorChrome(title: "Notes", errorMessage: errorMessage, onCancel: onCancel, onConfirm: { onConfirm(draft) }) {
             // Plain multiline TextField, not axis: .vertical — this is a
             // dedicated full-height writing surface, not a growing/
             // capped composer, so it should simply fill the available
@@ -66,13 +70,17 @@ struct SourceEditorView: View {
     let item: StoredItem
     let onConfirm: (String) -> Void
     let onCancel: () -> Void
+    /// Core Loop Hardening 02 §4 — see `ContextEditorChrome`'s own doc
+    /// comment.
+    var errorMessage: String? = nil
 
     @State private var draft: String
     @FocusState private var focused: Bool
     @Environment(\.openURL) private var openURLAction
 
-    init(item: StoredItem, onConfirm: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(item: StoredItem, errorMessage: String? = nil, onConfirm: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         self.item = item
+        self.errorMessage = errorMessage
         self.onConfirm = onConfirm
         self.onCancel = onCancel
         _draft = State(initialValue: item.sourceURL ?? "")
@@ -89,7 +97,7 @@ struct SourceEditorView: View {
     }
 
     var body: some View {
-        ContextEditorChrome(title: "Source", onCancel: onCancel, onConfirm: { onConfirm(draft) }) {
+        ContextEditorChrome(title: "Source", errorMessage: errorMessage, onCancel: onCancel, onConfirm: { onConfirm(draft) }) {
             VStack(alignment: .leading, spacing: 16) {
                 TextField(
                     "",
@@ -143,13 +151,17 @@ struct TagsEditorView: View {
     let item: StoredItem
     let onConfirm: ([String]) -> Void
     let onCancel: () -> Void
+    /// Core Loop Hardening 02 §4 — see `ContextEditorChrome`'s own doc
+    /// comment.
+    var errorMessage: String? = nil
 
     @State private var draftTags: [String]
     @State private var newTagText = ""
     @FocusState private var addFieldFocused: Bool
 
-    init(item: StoredItem, onConfirm: @escaping ([String]) -> Void, onCancel: @escaping () -> Void) {
+    init(item: StoredItem, errorMessage: String? = nil, onConfirm: @escaping ([String]) -> Void, onCancel: @escaping () -> Void) {
         self.item = item
+        self.errorMessage = errorMessage
         self.onConfirm = onConfirm
         self.onCancel = onCancel
         _draftTags = State(initialValue: item.tags)
@@ -165,7 +177,7 @@ struct TagsEditorView: View {
         // `ItemDetailView`. The small trailing ✓ on the Add field below
         // is a *different* action ("add THIS tag") that never leaves
         // this screen — see `commitTypedTag`.
-        ContextEditorChrome(title: "Tags", onCancel: onCancel, onConfirm: { onConfirm(draftTags) }) {
+        ContextEditorChrome(title: "Tags", errorMessage: errorMessage, onCancel: onCancel, onConfirm: { onConfirm(draftTags) }) {
             VStack(alignment: .leading, spacing: 20) {
                 if !draftTags.isEmpty {
                     FlowLayout(spacing: 8) {
@@ -247,14 +259,18 @@ struct FolderEditorView: View {
     let onConfirm: (StoredFolder?) -> Void
     let onCancel: () -> Void
     let modelContext: ModelContext
+    /// Core Loop Hardening 02 §4 — see `ContextEditorChrome`'s own doc
+    /// comment.
+    var errorMessage: String? = nil
 
     @Query(sort: \StoredFolder.sortOrder) private var allFoldersRaw: [StoredFolder]
     @State private var selectedFolderID: UUID?
     @State private var showingNewFolder = false
 
-    init(item: StoredItem, modelContext: ModelContext, onConfirm: @escaping (StoredFolder?) -> Void, onCancel: @escaping () -> Void) {
+    init(item: StoredItem, modelContext: ModelContext, errorMessage: String? = nil, onConfirm: @escaping (StoredFolder?) -> Void, onCancel: @escaping () -> Void) {
         self.item = item
         self.modelContext = modelContext
+        self.errorMessage = errorMessage
         self.onConfirm = onConfirm
         self.onCancel = onCancel
         _selectedFolderID = State(initialValue: item.folder?.id)
@@ -267,6 +283,7 @@ struct FolderEditorView: View {
     var body: some View {
         ContextEditorChrome(
             title: "Folder",
+            errorMessage: errorMessage,
             onCancel: onCancel,
             onConfirm: { onConfirm(folders.first { $0.id == selectedFolderID }) }
         ) {

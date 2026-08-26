@@ -29,11 +29,21 @@ private enum ShareDraftResolution {
 /// so folders appear instantly and one tap files the capture.
 @objc(ShareViewController)
 final class ShareViewController: UIViewController {
-    private let container = ArkyvStore.makeModelContainer()
+    /// Core Loop Hardening 02 §2: `try?`, not the app's former `try!` —
+    /// see `ArkyvStore.makeModelContainer`'s own doc comment for exactly
+    /// what a thrown error here implies (genuinely rare). `viewDidLoad()`
+    /// shows a small, honest failure state instead of crashing when this
+    /// is `nil`.
+    private let container = try? ArkyvStore.makeModelContainer()
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
+
+        guard let container else {
+            showInitializationFailure()
+            return
+        }
 
         let repo = Repository(context: container.mainContext)
 
@@ -83,31 +93,73 @@ final class ShareViewController: UIViewController {
         host.didMove(toParent: self)
     }
 
+    /// Core Loop Hardening 02 §2: the genuinely-unrecoverable case — see
+    /// this type's `container` doc comment. A tiny SwiftUI view reusing
+    /// the exact same visual language (`ArkyvColor`, `CherriesCancelControl`)
+    /// the real drawer uses, with only a dismiss affordance — there is
+    /// nothing to save or retry when persistence itself couldn't open.
+    private func showInitializationFailure() {
+        let root = ZStack {
+            ArkyvColor.canvas.ignoresSafeArea()
+            VStack(spacing: 16) {
+                CherriesCancelControl(action: { [weak self] in self?.cancel() }, color: ArkyvColor.textPrimary)
+                Text("Couldn't load — nothing to save")
+                    .font(ArkyvFont.mono(.regular, size: 13))
+                    .foregroundStyle(ArkyvColor.subdued)
+            }
+        }
+        let host = UIHostingController(rootView: root)
+        host.view.backgroundColor = .clear
+        addChild(host)
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.topAnchor.constraint(equalTo: view.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        host.didMove(toParent: self)
+    }
+
     /// Pulls the first useful attachment into a draft (image → URL → text).
     ///
-    /// Storage/Disk Pressure Foundation 01: `nil` return means "an image
-    /// WAS shared, but every attempt to turn it into a draft failed" —
-    /// most plausibly a disk-full `MediaStore` write. This is
-    /// deliberately NOT treated the same as "no image was shared at
-    /// all": before this fix, an image-save failure fell straight
-    /// through to the URL/text branches below and, finding nothing
-    /// there either, ultimately returned a contentless
-    /// `CaptureDraft(kind: .note)` — which `ShareDrawerContent` then
-    /// presented as a perfectly normal, *ready-to-save* draft (no
-    /// preview, but `isReady` was still `true`). A user tapping ✓ in
-    /// that state would successfully file an empty note while their
-    /// actual photo silently vanished — exactly the "silently claim
-    /// success for an incomplete save" failure mode this milestone
-    /// exists to close. Scoped to the image path specifically: it's the
-    /// only one of the three that writes substantial bytes to disk, so
-    /// it's the only one with this failure shape. See
-    /// `ShareDrawerContent`'s `loadFailed` for the corresponding UI
-    /// state (disabled ✓, an explicit "couldn't load" message instead
-    /// of a silently-ready empty draft).
+    /// Storage/Disk Pressure Foundation 01 established the core contract:
+    /// `nil` means "genuinely couldn't produce a usable draft," and must
+    /// never be papered over with a contentless, silently-ready
+    /// `CaptureDraft(kind: .note)` — before that fix, an image-save
+    /// failure (most plausibly a disk-full `MediaStore` write) fell
+    /// straight through to the URL/text branches, found nothing there
+    /// either, and handed `ShareDrawerContent` a draft it presented as
+    /// perfectly normal and saveable (no preview, but `isReady` still
+    /// `true`) — a user tapping ✓ would file an empty note while their
+    /// actual photo silently vanished.
+    ///
+    /// Core Loop Hardening 02 §1 closes the same false-success shape for
+    /// every OTHER way this method could reach the bottom with nothing
+    /// useful at all: no attachments whatsoever, or attachments present
+    /// but none of image/recognized-URL/loadable-plain-text among them
+    /// (an unrecognized UTI, a malformed plain-text provider). All of
+    /// these now also return `nil` rather than an empty `.note` — see
+    /// `ShareDrawerContent`'s `loadFailed` for the corresponding UI state
+    /// (disabled ✓, an explicit "couldn't load" message instead of a
+    /// silently-ready empty draft). A provider that genuinely loads real
+    /// text is unaffected — that's still a real, valid note draft.
     private func extractDraft() async -> ShareDraftResolution? {
+        // Core Loop Hardening 02 §1: no `NSExtensionItem`/attachments at
+        // all means nothing was actually shared — `nil` (the same
+        // "genuinely couldn't produce a draft" signal the image path
+        // above already uses) rather than a contentless, silently-ready
+        // `.note` draft. Before this fix, a malformed/unrecognized share
+        // (no image, no URL, no loadable text — e.g. a contact card, an
+        // exotic UTI) reached the identical empty-note fallback further
+        // down and was fully saveable with ✓ enabled and no indication
+        // anything was wrong: a real, live false-success case, the same
+        // shape the image-decode-failure fix already closed for the
+        // image path specifically.
         guard let item = extensionContext?.inputItems.first as? NSExtensionItem,
               let providers = item.attachments else {
-            return .single(CaptureDraft(kind: .note, sourceDevice: .iOS, acquisitionOrigin: .shareExtension))
+            return nil
         }
 
         #if DEBUG
@@ -138,13 +190,20 @@ final class ShareViewController: UIViewController {
 
         // No image, no recognized URL anywhere in this share — fall back to
         // ordinary arbitrary-text note behavior, unchanged from before this
-        // milestone.
+        // milestone: a provider that genuinely loads real text is still a
+        // real, valid note draft.
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
             if let text = try? await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String {
                 return .single(CaptureDraft(kind: .note, noteBody: text, sourceDevice: .iOS, acquisitionOrigin: .shareExtension))
             }
         }
-        return .single(CaptureDraft(kind: .note, sourceDevice: .iOS, acquisitionOrigin: .shareExtension))
+        // Core Loop Hardening 02 §1: nothing usable anywhere in this share
+        // — no image, no URL, and either no plain-text provider at all or
+        // every one present failed to actually load (malformed plain
+        // text). `nil` here, not a contentless `.note` draft — see this
+        // method's own top-of-function doc comment for the false-success
+        // shape this closes.
+        return nil
     }
 
     /// Image + URL Provenance Fix 01: deterministic URL-carrier precedence

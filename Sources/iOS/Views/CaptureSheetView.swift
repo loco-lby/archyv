@@ -32,6 +32,16 @@ struct CaptureSheetView: View {
 
     @State private var pickerItem: PhotosPickerItem?
     @State private var isLoadingPhoto = false
+    /// Core Loop Hardening 02 §6: before this, every failure path in
+    /// `loadPickedPhoto()` (transferable load failure, undecodable data,
+    /// `MediaStore.save` failure) ended the same way — `isLoadingPhoto`
+    /// flips back to false and the button silently returns to "Choose
+    /// from Photos" with zero signal that anything went wrong. A user
+    /// who tapped a photo and watched it do nothing had no way to tell
+    /// that from "I didn't actually tap the button." This is the same
+    /// transient-inline-text pattern as `ItemDetailView`'s
+    /// `favoriteErrorVisible`, not a new toast framework.
+    @State private var importFailed = false
     /// Set the instant a library photo is saved to `MediaStore` — from
     /// then on this view is purely a pass-through to
     /// `ScreenshotCaptureFlowView`, identical to the screenshot-capture
@@ -126,10 +136,19 @@ struct CaptureSheetView: View {
             }
             .disabled(isLoadingPhoto)
 
+            if importFailed {
+                Text("Couldn't import that photo — try again")
+                    .font(ArkyvFont.mono(.regular, size: 12))
+                    .foregroundStyle(ArkyvColor.accent)
+                    .padding(.top, 10)
+                    .transition(.opacity)
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())
+        .animation(.easeOut(duration: 0.2), value: importFailed)
         .task(id: pickerItem) { await loadPickedPhoto() }
     }
 
@@ -161,8 +180,14 @@ struct CaptureSheetView: View {
     private func loadPickedPhoto() async {
         guard let pickerItem else { return }
         isLoadingPhoto = true
+        importFailed = false
         defer { isLoadingPhoto = false }
-        guard let data = try? await pickerItem.loadTransferable(type: Data.self) else { return }
+
+        guard let data = try? await pickerItem.loadTransferable(type: Data.self) else {
+            log("photo import FAILED: loadTransferable returned nil")
+            reportImportFailure()
+            return
+        }
 
         let draft: CaptureDraft?
         if let pixelSize = ImageDecoding.pixelSize(ofData: data) {
@@ -180,8 +205,30 @@ struct CaptureSheetView: View {
             draft = nil
         }
 
-        guard let draft else { return }
+        guard let draft else {
+            log("photo import FAILED: could not decode or store picked photo data")
+            reportImportFailure()
+            return
+        }
         capture.refreshSuggestion(for: draft)
         pickedDraft = draft
+    }
+
+    private func log(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        print("[CaptureSheetView] \(message())")
+        #endif
+    }
+
+    private func reportImportFailure() {
+        #if canImport(UIKit)
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
+        #endif
+        importFailed = true
+        // Clears the picker selection so tapping "Choose from Photos"
+        // again — even for the same photo — gives `.task(id: pickerItem)`
+        // a real state change to fire on, rather than leaving a stale
+        // failed `PhotosPickerItem` sitting in `$pickerItem`.
+        pickerItem = nil
     }
 }
