@@ -96,7 +96,7 @@ enum MigrationFerry {
 
         // 3. IMPORT into a fresh, fully isolated in-memory store — never
         // the real App Group, never any CloudKit container.
-        let isolatedContainer = ArkyvStore.makeModelContainer(inMemory: true)
+        let isolatedContainer = try! ArkyvStore.makeModelContainer(inMemory: true)
         let isolatedContext = ModelContext(isolatedContainer)
 
         let importStart = Date()

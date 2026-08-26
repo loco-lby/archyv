@@ -134,7 +134,7 @@ final class MediaPreservationTests: XCTestCase {
     /// crop of a GIF could not still be multi-frame).
     @MainActor
     func testCropRegionDoesNotRewriteOriginalMediaBytes() throws {
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let repo = Repository(context: container.mainContext)
         let (mediaStore, root) = makeIsolatedMediaStore()
         defer { try? FileManager.default.removeItem(at: root) }

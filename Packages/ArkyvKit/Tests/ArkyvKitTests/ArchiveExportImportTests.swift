@@ -19,13 +19,13 @@ import SwiftData
 final class ArchiveExportImportTests: XCTestCase {
     @MainActor
     private func makeRepo(inMemory: Bool = true) throws -> Repository {
-        let container = ArkyvStore.makeModelContainer(inMemory: inMemory)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: inMemory)
         return Repository(context: container.mainContext)
     }
 
     @MainActor
     private func makeEmptyContext() -> ModelContext {
-        ArkyvStore.makeModelContainer(inMemory: true).mainContext
+        try! ArkyvStore.makeModelContainer(inMemory: true).mainContext
     }
 
     // MARK: - Export round-trip (extends Recovery/Portability Foundation 01)

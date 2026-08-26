@@ -154,7 +154,7 @@ func resetMigrationFlags() {
 func runSuite(itemCount: Int) {
     print("=== \(itemCount) items ===")
 
-    let container = ArkyvStore.makeModelContainer(inMemory: true)
+    let container = try! ArkyvStore.makeModelContainer(inMemory: true)
     let memBefore = residentMemoryMB()
 
     time("populate + save (\(itemCount) items, \(folderNames.count + 1) folders)") {
@@ -281,7 +281,7 @@ func makeSyntheticMediaArchive(itemCount: Int, context: ModelContext) -> [UUID] 
 func runMediaStorageArchitectureBenchmark(itemCount: Int) {
     print("=== Media Storage Architecture 01 — \(itemCount) items ===")
 
-    let container = ArkyvStore.makeModelContainer(inMemory: true)
+    let container = try! ArkyvStore.makeModelContainer(inMemory: true)
     let ids = time("populate + save (\(itemCount) items with real imageData payloads)") {
         let ids = makeSyntheticMediaArchive(itemCount: itemCount, context: container.mainContext)
         try? container.mainContext.save()

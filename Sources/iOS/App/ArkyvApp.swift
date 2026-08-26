@@ -4,37 +4,64 @@ import ArkyvKit
 
 @main
 struct ArkyvApp: App {
-    /// Shared local-first database (App Group container).
-    let modelContainer: ModelContainer
-    @State private var capture: CaptureCoordinator
+    /// Shared local-first database (App Group container). `nil` only in
+    /// the genuinely-unrecoverable case — see `init()`'s own doc comment.
+    let modelContainer: ModelContainer?
+    @State private var capture: CaptureCoordinator?
 
     init() {
-        let container = ArkyvStore.makeModelContainer()
-        self.modelContainer = container
-        _capture = State(initialValue: CaptureCoordinator(container: container))
+        do {
+            let container = try ArkyvStore.makeModelContainer()
+            self.modelContainer = container
+            _capture = State(initialValue: CaptureCoordinator(container: container))
 
-        let repo = Repository(context: container.mainContext)
+            let repo = Repository(context: container.mainContext)
 
-        // Default-folder seeding is NOT decided here — a single check at
-        // launch can't safely tell "brand new user" apart from "existing
-        // CloudKit user whose import just hasn't landed yet." See
-        // SeedGate.swift; RootView's scenePhase hook owns this now,
-        // checked repeatedly rather than once.
+            // Default-folder seeding is NOT decided here — a single check at
+            // launch can't safely tell "brand new user" apart from "existing
+            // CloudKit user whose import just hasn't landed yet." See
+            // SeedGate.swift; RootView's scenePhase hook owns this now,
+            // checked repeatedly rather than once.
 
-        // ONE-TIME MIGRATION — safe to delete once all devices have run it.
-        IconMigration.runIfNeeded(repository: repo)
+            // ONE-TIME MIGRATION — safe to delete once all devices have run it.
+            IconMigration.runIfNeeded(repository: repo)
 
-        // ONE-TIME BACKFILL — additive only, safe to delete once all
-        // devices have run it. See MembershipMigration.swift.
-        MembershipMigration.runIfNeeded(repository: repo)
+            // ONE-TIME BACKFILL — additive only, safe to delete once all
+            // devices have run it. See MembershipMigration.swift.
+            MembershipMigration.runIfNeeded(repository: repo)
+        } catch {
+            // Core Loop Hardening 02 §2: reaching here means BOTH the
+            // on-disk+CloudKit container AND the in-memory fallback
+            // failed to open — see `ArkyvStore.makeModelContainer`'s own
+            // doc comment for exactly what that implies (genuinely rare;
+            // in practice SwiftData itself cannot construct any container
+            // on this device/OS). Previously this was the app's only
+            // naked `try!` crash. `body` below now renders a small,
+            // honest "couldn't start" screen instead of force-unwrapping.
+            #if DEBUG
+            print("[ArkyvApp] FATAL: could not create any ModelContainer: \(error)")
+            #endif
+            self.modelContainer = nil
+            _capture = State(initialValue: nil)
+        }
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environment(capture)
-                .tint(ArkyvColor.textPrimary)
-                .task {
+            if let modelContainer, let capture {
+                mainScene(modelContainer: modelContainer, capture: capture)
+            } else {
+                InitializationFailureView()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func mainScene(modelContainer: ModelContainer, capture: CaptureCoordinator) -> some View {
+        RootView()
+            .environment(capture)
+            .tint(ArkyvColor.textPrimary)
+            .task {
                     // Scale Foundation 01: entirely inert unless explicitly
                     // launched with this argument (`devicectl device
                     // process launch ... com.deadwest.cherries
@@ -108,7 +135,28 @@ struct ArkyvApp: App {
                     }
                     #endif
                 }
+            .modelContainer(modelContainer)
+    }
+}
+
+/// Core Loop Hardening 02 §2: the small, honest screen shown only in the
+/// genuinely-unrecoverable case — see `ArkyvApp.init()`'s own doc
+/// comment. No technical detail, no retry button (there is nothing a
+/// retry could fix that a relaunch wouldn't already attempt), calm tone.
+private struct InitializationFailureView: View {
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 12) {
+                Text("Cherries couldn't start")
+                    .font(ArkyvFont.mono(.medium, size: 18))
+                    .foregroundStyle(.white)
+                Text("Please try reopening the app.")
+                    .font(ArkyvFont.mono(.regular, size: 14))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .padding(32)
+            .multilineTextAlignment(.center)
         }
-        .modelContainer(modelContainer)
     }
 }

@@ -19,7 +19,7 @@ import SwiftData
 final class LifecycleFaultInjectionTests: XCTestCase {
     @MainActor
     private func makeRepo() throws -> Repository {
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         return Repository(context: container.mainContext)
     }
 
@@ -176,7 +176,7 @@ final class LifecycleFaultInjectionTests: XCTestCase {
     /// get to "force-quit and relaunch" without a real process boundary.
     @MainActor
     func testConfirmedCropSurvivesAFreshModelContextRelaunch() throws {
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let repo = Repository(context: container.mainContext)
         let region = CropRegion(x: 0.15, y: 0.15, width: 0.4, height: 0.4)
         let item = try repo.fileCapture(CaptureDraft(kind: .screenshot))

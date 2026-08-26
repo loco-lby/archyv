@@ -5,7 +5,7 @@ import SwiftData
 final class RepositoryTests: XCTestCase {
     @MainActor
     private func makeRepo() throws -> Repository {
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         return Repository(context: container.mainContext)
     }
 
@@ -1188,7 +1188,7 @@ final class RepositoryTests: XCTestCase {
 
     @MainActor
     func testMoveRawFetchInSameContextShowsOldRowDeactivated() throws {
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let repo = Repository(context: container.mainContext)
         let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
         let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
@@ -1208,7 +1208,7 @@ final class RepositoryTests: XCTestCase {
 
     @MainActor
     func testMoveDeactivationSurvivesAFreshModelContextOnTheSameContainer() throws {
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let repo = Repository(context: container.mainContext)
         let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
         let coolShit = try repo.createFolder(name: "Cool Shit", icon: .symbol("star"))
@@ -1327,7 +1327,7 @@ final class RepositoryTests: XCTestCase {
         // needed, take its early `guard changed else { return }` exit,
         // and never call save() at all — silently stranding the
         // `item.folder` mutation as a pending, unpersisted change.
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let repo = Repository(context: container.mainContext)
         let deadwest = try repo.createFolder(name: "Deadwest", icon: .symbol("star"))
         let item = try repo.fileCapture(.note("hello"), folders: [deadwest])

@@ -39,7 +39,7 @@ final class FolderSelectionUXTests: XCTestCase {
 
     @MainActor
     private func makeRepo() throws -> Repository {
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         return Repository(context: container.mainContext)
     }
 

@@ -23,11 +23,29 @@ public enum ArkyvStore {
     /// container — a clean cut, no dual-container bridge, no record
     /// migration from the legacy container. Development environment only
     /// (Production schema not deployed by this cutover).
-    private static let cloudKitContainerID = "iCloud.com.deadwest.cherries"
+    /// Core Loop Hardening 02 §8-9: made non-private so `ICloudAvailability`
+    /// can query the same real container instead of duplicating this
+    /// string.
+    public static let cloudKitContainerID = "iCloud.com.deadwest.cherries"
 
     /// Shared on-disk container. Falls back to an in-memory store if the
-    /// on-disk store can't be opened, so the UI never hard-crashes at launch.
-    public static func makeModelContainer(inMemory: Bool = false) -> ModelContainer {
+    /// on-disk store can't be opened, so the UI never hard-crashes at
+    /// launch on the FIRST failure.
+    ///
+    /// Core Loop Hardening 02 §2: previously, a second failure (the
+    /// in-memory fallback itself failing to open) hit an unconditional
+    /// `try!` — the app's only naked initialization crash. Both
+    /// production callers (`ArkyvApp`, `ShareViewController`) now handle
+    /// a thrown error by reaching a small, honest "couldn't start" state
+    /// instead of force-unwrapping. This function itself adds no new
+    /// recovery machinery — it simply stops hiding the second failure
+    /// behind a guaranteed crash. Reaching this throw at all means BOTH
+    /// the on-disk+CloudKit config AND a bare in-memory config failed to
+    /// open, which in practice means SwiftData itself cannot construct
+    /// any container on this device/OS — genuinely rare, and, per this
+    /// milestone's own scope, not something worth a larger recovery
+    /// architecture for a V1 trust pass.
+    public static func makeModelContainer(inMemory: Bool = false) throws -> ModelContainer {
         let url = AppGroup.containerURL.appendingPathComponent("arkyv.store")
         let config = inMemory
             ? ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
@@ -36,14 +54,19 @@ public enum ArkyvStore {
             return try ModelContainer(for: schema, migrationPlan: ArkyvMigrationPlan.self, configurations: [config])
         } catch {
             #if DEBUG
-            print("[ArkyvStore] CloudKit-backed container failed to open, falling back to IN-MEMORY store (existing on-disk data is untouched): \(error)")
+            print("[ArkyvStore] primary container failed to open, falling back to IN-MEMORY store (existing on-disk data is untouched): \(error)")
             #endif
+            if inMemory {
+                // Already an in-memory attempt — a second identical
+                // configuration has no reason to behave differently;
+                // propagate the original failure rather than retrying it.
+                throw error
+            }
             // In-memory only: CloudKit mirroring requires a persistent
             // store, so this fallback is never CloudKit-backed regardless
             // of why the primary container above failed.
             let mem = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
-            // If even this throws we genuinely can't run; crashing here is correct.
-            return try! ModelContainer(for: schema, migrationPlan: ArkyvMigrationPlan.self, configurations: [mem])
+            return try ModelContainer(for: schema, migrationPlan: ArkyvMigrationPlan.self, configurations: [mem])
         }
     }
 }

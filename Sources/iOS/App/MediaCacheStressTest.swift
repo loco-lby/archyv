@@ -31,7 +31,7 @@ enum MediaCacheStressTest {
     static func run() async {
         print("[MediaCacheStressTest] starting — isolated in-memory container + scratch cache dir, no real data touched")
 
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let itemCount = 46
         let ids = await populate(container: container, itemCount: itemCount)
 
@@ -136,7 +136,7 @@ enum MediaCacheStressTest {
         // populated in `run()`'s A/B/C sections would be ideal, but this
         // function is self-contained, so a fresh tiny population suffices
         // to isolate the specific cold-vs-warm-post-eviction cost.
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let ids = await populate(container: container, itemCount: 1)
         let id = ids[0]
         let coldAfterEvictionStart = Date()
@@ -161,7 +161,7 @@ enum MediaCacheStressTest {
     /// required for a correct render.
     private static func runReinstallSimulation() async {
         print("[MediaCacheStressTest] D. Reinstall simulation: fresh container + fresh cache root, zero prior MediaStore-equivalent state...")
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let ids = await populate(container: container, itemCount: 3)
         let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent("media-cache-reinstall-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: cacheRoot) }
@@ -198,7 +198,7 @@ enum MediaCacheStressTest {
     /// upload/sync of any kind involved at any point.
     private static func runOfflineLocalAuthorityCheck() async {
         print("[MediaCacheStressTest] E. Offline local-authority check: zero-CloudKit container, delete-then-reconstruct...")
-        let container = ArkyvStore.makeModelContainer(inMemory: true)
+        let container = try! ArkyvStore.makeModelContainer(inMemory: true)
         let ids = await populate(container: container, itemCount: 1)
         let id = ids[0]
         let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent("media-cache-offline-\(UUID().uuidString)")

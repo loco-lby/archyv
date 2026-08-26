@@ -107,7 +107,23 @@ final class CaptureCoordinator {
     }
 
     func createFolderAndFile(_ draft: CaptureDraft, name: String, icon: FolderIcon) {
-        guard let folder = try? repo.createFolder(name: name, icon: icon) else { return }
+        guard let folder = try? repo.createFolder(name: name, icon: icon) else {
+            // Core Loop Hardening 02 §7: this used to just `return`,
+            // leaving the drawer open with no toast and — worse — the
+            // draft's already-staged `MediaStore` file (for image
+            // kinds) orphaned with no `StoredItem` ever created to
+            // point at it. A failed folder creation abandons this
+            // draft exactly the way a failed `fileCapture` does in
+            // `file(_:into:)` above, so it gets the identical cleanup
+            // and the identical honest failure signal, not a silent
+            // no-op.
+            if let filename = draft.localFilename {
+                MediaStore.shared.delete(filename: filename)
+            }
+            savedToast = SavedToast(folderName: "Error saving", icon: .symbol("exclamationmark.triangle"))
+            drawer = nil
+            return
+        }
         file(draft, into: folder)
     }
 
