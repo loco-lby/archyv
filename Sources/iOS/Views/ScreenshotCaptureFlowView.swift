@@ -62,6 +62,19 @@ struct ScreenshotCaptureFlowView: View {
 
     let draft: CaptureDraft
 
+    /// Bug Squash 02: Pre-Import Folder Selection — a folder chosen in
+    /// `CaptureSheetView`'s "+" empty state (before any photo existed)
+    /// must survive into this view once a photo is picked and this view
+    /// takes over, rather than silently resetting to Unfiled. Explicit
+    /// custom `init` (SwiftUI's synthesized memberwise init can't seed a
+    /// `@State` property from a caller-supplied value) — every other call
+    /// site (`.screenshot(draft)`, the Action Capture path) keeps working
+    /// unchanged via the default `nil`.
+    init(draft: CaptureDraft, initialFolder: StoredFolder? = nil) {
+        self.draft = draft
+        _selectedFolder = State(initialValue: initialFolder)
+    }
+
     @Environment(CaptureCoordinator.self) private var capture
     @Environment(\.modelContext) private var context
 
