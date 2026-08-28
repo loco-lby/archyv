@@ -96,6 +96,11 @@ struct ScreenshotCaptureFlowView: View {
     /// is what gets filed (see `loadSourceImage`).
     @State private var cropUnavailable = false
     @State private var showingPicker = false
+    /// Bug Squash 01: Unfiled/Zero-Folder Dead End — drives `NewFolderView`,
+    /// matching the exact same create-folder mechanism Item Detail's
+    /// `FolderEditorView` already uses (`Repository.createFolder`), rather
+    /// than a second, divergent implementation.
+    @State private var showingNewFolder = false
     /// Chosen in the dropdown (see `chooseFolder`), not yet saved — ✓ is
     /// what actually files the capture (see `confirmSave`). Freely
     /// reassignable: reopening the folder control and picking a different
@@ -243,6 +248,19 @@ struct ScreenshotCaptureFlowView: View {
         .animation(.easeOut(duration: 0.18), value: showingPicker)
         .animation(.easeOut(duration: 0.22), value: didSave)
         .animation(.easeOut(duration: 0.2), value: saveError)
+        .sheet(isPresented: $showingNewFolder) {
+            // Bug Squash 01: identical mechanism to `FolderEditorView`'s
+            // own "+ New Folder" (Item Detail) — folder creation is
+            // immediate via `Repository.createFolder`, but the actual
+            // *move* stays purely in-flight local state, exactly like
+            // picking any existing folder (`chooseFolder`) — nothing is
+            // filed until this whole capture's own ✓.
+            NewFolderView { name, icon in
+                guard let created = try? Repository(context: context).createFolder(name: name, icon: icon) else { return }
+                selectedFolder = created
+                showingPicker = false
+            }
+        }
     }
 
     /// Same X/✓ positioning as `CropEditorView`'s own bar, reused directly
@@ -287,7 +305,15 @@ struct ScreenshotCaptureFlowView: View {
     private var folderAccessory: some View {
         VStack(spacing: 4) {
             Button {
-                showingPicker = true
+                // Bug Squash 01: was `showingPicker = true` with the button
+                // itself `.disabled(showingPicker)` — meaning once open,
+                // this label could never be tapped again to close it. That
+                // was one half of the Unfiled/Zero-Folder dead end: with
+                // zero custom folders, `folderPanel` had no rows AND no
+                // dismiss affordance, so there was no way out at all. Now
+                // a genuine toggle — tapping the label again always closes
+                // the panel, independent of how many folders exist.
+                showingPicker.toggle()
             } label: {
                 // Italic reads as "this is the default, you may change it
                 // but don't have to" — roman once a folder's explicitly
@@ -297,7 +323,6 @@ struct ScreenshotCaptureFlowView: View {
                     .italic(selectedFolder == nil)
                     .foregroundStyle(.white)
             }
-            .disabled(showingPicker)
             if cropUnavailable {
                 Text("Crop unavailable — saving full screenshot")
                     .font(ArkyvFont.mono(.regular, size: 11))
@@ -321,9 +346,21 @@ struct ScreenshotCaptureFlowView: View {
             // Roughly the combined height of CropEditorView's own X/✓ row
             // plus the folder accessory beneath it — an estimate to tune
             // once this is checked on device, not a measured value.
-            Spacer().frame(height: 140)
+            // Bug Squash 01: explicitly tappable-to-dismiss — a bare
+            // `Spacer()` is not reliably hit-testable/transparent-to-
+            // touches in every context, and physical-device QA found the
+            // capture controls underneath genuinely unreachable while this
+            // overlay was showing. `contentShape` + `onTapGesture` makes
+            // "tap outside the panel closes it" an explicit, guaranteed
+            // behavior rather than an assumption about SwiftUI internals.
+            Spacer()
+                .frame(height: 140)
+                .contentShape(Rectangle())
+                .onTapGesture { showingPicker = false }
             folderPanel
             Spacer()
+                .contentShape(Rectangle())
+                .onTapGesture { showingPicker = false }
         }
         .padding(.horizontal, 24)
         .allowsHitTesting(!didSave)
@@ -344,8 +381,26 @@ struct ScreenshotCaptureFlowView: View {
     /// illegible in Light mode. Position/order is untouched (`folders` is
     /// still the same stable `sortOrder` query); only suggestion/selection
     /// EMPHASIS was ever styling, never layout.
+    /// Bug Squash 01: Unfiled/Zero-Folder Dead End — this panel used to
+    /// contain ONLY `ForEach(folders)`, so with zero custom folders it
+    /// rendered as a completely empty styled box: no rows, no "Unfiled"
+    /// option, no way to create a folder, and (combined with
+    /// `dropdownOverlay`'s missing dismiss handling above) no way out at
+    /// all short of force-quitting. Zero custom folders is a normal valid
+    /// state — Unfiled is always a valid destination — so this now always
+    /// shows a real, usable selector regardless of folder count, matching
+    /// the exact same "Unfiled shown only as the current selection, tap
+    /// the current selection again to return to it, `+ Create folder`
+    /// always available" contract `FolderEditorView` (Item Detail) and
+    /// `NewFolderView` already establish — brought up to parity here, not
+    /// reinvented.
     private var folderPanel: some View {
         VStack(spacing: 4) {
+            if selectedFolder == nil {
+                FolderSelectionRow(name: "Unfiled", isSelected: true, foregroundColor: DarkroomColor.textPrimary) {
+                    showingPicker = false
+                }
+            }
             ForEach(folders) { folder in
                 FolderSelectionRow(
                     name: folder.name,
@@ -356,6 +411,18 @@ struct ScreenshotCaptureFlowView: View {
                     chooseFolder(folder)
                 }
             }
+            Button {
+                showingNewFolder = true
+            } label: {
+                Text("+ Create folder")
+                    .font(ArkyvFont.publicSans(size: 14).italic())
+                    .tracking(1)
+                    .foregroundStyle(DarkroomColor.subdued)
+                    .frame(minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
         }
         .padding(8)
         .background(DarkroomColor.surface, in: RoundedRectangle(cornerRadius: ArkyvRadius.sheet))

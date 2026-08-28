@@ -563,6 +563,14 @@ private struct ShareDrawerContent: View {
     /// saved — ✓ is what actually files the share (see `confirmSave`).
     /// `nil` means Unfiled, the existing canonical zero-membership shape.
     @State private var selectedFolder: StoredFolder?
+    /// Bug Squash 01: minimal local create-folder flow — `NewFolderView`
+    /// (app-target `Sources/iOS/Views/`) isn't reachable from this
+    /// separate Share Extension compilation target, so this is a native
+    /// `.alert` + `TextField` rather than a shared view. Name-only (no
+    /// icon picker); `.glyph(.star)` matches `NewFolderView`'s own
+    /// default so a folder created from either surface starts identically.
+    @State private var showingNewFolder = false
+    @State private var newFolderName = ""
     @State private var isSaving = false
     @State private var saveError = false
     /// LIFECYCLE / FAULT INJECTION FOUNDATION 01: set right after
@@ -660,6 +668,17 @@ private struct ShareDrawerContent: View {
         .background(ArkyvColor.canvas.ignoresSafeArea())
         .ignoresSafeArea(edges: .bottom)
         .animation(.easeOut(duration: 0.18), value: showingPicker)
+        .alert("New Folder", isPresented: $showingNewFolder) {
+            TextField("Folder name", text: $newFolderName)
+            Button("Cancel", role: .cancel) { newFolderName = "" }
+            Button("Create") {
+                let trimmed = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                newFolderName = ""
+                guard !trimmed.isEmpty else { return }
+                guard let created = try? Repository(context: context).createFolder(name: trimmed, icon: .glyph(.star)) else { return }
+                selectFolder(created)
+            }
+        }
         .task {
             let result = await load()
             resolution = result
@@ -787,6 +806,27 @@ private struct ShareDrawerContent: View {
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
                 .padding(.horizontal, 20)
+        } else if !loadFailed {
+            // Bug Squash 01: previously no branch at all here — a link
+            // that genuinely has no resolvable preview image (offline
+            // resolution, a source with no og:image, etc.) rendered
+            // nothing, a silent-looking blank canvas with zero
+            // acknowledgment that Cherries knows a preview is missing.
+            // Same generic placeholder language `LocalImageView`'s own
+            // missing-image state already uses elsewhere (Archive, Item
+            // Detail) — not new artwork, not a source-specific message.
+            // `loadFailed` is excluded since that already has its own
+            // distinct "Couldn't load — nothing to save" text in
+            // `folderAccessory`.
+            ZStack {
+                ArkyvColor.surface
+                Image(systemName: "photo")
+                    .font(.system(size: 28))
+                    .foregroundStyle(ArkyvColor.subdued)
+            }
+            .frame(width: width, height: 240)
+            .clipShape(RoundedRectangle(cornerRadius: ArkyvRadius.card))
+            .padding(.horizontal, 20)
         }
     }
 
@@ -935,14 +975,17 @@ private struct ShareDrawerContent: View {
     private var folderAccessory: some View {
         VStack(spacing: 4) {
             Button {
-                showingPicker = true
+                // Bug Squash 01: genuine toggle — was `showingPicker = true`
+                // with the label itself `.disabled(showingPicker)`, so once
+                // open there was no way to close it by tapping the label
+                // again. See `ScreenshotCaptureFlowView`'s identical fix.
+                showingPicker.toggle()
             } label: {
                 Text(selectedFolder.map { "\($0.name) ˅" } ?? "Unfiled ˅")
                     .font(ArkyvFont.mono(.medium, size: 16))
                     .italic(selectedFolder == nil)
                     .foregroundStyle(ArkyvColor.textPrimary)
             }
-            .disabled(showingPicker)
             if loadFailed {
                 Text("Couldn't load — nothing to save")
                     .font(ArkyvFont.mono(.regular, size: 11))
@@ -967,50 +1010,61 @@ private struct ShareDrawerContent: View {
 
     private var dropdownOverlay: some View {
         VStack {
-            Spacer().frame(height: 110)
+            // Bug Squash 01: explicitly tappable-to-dismiss, same fix as
+            // `ScreenshotCaptureFlowView` — a bare `Spacer()` isn't
+            // reliably a guaranteed tap-passthrough/dismiss surface.
+            Spacer()
+                .frame(height: 110)
+                .contentShape(Rectangle())
+                .onTapGesture { showingPicker = false }
             folderPanel
             Spacer()
+                .contentShape(Rectangle())
+                .onTapGesture { showingPicker = false }
         }
         .padding(.horizontal, 24)
     }
 
-    /// Share Extension Visual Consistency 01: rebuilt on the shared
-    /// `FolderSelectionRow` (`ArkyvKit`, moved there from the app target
-    /// specifically so this separate compilation target could finally
-    /// reach it) instead of this drawer's own independent, never-updated
-    /// row — the orange `FolderIconView`/star-cross-triangle-circle-
-    /// diamond glyphs and orange checkmark visible on physical-device QA
-    /// were this exact private `folderRow`, which the app-target-only
-    /// Import Cherry Drawer refinements could never have touched. Same
-    /// two behavioral rules Import's own dropdown already established:
-    /// "Unfiled" only appears as a row once a real folder is already
-    /// selected (never pre-highlighted as a choice the user made), and
-    /// tapping the already-selected row clears back to Unfiled
-    /// (`FolderSelectionUX`).
+    /// Bug Squash 01: Unfiled/Zero-Folder Dead End. Previously showed
+    /// "Unfiled" only once a REAL folder was already selected, and
+    /// rendered a dead "No folders yet" text with no create-folder
+    /// affordance when `folders` was empty — with zero custom folders
+    /// and the current destination already Unfiled, this panel had
+    /// nothing selectable in it at all. Brought to the same contract
+    /// `ScreenshotCaptureFlowView`/`FolderEditorView` use: Unfiled shown
+    /// and checked when it's the current destination, `+ Create folder`
+    /// always available. Re-selecting an already-selected real folder
+    /// still returns to Unfiled via `FolderSelectionUX.toggling`,
+    /// unchanged below.
     private var folderPanel: some View {
         VStack(spacing: 4) {
-            if selectedFolder != nil {
-                FolderSelectionRow(name: "Unfiled", isSelected: false) {
-                    selectFolder(nil)
+            if selectedFolder == nil {
+                FolderSelectionRow(name: "Unfiled", isSelected: true) {
+                    showingPicker = false
                 }
             }
-            if folders.isEmpty {
-                Text("No folders yet")
-                    .font(ArkyvFont.mono(.regular, size: 13))
+            ForEach(folders) { folder in
+                FolderSelectionRow(name: folder.name, isSelected: folder.id == selectedFolder?.id) {
+                    // Tapping the already-selected row clears back to
+                    // Unfiled — same toggle-to-nil mechanism Item
+                    // Detail's picker uses, so there's always a way
+                    // back without a separate control.
+                    let resultID = FolderSelectionUX.toggling(current: selectedFolder?.id, tapped: folder.id)
+                    selectFolder(resultID == folder.id ? folder : nil)
+                }
+            }
+            Button {
+                showingNewFolder = true
+            } label: {
+                Text("+ Create folder")
+                    .font(ArkyvFont.publicSans(size: 14).italic())
+                    .tracking(1)
                     .foregroundStyle(ArkyvColor.subdued)
-                    .padding(.vertical, 10)
-            } else {
-                ForEach(folders) { folder in
-                    FolderSelectionRow(name: folder.name, isSelected: folder.id == selectedFolder?.id) {
-                        // Tapping the already-selected row clears back to
-                        // Unfiled — same toggle-to-nil mechanism Item
-                        // Detail's picker uses, so there's always a way
-                        // back without a separate control.
-                        let resultID = FolderSelectionUX.toggling(current: selectedFolder?.id, tapped: folder.id)
-                        selectFolder(resultID == folder.id ? folder : nil)
-                    }
-                }
+                    .frame(minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
         }
         .padding(8)
         .background(ArkyvColor.surface, in: RoundedRectangle(cornerRadius: ArkyvRadius.sheet))

@@ -321,9 +321,12 @@ struct RootView: View {
             }
             .accessibilityLabel("Capture")
 
-            // More — the existing Settings destination.
+            // More — Bug Squash 01: natural toggle — tapping while already
+            // on Settings returns to Archive, matching the Home button's
+            // own existing "tap again" behavior right above rather than
+            // being a one-way door.
             floatingDockButton {
-                tab = .settings
+                tab = (tab == .settings) ? .archive : .settings
             } icon: {
                 dockIcon("CherriesIconMenu", size: 21.504)
             }
@@ -335,8 +338,23 @@ struct RootView: View {
     /// minimum comfortable hit target), consistent spacing handled by the
     /// caller's `HStack`, never a differently-sized/shaped control among
     /// the three.
+    /// Bug Squash 01: all three dock controls (Home/Capture/More) share
+    /// this one button builder, so wrapping `action` here gives all three
+    /// the exact same subtle haptic acknowledgment with one change rather
+    /// than three separate call sites potentially drifting apart. Only
+    /// fires from a genuine tap — `Button`'s own `action` closure is never
+    /// invoked by a passive state change, so there's no risk of this
+    /// firing from e.g. `tab` changing for some other reason.
+    /// `.impactOccurred(intensity:)` at a reduced intensity, not the
+    /// default 1.0 — "subtle," not the same weight as a real impact
+    /// event elsewhere in the app.
     private func floatingDockButton<Icon: View>(action: @escaping () -> Void, @ViewBuilder icon: () -> Icon) -> some View {
-        Button(action: action) {
+        Button {
+            #if canImport(UIKit)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.6)
+            #endif
+            action()
+        } label: {
             icon()
                 .frame(width: ArkyvFloatingDock.diameter, height: ArkyvFloatingDock.diameter)
                 .background {
