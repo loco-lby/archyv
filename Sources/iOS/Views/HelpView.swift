@@ -14,8 +14,8 @@ struct HelpView: View {
          "A personal archive for the things that catch your eye — screenshots, photos, links, and more. Save something once, and find it again in One Archive."),
         ("How do I save something?",
          "Choose a photo, share a link or image from another app, or capture your screen. A new Cherry starts in Unfiled — filing it into a folder is optional."),
-        ("How does Action Capture work?",
-         "Cherries can catch a screenshot the moment you take it, in any app, and offer to file it. Turn it on from the empty Archive, or by tapping \"Capture your screen.\""),
+        ("How does Screen Capture work?",
+         "Set it up once, then double-tap the back of your iPhone to send whatever's on your screen straight to Cherries — it opens the same crop and folder flow as any other Cherry."),
         ("Where is my data stored?",
          "In your own iCloud account, in Cherries' private database. It isn't stored on a server Cherries operates."),
         ("Does Cherries upload my archive to its own servers?",
@@ -32,10 +32,10 @@ struct HelpView: View {
                 ForEach(entries, id: \.question) { entry in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(entry.question)
-                            .font(.arkyvLabel)
+                            .font(ArkyvFont.publicSans(size: 15, weight: .medium))
                             .foregroundStyle(ArkyvColor.textPrimary)
                         Text(entry.answer)
-                            .font(.arkyvCaption)
+                            .font(ArkyvFont.publicSans(size: 13))
                             .foregroundStyle(ArkyvColor.textSecondary)
                     }
                 }
@@ -54,12 +54,12 @@ struct HelpView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "chevron.backward").font(.system(size: 18, weight: .semibold))
-                    Text("Settings").font(ArkyvFont.mono(.medium, size: 15))
+                    Text("Settings").font(ArkyvFont.publicSans(size: 15, weight: .medium))
                 }
                 .foregroundStyle(ArkyvColor.textPrimary)
             }
             Spacer()
-            Text("Help & FAQ").font(.arkyvSection).foregroundStyle(ArkyvColor.textSecondary)
+            Text("Help & FAQ").font(ArkyvFont.publicSans(size: 12, weight: .medium)).foregroundStyle(ArkyvColor.textSecondary)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)

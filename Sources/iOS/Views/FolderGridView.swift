@@ -109,7 +109,7 @@ struct FolderGridView: View {
                 .font(.system(size: 28))
                 .foregroundStyle(ArkyvColor.subdued)
             Text("This item no longer exists")
-                .font(.arkyvLabel)
+                .font(ArkyvFont.mono(.medium, size: 15))
                 .foregroundStyle(ArkyvColor.textSecondary)
         }
         .frame(maxWidth: .infinity)
@@ -192,7 +192,7 @@ struct FolderGridView: View {
         VStack(spacing: 12) {
             ArkyvMarkView(height: 40, color: ArkyvColor.subdued)
             Text(searching ? "No matches" : "Nothing here yet")
-                .font(.arkyvLabel)
+                .font(ArkyvFont.mono(.medium, size: 15))
                 .foregroundStyle(ArkyvColor.textSecondary)
             if !searching {
                 Text("Screenshot something, or tap + to add from your library.")

@@ -16,13 +16,13 @@ struct PrivacyView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Your archive is stored in your own iCloud account.")
-                    .font(.arkyvLabel)
+                    .font(ArkyvFont.publicSans(size: 15, weight: .medium))
                     .foregroundStyle(ArkyvColor.textPrimary)
                 Text("Cherries doesn't operate its own servers. Everything you save moves directly between your devices and iCloud, in a private database only your iCloud account can read.")
-                    .font(.arkyvCaption)
+                    .font(ArkyvFont.publicSans(size: 13))
                     .foregroundStyle(ArkyvColor.textSecondary)
                 Text("This page describes how Cherries actually works today. A complete privacy policy will accompany Cherries' public release.")
-                    .font(.arkyvCaption)
+                    .font(ArkyvFont.publicSans(size: 13))
                     .foregroundStyle(ArkyvColor.subdued)
             }
             .padding(20)
@@ -39,12 +39,12 @@ struct PrivacyView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "chevron.backward").font(.system(size: 18, weight: .semibold))
-                    Text("Settings").font(ArkyvFont.mono(.medium, size: 15))
+                    Text("Settings").font(ArkyvFont.publicSans(size: 15, weight: .medium))
                 }
                 .foregroundStyle(ArkyvColor.textPrimary)
             }
             Spacer()
-            Text("Privacy").font(.arkyvSection).foregroundStyle(ArkyvColor.textSecondary)
+            Text("Privacy").font(ArkyvFont.publicSans(size: 12, weight: .medium)).foregroundStyle(ArkyvColor.textSecondary)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)

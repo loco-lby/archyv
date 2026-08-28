@@ -429,7 +429,7 @@ struct ArchiveView: View {
                 .font(.system(size: 28))
                 .foregroundStyle(ArkyvColor.subdued)
             Text(emptyStateTitle)
-                .font(.arkyvLabel)
+                .font(ArkyvFont.mono(.medium, size: 15))
                 .foregroundStyle(ArkyvColor.textSecondary)
             if let subtitle = emptyStateSubtitle {
                 Text(subtitle)
@@ -479,7 +479,7 @@ struct ArchiveView: View {
                 .font(.system(size: 28))
                 .foregroundStyle(ArkyvColor.subdued)
             Text("This item no longer exists")
-                .font(.arkyvLabel)
+                .font(ArkyvFont.mono(.medium, size: 15))
                 .foregroundStyle(ArkyvColor.textSecondary)
         }
         .frame(maxWidth: .infinity)

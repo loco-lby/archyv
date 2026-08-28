@@ -36,7 +36,7 @@ struct SettingsView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "camera.viewfinder").font(.system(size: 18)).frame(width: 24)
-                            Text("Simulate a screenshot").font(.arkyvLabel)
+                            Text("Simulate a screenshot").font(ArkyvFont.publicSans(size: 15, weight: .medium))
                             Spacer()
                             Image(systemName: "chevron.right").font(.system(size: 12))
                         }
@@ -46,7 +46,7 @@ struct SettingsView: View {
                         .arkyvOutlinedSurface()
                     }
                     Text("Simulator can't create real screenshot assets — this runs your newest photo through the detection → drawer flow.")
-                        .font(.arkyvCaption)
+                        .font(ArkyvFont.publicSans(size: 13))
                         .foregroundStyle(ArkyvColor.subdued)
                 }
                 #endif
@@ -71,7 +71,7 @@ struct SettingsView: View {
 
     private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.arkyvSection).foregroundStyle(ArkyvColor.textSecondary)
+            Text(title).font(ArkyvFont.publicSans(size: 12, weight: .bold)).foregroundStyle(ArkyvColor.textSecondary)
             content()
         }
     }
@@ -80,9 +80,9 @@ struct SettingsView: View {
         HStack(spacing: 12) {
             Image(systemName: icon).font(.system(size: 18)).frame(width: 24)
                 .foregroundStyle(ArkyvColor.textPrimary)
-            Text(title).font(.arkyvLabel).foregroundStyle(ArkyvColor.textPrimary)
+            Text(title).font(ArkyvFont.publicSans(size: 15, weight: .medium)).foregroundStyle(ArkyvColor.textPrimary)
             Spacer()
-            Text(detail).font(.arkyvCaption).foregroundStyle(ArkyvColor.subdued)
+            Text(detail).font(ArkyvFont.publicSans(size: 13)).foregroundStyle(ArkyvColor.subdued)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -96,7 +96,7 @@ struct SettingsView: View {
             HStack(spacing: 12) {
                 Image(systemName: icon).font(.system(size: 18)).frame(width: 24)
                     .foregroundStyle(ArkyvColor.textPrimary)
-                Text(title).font(.arkyvLabel).foregroundStyle(ArkyvColor.textPrimary)
+                Text(title).font(ArkyvFont.publicSans(size: 15, weight: .medium)).foregroundStyle(ArkyvColor.textPrimary)
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(ArkyvColor.subdued)
             }
