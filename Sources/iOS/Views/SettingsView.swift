@@ -19,8 +19,6 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                ArkyvWordmarkView(height: 30)
-
                 section("SYNC") {
                     row(icon: "arrow.triangle.2.circlepath", title: "iCloud", detail: iCloudStatus?.description ?? "Checking…")
                 }
