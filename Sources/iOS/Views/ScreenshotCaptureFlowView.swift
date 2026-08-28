@@ -167,6 +167,24 @@ struct ScreenshotCaptureFlowView: View {
     /// crop failure must never become capture loss (see `capturingLayer`'s
     /// fallback branch).
     private func loadSourceImage() {
+        // Bug Squash 03: Capture Decode-Failure Blank State — this branch
+        // (`draft.localFilename == nil`) is defensive, not a realistic
+        // production state. Every `CaptureDraft` that ever reaches this
+        // view is constructed with a real, already-saved `localFilename`:
+        // `ScreenshotDetector.swift`'s handler bails out via
+        // `completion(false)` — never constructing a draft at all — if
+        // `MediaStore.save` fails, and `CaptureSheetView.loadPickedPhoto()`
+        // sets `draft = nil` (routing to `reportImportFailure()`, never
+        // `pickedDraft`) on the same condition. The one `CaptureDraft`
+        // shape that legitimately omits `localFilename` — Link Cherry,
+        // built by `URLCherryResolver` — is only ever constructed inside
+        // `ShareViewController`, a wholly separate compilation target
+        // that never routes through `CaptureCoordinator`/this view. So
+        // `decodeFailurePlaceholder`'s "it'll still be saved" is only
+        // ever actually shown for the OTHER failure mode below —
+        // `UIImage(data:)` failing to decode bytes that *do* exist — where
+        // it's unconditionally true (`confirmSave` files `draft`'s
+        // original bytes, never `sourceImage`).
         guard let filename = draft.localFilename else {
             log("no localFilename on draft \(draft.id) — skipping crop, filing as-is")
             cropUnavailable = true
@@ -298,10 +316,53 @@ struct ScreenshotCaptureFlowView: View {
             .padding(.top, 20)
             .padding(.bottom, 12)
             folderAccessory
+            Spacer(minLength: 24)
+            decodeFailurePlaceholder
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())
+    }
+
+    /// Bug Squash 03: Capture Decode-Failure Blank State — before this,
+    /// the space a real `CropEditorView` canvas would occupy was simply
+    /// empty here: black-on-black, X/✓ present but tiny, nothing telling
+    /// the user Cherries knows an image exists and is choosing not to
+    /// show it, versus having silently frozen.
+    ///
+    /// TRUST NOTE — "it'll still be saved" is a promise, not filler copy,
+    /// so it only earns its place here because of what `loadSourceImage`
+    /// guarantees: this view is reached with `sourceImage == nil` in
+    /// practice for exactly one reason — real bytes exist in `MediaStore`
+    /// but `UIImage(data:)` can't decode them after retries. The other
+    /// branch of that guard (`draft.localFilename == nil`, no staged file
+    /// at all) is defensive only; see its own doc comment for the
+    /// call-site evidence that no real production path can reach this
+    /// view with such a draft. Either way, those original bytes are never
+    /// touched or re-encoded here, and `confirmSave` above files `draft`'s
+    /// original data directly, not `sourceImage` — so ✓ genuinely does
+    /// save the real capture. Reuses `LocalImageView`'s own established
+    /// "photo" glyph missing-image language (the same pattern already
+    /// applied to the unrelated blank Link Cherry state in
+    /// `ShareViewController`), substituted onto this screen's fixed
+    /// `DarkroomColor` palette since `ArkyvColor`'s adaptive tokens are
+    /// the one thing this screen must never use — see the type's own doc
+    /// comment.
+    private var decodeFailurePlaceholder: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "photo")
+                .font(.system(size: 28))
+                .foregroundStyle(DarkroomColor.subdued)
+            Text("Couldn't preview this image — it'll still be saved")
+                .font(ArkyvFont.mono(.regular, size: 12))
+                .foregroundStyle(DarkroomColor.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
+        .background(DarkroomColor.surface, in: RoundedRectangle(cornerRadius: ArkyvRadius.card))
+        .padding(.horizontal, 24)
     }
 
     // MARK: Folder accessory — sits directly under the X/✓ row, on the
